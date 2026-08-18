@@ -17,6 +17,10 @@ from .contracts import (
 from .derivation_assurance import DerivationProof, independently_assure
 from .durability import AuthorizedReplayLedger, DurableAuthorityError, DurableCampaignStore
 from .foreman import Foreman
+from .reconciliation import Finding, ScaleReconciler
+from .scheduler import ResourceCapacity, ResourceScheduler, WorkItem
+from .workers import ExecutionMode, JobKind, LocalWorkerRuntime, ResourceRequest, WorkerJob, WorkerSpec
+from .workforce import LocalWorkforce
 
 __all__ = [
     "AdvicePacket",
@@ -32,9 +36,21 @@ __all__ = [
     "DurableAuthorityError",
     "DurableCampaignStore",
     "EvidencePacket",
+    "ExecutionMode",
+    "Finding",
     "Foreman",
+    "JobKind",
+    "LocalWorkerRuntime",
+    "LocalWorkforce",
     "Milestone",
     "NodeState",
+    "ResourceCapacity",
+    "ResourceRequest",
+    "ResourceScheduler",
+    "ScaleReconciler",
     "TaskPacket",
+    "WorkItem",
+    "WorkerJob",
+    "WorkerSpec",
     "independently_assure",
 ]
