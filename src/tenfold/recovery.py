@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .persistence import CampaignSnapshot, SQLiteCampaignStore, campaign_from_payload
+from .durability import DurableCampaignStore
+from .persistence import CampaignSnapshot, campaign_from_payload
 
 
 class StaleCommand(RuntimeError):
@@ -25,8 +26,8 @@ def validate_command(snapshot: CampaignSnapshot, fence: CommandFence) -> None:
         raise StaleCommand("stale campaign revision")
 
 
-def takeover(store: SQLiteCampaignStore, campaign_id: str, expected_revision: int) -> CampaignSnapshot:
-    """Advance the Foreman epoch through the store's dedicated fenced transition."""
+def takeover(store: DurableCampaignStore, campaign_id: str, expected_revision: int) -> CampaignSnapshot:
+    """Advance the Foreman epoch through the authoritative fenced transition."""
     return store.takeover_epoch(campaign_id, expected_revision)
 
 
