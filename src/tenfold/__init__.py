@@ -9,7 +9,6 @@ from .contracts import (
     CouplingAssuranceRecord,
     Dependency,
     DependencyClass,
-    DerivationProof if False else EvidencePacket,
     EvidencePacket,
     Milestone,
     NodeState,
