@@ -5,6 +5,30 @@ from .contracts import CampaignManifest, CampaignNode, DependencyClass, NodeStat
 
 
 SATISFYING_STATES = {NodeState.PROVEN, NodeState.SHIPPED}
+TERMINAL_STATES = {NodeState.SHIPPED, NodeState.CANCELLED, NodeState.SUPERSEDED}
+
+ALLOWED_TRANSITIONS: dict[NodeState, frozenset[NodeState]] = {
+    NodeState.AUTHORIZED: frozenset({NodeState.BLOCKED, NodeState.PREPARE_ONLY, NodeState.READY, NodeState.CANCELLED}),
+    NodeState.BLOCKED: frozenset({NodeState.PREPARE_ONLY, NodeState.READY, NodeState.CANCELLED}),
+    NodeState.PREPARE_ONLY: frozenset({NodeState.BLOCKED, NodeState.READY, NodeState.CANCELLED}),
+    NodeState.READY: frozenset({NodeState.LEASED, NodeState.RUNNING, NodeState.CANCELLED}),
+    NodeState.LEASED: frozenset({NodeState.RUNNING, NodeState.CANCELLED}),
+    NodeState.RUNNING: frozenset({NodeState.EVIDENCE_PENDING, NodeState.FAILED, NodeState.CANCELLED}),
+    NodeState.EVIDENCE_PENDING: frozenset({NodeState.REVIEW_PENDING, NodeState.FAILED}),
+    NodeState.REVIEW_PENDING: frozenset({NodeState.RECONCILE_REQUIRED, NodeState.CANDIDATE, NodeState.FAILED}),
+    NodeState.RECONCILE_REQUIRED: frozenset({NodeState.READY, NodeState.PREPARE_ONLY, NodeState.BLOCKED, NodeState.CANCELLED}),
+    NodeState.REBIND_REQUIRED: frozenset({NodeState.READY, NodeState.PREPARE_ONLY, NodeState.BLOCKED, NodeState.CANCELLED}),
+    NodeState.CANDIDATE: frozenset({NodeState.FROZEN, NodeState.RECONCILE_REQUIRED, NodeState.FAILED}),
+    NodeState.FROZEN: frozenset({NodeState.PROVING, NodeState.STALE}),
+    NodeState.PROVING: frozenset({NodeState.PROVEN, NodeState.FAILED, NodeState.STALE}),
+    NodeState.PROVEN: frozenset({NodeState.SHIPPED, NodeState.STALE, NodeState.REBIND_REQUIRED}),
+    NodeState.STALE: frozenset({NodeState.REBIND_REQUIRED, NodeState.CANCELLED}),
+    NodeState.FAILED: frozenset({NodeState.READY, NodeState.CANCELLED}),
+    NodeState.DECLARED: frozenset({NodeState.AUTHORIZED, NodeState.CANCELLED}),
+    NodeState.SHIPPED: frozenset(),
+    NodeState.SUPERSEDED: frozenset(),
+    NodeState.CANCELLED: frozenset(),
+}
 
 
 @dataclass
@@ -25,9 +49,12 @@ class Foreman:
     def campaign(self) -> CampaignManifest:
         return self.runtime.campaign
 
-    def set_state(self, node_id: str, state: NodeState) -> None:
+    def transition(self, node_id: str, state: NodeState) -> None:
         if node_id not in self.runtime.states:
             raise KeyError(node_id)
+        current = self.runtime.states[node_id]
+        if state not in ALLOWED_TRANSITIONS[current]:
+            raise ValueError(f"illegal transition: {node_id}:{current.value}->{state.value}")
         self.runtime.states[node_id] = state
 
     def _dependency_satisfied(self, node: CampaignNode) -> bool:
@@ -43,10 +70,11 @@ class Foreman:
         ready: list[str] = []
         prepare: list[str] = []
         blocked: list[str] = []
-        terminal = {NodeState.PROVEN, NodeState.SHIPPED, NodeState.CANCELLED, NodeState.SUPERSEDED}
         for node in self.campaign.nodes:
             state = self.runtime.states[node.node_id]
-            if state in terminal:
+            if state in TERMINAL_STATES or state in {NodeState.PROVEN, NodeState.FROZEN, NodeState.PROVING, NodeState.CANDIDATE}:
+                continue
+            if state not in {NodeState.AUTHORIZED, NodeState.BLOCKED, NodeState.PREPARE_ONLY, NodeState.READY, NodeState.FAILED, NodeState.REBIND_REQUIRED, NodeState.RECONCILE_REQUIRED}:
                 continue
             if self._dependency_satisfied(node):
                 ready.append(node.node_id)
