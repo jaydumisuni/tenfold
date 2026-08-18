@@ -45,6 +45,15 @@ class Foreman:
     def __init__(self, campaign: CampaignManifest):
         self.runtime = CampaignRuntime(campaign)
 
+    @classmethod
+    def restore(cls, campaign: CampaignManifest, states: dict[str, NodeState]) -> "Foreman":
+        expected = {node.node_id for node in campaign.nodes}
+        if set(states) != expected:
+            raise ValueError("persisted node-state set does not match campaign")
+        foreman = cls(campaign)
+        foreman.runtime.states = dict(states)
+        return foreman
+
     @property
     def campaign(self) -> CampaignManifest:
         return self.runtime.campaign
