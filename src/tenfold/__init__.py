@@ -14,6 +14,7 @@ from .contracts import (
     NodeState,
     TaskPacket,
 )
+from .derivation_assurance import DerivationProof, independently_assure
 from .foreman import Foreman
 
 __all__ = [
@@ -25,9 +26,11 @@ __all__ = [
     "CouplingAssuranceRecord",
     "Dependency",
     "DependencyClass",
+    "DerivationProof",
     "EvidencePacket",
     "Foreman",
     "Milestone",
     "NodeState",
     "TaskPacket",
+    "independently_assure",
 ]
