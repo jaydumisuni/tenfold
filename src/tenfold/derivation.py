@@ -8,6 +8,7 @@ from .contracts import (
     BlueprintManifest,
     CampaignManifest,
     CampaignNode,
+    Dependency,
     Milestone,
 )
 
@@ -66,7 +67,7 @@ def derive_campaign(
     compiler_digest = sha256(f"{compiler_id}:{compiler_version}".encode()).hexdigest()
     attrs = tuple(sorted({a for m in milestones for a in m.attributes}))
     binding = AssuranceBinding(matrix.generation, matrix.digest, matrix.required_for(attrs))
-    return CampaignManifest(
+    campaign = CampaignManifest(
         campaign_id=f"{blueprint.blueprint_id}:g{blueprint.generation}",
         generation=1,
         blueprint_id=blueprint.blueprint_id,
@@ -79,6 +80,7 @@ def derive_campaign(
         milestones=milestones,
         assurance=binding,
     )
+    return campaign
 
 
 def independently_assure(
