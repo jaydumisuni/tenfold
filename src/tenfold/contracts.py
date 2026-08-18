@@ -150,6 +150,7 @@ class TaskPacket:
     reporting_officer: str
     source_binding: str
     dispatch_digest: str = ""
+    foreman_epoch: int = 1
 
     def sealed(self) -> "TaskPacket":
         raw = asdict(self)
@@ -175,6 +176,7 @@ class EvidencePacket:
     limitations: tuple[str, ...] = ()
     anomalies: tuple[str, ...] = ()
     questions: tuple[str, ...] = ()
+    dispatch_epoch: int = 1
 
     @property
     def digest(self) -> str:
