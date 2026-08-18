@@ -138,3 +138,15 @@ def test_council_blocks_unresolved_assurance_and_questions():
     ground = reconcile("M1", [report], required_assurance=("tenfold_council", "sec_ops"), satisfied_assurance=("tenfold_council",))
     assert ground.unresolved_assurance == ("sec_ops",)
     assert not ground.accepted_for_rebrief
+
+
+def test_independent_derivation_requires_exact_acceptance_obligations():
+    bp = BlueprintManifest(
+        "acceptance-bp", 1, ("owner",),
+        (Requirement("R", "must prove exact evidence", "owner", acceptance=("negative-control", "runtime-proof")),),
+    )
+    nodes = (CampaignNode("A", "M", ("R",), "work", evidence_obligations=("runtime-proof",)),)
+    candidate = derive_campaign(bp, nodes=nodes, milestones=(Milestone("M", 1, ("A",)),), matrix=FOUNDING_MATRIX)
+    proof = independently_assure(bp, candidate)
+    assert not proof.passed
+    assert not proof.acceptance_mapping_complete
