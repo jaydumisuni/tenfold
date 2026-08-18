@@ -116,8 +116,12 @@ def independently_assure(
         findings.append("milestone-node-mapping-mismatch")
 
     acceptance_mapping_complete = all(
-        not requirement.acceptance
-        or any(requirement.requirement_id in node.derived_from and node.evidence_obligations for node in campaign.nodes)
+        set(requirement.acceptance) <= {
+            obligation
+            for node in campaign.nodes
+            if requirement.requirement_id in node.derived_from
+            for obligation in node.evidence_obligations
+        }
         for requirement in blueprint.requirements
     )
     if not acceptance_mapping_complete:
