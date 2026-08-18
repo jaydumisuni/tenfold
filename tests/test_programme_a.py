@@ -11,7 +11,8 @@ from tenfold.contracts import (
     TaskPacket,
 )
 from tenfold.council import reconcile
-from tenfold.derivation import derive_campaign, independently_assure
+from tenfold.derivation import derive_campaign
+from tenfold.derivation_assurance import independently_assure
 from tenfold.foreman import Foreman
 from tenfold.officers import OfficerReport
 from tenfold.training import Rank, may, profile
@@ -60,7 +61,14 @@ def test_frontier_prepares_downstream_without_claiming_ready():
     frontier = foreman.frontier()
     assert frontier["ready"] == ("A",)
     assert frontier["prepare_only"] == ("B",)
-    foreman.set_state("A", NodeState.PROVEN)
+    foreman.transition("A", NodeState.READY)
+    foreman.transition("A", NodeState.RUNNING)
+    foreman.transition("A", NodeState.EVIDENCE_PENDING)
+    foreman.transition("A", NodeState.REVIEW_PENDING)
+    foreman.transition("A", NodeState.CANDIDATE)
+    foreman.transition("A", NodeState.FROZEN)
+    foreman.transition("A", NodeState.PROVING)
+    foreman.transition("A", NodeState.PROVEN)
     assert foreman.frontier()["ready"] == ("B",)
 
 
@@ -82,7 +90,7 @@ def test_council_deduplicates_and_does_not_hide_anomaly():
     packet = EvidencePacket("p", "t", "a", 1, "d", "c", 1, "A", "w", "sha:x", anomalies=("race",))
     r1 = OfficerReport("runtime"); r1.ingest(packet)
     r2 = OfficerReport("challenge"); r2.ingest(packet)
-    ground = reconcile("M1", [r1, r2])
+    ground = reconcile("M1", [r1, r2], required_assurance=("tenfold_council",), satisfied_assurance=("tenfold_council",))
     assert ground.duplicate_packets == 1
     assert ground.material_disagreement
     assert not ground.accepted_for_rebrief
@@ -103,3 +111,30 @@ def test_derivation_rejects_cycles_and_invention():
 def test_assurance_matrix_composes_mandatory_reviews():
     required = set(FOUNDING_MATRIX.required_for(("security", "ptah", "high_risk_parallel_mutation")))
     assert required == {"tenfold_council", "sec_ops", "ptah_authority_review", "independent_coupling_assurance"}
+
+
+def test_foreman_rejects_illegal_state_jump():
+    foreman = Foreman(campaign())
+    try:
+        foreman.transition("A", NodeState.PROVEN)
+    except ValueError as exc:
+        assert "illegal transition" in str(exc)
+    else:
+        raise AssertionError("illegal state jump was accepted")
+
+
+def test_independent_derivation_detects_binding_and_milestone_mismatch():
+    good = campaign()
+    from dataclasses import replace
+    bad = replace(good, blueprint_digest="wrong")
+    proof = independently_assure(blueprint(), bad)
+    assert not proof.passed
+    assert not proof.blueprint_binding_exact
+
+
+def test_council_blocks_unresolved_assurance_and_questions():
+    packet = EvidencePacket("p2", "t", "a", 1, "d", "c", 1, "A", "w", "sha:x", questions=("needs-review",))
+    report = OfficerReport("verification"); report.ingest(packet)
+    ground = reconcile("M1", [report], required_assurance=("tenfold_council", "sec_ops"), satisfied_assurance=("tenfold_council",))
+    assert ground.unresolved_assurance == ("sec_ops",)
+    assert not ground.accepted_for_rebrief
