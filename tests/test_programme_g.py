@@ -11,7 +11,7 @@ from tenfold.assurance_engine import amend_matrix, assurance_rebind_required
 from tenfold.consultation import ConsultationError, ConsultantRuntime
 from tenfold.council import reconcile
 from tenfold.contracts import CampaignManifest, EvidencePacket, NodeState, TaskPacket, canonical_digest
-from tenfold.coupling import InteractionEdge, assure_coupling, periodic_semantic_audit, require_valid_parallelism
+from tenfold.coupling import InteractionEdge, assure_coupling, audit_semantic_coupling, require_valid_parallelism
 from tenfold.derivation_assurance import independently_assure
 from tenfold.facility import FacilityError
 from tenfold.foreman import Foreman
@@ -60,7 +60,7 @@ def _report(kind, mode, checks, *, council=""):
 
 def test_tf26_shadow_campaign_matches_blueprint_frontier_coupling_and_council():
     manifest = programme_a_campaign()
-    proof = indepently_assure(blueprint(), manifest)
+    proof = independently_assure(blueprint(), manifest)
     frontier = Foreman(manifest).frontier()
 
     coupling_campaign = simple_campaign()
@@ -74,9 +74,9 @@ def test_tf26_shadow_campaign_matches_blueprint_frontier_coupling_and_council():
         reviewer_identity="independent",
         reviewer_method="separate",
     )
-    interaction = InteractionEdge("A", "B", "shared_contract", ("ev:coupling",))
-    audit = periodic_semantic_audit(coupling.record, coupling_campaign, (interaction,))
-    assert audit.clean
+    interaction = InteractionEdge("A", "B", "shared_contract")
+    undeclared = audit_semantic_coupling((interaction,), (("A", "B"),))
+    assert undeclared == ()
 
     council = reconcile("M", [OfficerReport("verification")])
     assert council.accepted_for_rebrief
@@ -86,7 +86,7 @@ def test_tf26_shadow_campaign_matches_blueprint_frontier_coupling_and_council():
         predicted_frontier=(("ready", frontier["ready"]), ("prepare_only", frontier["prepare_only"])),
         observed_frontier=(("ready", ("A",)), ("prepare_only", ("B",))),
         declared_couplings=(("A", "B"),),
-        observed_couplings=((interaction.left, interaction.right),),
+        observed_couplings=((interaction.left_unit, interaction.right_unit),),
         council_findings=council.anomalies,
         independent_findings=proof.issues,
     )
