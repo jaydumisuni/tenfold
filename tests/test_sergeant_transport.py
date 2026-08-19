@@ -38,7 +38,11 @@ def transport(tmp, material, **kw):
 def test_real_contract_bridge_returns_bound_pass(tmp_path):
     m=Material('ok'); req=request(m.digest); t=transport(tmp_path,m)
     out=SergeantMilestoneAdapter(t).review(req)
-    assert out.verdict is AssuranceVerdict.PASS and out.authority_version=='0.4.1@exact' and out.eligible
+    assert out.verdict is AssuranceVerdict.PASS
+    assert out.authority_version=='0.4.1@exact'
+    assert out.assurance_id=='sergeant_review'
+    assert out.eligible_for_satisfaction
+    assert not out.grants_authority
 
 def test_missing_or_changed_material_fails_before_review(tmp_path):
     m=Material('ok'); req=request(m.digest)
