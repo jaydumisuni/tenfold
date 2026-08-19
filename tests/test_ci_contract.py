@@ -55,4 +55,4 @@ def test_tf31_ci_rebuilds_from_repository_only_fresh_git_state_and_pins_sergeant
     assert 'test -z "$(git -C "$CLEAN" status --porcelain)"' in text
     assert '"$VENV/bin/python" -m pip install "$CLEAN[dev,browser]"' in text
     assert 'git+https://github.com/jaydumisuni/Sergeant.git@4a277cc5950aa08a98157b950c96fb88f2178c79' in text
-    assert "TENFOLD_REPOSITORY_ONLY_PROOF=1" in text
+    assert 'PATH="$VENV/bin:$PATH" TENFOLD_REPOSITORY_ONLY_PROOF=1' in text
