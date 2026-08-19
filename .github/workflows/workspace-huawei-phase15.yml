@@ -19,6 +19,7 @@ jobs:
       HUAWEI_HEAD: 114f2c25f5fd0ec93e4685a0cc5d9a0e458042d3
       BUILDER_HEAD: 682c9158751cc581efdecd20e8a83a7958695f78
       PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONPATH: ${{ github.workspace }}/src
     steps:
       - name: Check out exact Tenfold workspace head
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -38,11 +39,15 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install qualified Tenfold runtime
+      - name: Bind qualified Tenfold source runtime without modifying checkout
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --disable-pip-version-check -e .
+          python - <<'PY'
+          import tenfold
+          print(tenfold.__file__)
+          PY
+          test -z "$(git status --porcelain)"
 
       - name: Check out exact Huawei authority
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -120,4 +125,6 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$TENFOLD_HEAD"
-          test -z "$(git status --porcelain)"
+          status="$(git status --porcelain)"
+          printf '%s\n' "$status"
+          test -z "$status"
