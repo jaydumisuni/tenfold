@@ -45,7 +45,7 @@ def test_ci_installs_declared_full_test_environment_and_runs_compile_and_suite()
     assert "python -m pytest -q" in text
 
 
-def test_tf31_ci_rebuilds_from_repository_only_fresh_git_state():
+def test_tf31_ci_rebuilds_from_repository_only_fresh_git_state_and_pins_sergeant():
     text = workflow_text()
     assert "TF-31 repository-only clean-clone qualification" in text
     assert 'git init "$CLEAN"' in text
@@ -54,4 +54,5 @@ def test_tf31_ci_rebuilds_from_repository_only_fresh_git_state():
     assert 'test "$(git -C "$CLEAN" rev-parse HEAD)" = "$TENFOLD_CANDIDATE_SHA"' in text
     assert 'test -z "$(git -C "$CLEAN" status --porcelain)"' in text
     assert '"$VENV/bin/python" -m pip install "$CLEAN[dev,browser]"' in text
+    assert 'git+https://github.com/jaydumisuni/Sergeant.git@4a277cc5950aa08a98157b950c96fb88f2178c79' in text
     assert "TENFOLD_REPOSITORY_ONLY_PROOF=1" in text
