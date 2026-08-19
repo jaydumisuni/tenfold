@@ -21,6 +21,7 @@ class QualificationKind(str, Enum):
     READ_ONLY_SCALE = "read_only_scale"
     ISOLATED_MUTATION = "isolated_mutation"
     CHAOS = "chaos"
+    FULL_ENGINEERING = "full_engineering"
 
 
 @dataclass(frozen=True)
@@ -97,7 +98,30 @@ _REQUIRED = {
             "no_false_completion",
         }
     ),
+    QualificationKind.FULL_ENGINEERING: frozenset(
+        {
+            "approved_roadmap_bound",
+            "independent_derivation_assured",
+            "safe_frontier_executed",
+            "large_deterministic_labour",
+            "officer_council_reconciled",
+            "external_assurance_deterministic",
+            "failure_recovery",
+            "frozen_proven_result",
+            "model_independent",
+            "ordinary_execution_not_human_serialized",
+            "repository_only_bootstrap",
+        }
+    ),
 }
+
+
+def _missing_reason(check_id: str) -> str:
+    return f"missing-check:{check_id}"
+
+
+def _failed_reason(check: QualificationCheck) -> str:
+    return f"failed-check:{check.check_id}"
 
 
 def evaluate_qualification(report: QualificationReport) -> tuple[bool, tuple[str, ...]]:
@@ -110,11 +134,62 @@ def evaluate_qualification(report: QualificationReport) -> tuple[bool, tuple[str
         if prior is not None and prior != check:
             reasons.append(f"conflicting-check:{check.check_id}")
         seen[check.check_id] = check
-    reasons.extend(f"missing-check:{item}" for item in sorted(_REQUIRED[report.kind] - set(seen)))
-    reasons.extend(f"failed-check:{check.check_id}" for check in report.checks if not check.passed)
-    if report.kind in {QualificationKind.ISOLATED_MUTATION, QualificationKind.CHAOS} and not report.council_report_digest:
+    missing = sorted(_REQUIRED[report.kind] - set(seen))
+    reasons.extend(map(_missing_reason, missing))
+    failed = filter(lambda check: not check.passed, report.checks)
+    reasons.extend(map(_failed_reason, failed))
+    if report.kind in {
+        QualificationKind.ISOLATED_MUTATION,
+        QualificationKind.CHAOS,
+        QualificationKind.FULL_ENGINEERING,
+    } and not report.council_report_digest:
         reasons.append("missing-council-report")
+    if report.kind is QualificationKind.FULL_ENGINEERING and report.mode is not ActivationMode.QUALIFIED_FULL_ENGINEERING:
+        reasons.append("full-engineering-mode-mismatch")
     return (not reasons, tuple(dict.fromkeys(reasons)))
+
+
+@dataclass(frozen=True)
+class FullEngineeringEvidence:
+    approved_roadmap_bound: bool
+    independent_derivation_assured: bool
+    safe_frontier_executed: bool
+    deterministic_jobs_completed: int
+    deterministic_job_failures: int
+    officer_council_reconciled: bool
+    external_assurance_deterministic: bool
+    failure_recovery: bool
+    frozen_proven_result: bool
+    model_calls: int
+    human_serialization_required: bool
+    repository_only_bootstrap: bool
+    evidence_refs: tuple[str, ...] = ()
+
+
+def full_engineering_checks(evidence: FullEngineeringEvidence) -> tuple[QualificationCheck, ...]:
+    refs = tuple(sorted(set(evidence.evidence_refs)))
+    return (
+        QualificationCheck("approved_roadmap_bound", evidence.approved_roadmap_bound, refs),
+        QualificationCheck("independent_derivation_assured", evidence.independent_derivation_assured, refs),
+        QualificationCheck("safe_frontier_executed", evidence.safe_frontier_executed, refs),
+        QualificationCheck(
+            "large_deterministic_labour",
+            evidence.deterministic_jobs_completed >= 100 and evidence.deterministic_job_failures == 0,
+            refs,
+            detail=f"completed={evidence.deterministic_jobs_completed};failures={evidence.deterministic_job_failures}",
+        ),
+        QualificationCheck("officer_council_reconciled", evidence.officer_council_reconciled, refs),
+        QualificationCheck("external_assurance_deterministic", evidence.external_assurance_deterministic, refs),
+        QualificationCheck("failure_recovery", evidence.failure_recovery, refs),
+        QualificationCheck("frozen_proven_result", evidence.frozen_proven_result, refs),
+        QualificationCheck("model_independent", evidence.model_calls == 0, refs, detail=f"model_calls={evidence.model_calls}"),
+        QualificationCheck(
+            "ordinary_execution_not_human_serialized",
+            not evidence.human_serialization_required,
+            refs,
+        ),
+        QualificationCheck("repository_only_bootstrap", evidence.repository_only_bootstrap, refs),
+    )
 
 
 @dataclass(frozen=True)
@@ -130,7 +205,7 @@ class ShadowComparison:
 
 def shadow_checks(comparison: ShadowComparison) -> tuple[QualificationCheck, ...]:
     def pairs(items: tuple[tuple[str, str], ...]) -> set[tuple[str, str]]:
-        return {tuple(sorted(pair)) for pair in items}
+        return set(map(lambda pair: tuple(sorted(pair)), items))
 
     return (
         QualificationCheck("derivation_matches_blueprint", comparison.derivation_passed),
@@ -164,20 +239,19 @@ def scale_checks(
     *,
     max_coordinator_items: int = 100,
 ) -> tuple[QualificationCheck, ...]:
-    by_target = {sample.target: sample for sample in samples}
+    by_target = dict(map(lambda sample: (sample.target, sample), samples))
     checks: list[QualificationCheck] = []
     for target in (20, 50, 100, 500):
         sample = by_target.get(target)
         passed = bool(sample and sample.completed == target and sample.failures == 0)
         detail = "missing sample" if sample is None else f"completed={sample.completed};failures={sample.failures}"
         checks.append(QualificationCheck(f"scale_{target}", passed, detail=detail))
-    checks.append(QualificationCheck("no_mutation", all(not sample.mutated for sample in samples)))
-    checks.append(
-        QualificationCheck(
-            "bounded_information",
-            all(sample.coordinator_items <= max_coordinator_items for sample in samples),
-        )
+    no_mutation = all(map(lambda sample: not sample.mutated, samples))
+    checks.append(QualificationCheck("no_mutation", no_mutation))
+    bounded_information = all(
+        map(lambda sample: sample.coordinator_items <= max_coordinator_items, samples)
     )
+    checks.append(QualificationCheck("bounded_information", bounded_information))
     return tuple(checks)
 
 
@@ -190,7 +264,7 @@ class ChaosCase:
 
 
 def chaos_checks(cases: tuple[ChaosCase, ...]) -> tuple[QualificationCheck, ...]:
-    by_event = {case.event: case for case in cases}
+    by_event = dict(map(lambda case: (case.event, case), cases))
     required = (
         "foreman_crash",
         "worker_crash",
@@ -215,6 +289,8 @@ def chaos_checks(cases: tuple[ChaosCase, ...]) -> tuple[QualificationCheck, ...]
                 detail="missing case" if case is None else ("recovered" if case.recovered else "not recovered"),
             )
         )
-    checks.append(QualificationCheck("no_authority_leakage", all(not case.authority_leakage for case in cases)))
-    checks.append(QualificationCheck("no_false_completion", all(not case.false_completion for case in cases)))
+    no_authority_leakage = all(map(lambda case: not case.authority_leakage, cases))
+    no_false_completion = all(map(lambda case: not case.false_completion, cases))
+    checks.append(QualificationCheck("no_authority_leakage", no_authority_leakage))
+    checks.append(QualificationCheck("no_false_completion", no_false_completion))
     return tuple(checks)
