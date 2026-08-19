@@ -11,12 +11,9 @@ import pytest
 from tenfold.assurance import FOUNDING_MATRIX
 from tenfold.assurance_adapters import (
     AssuranceVerdict,
-    ExternalAssuranceResponse,
-    SecOpsAssuranceAdapter,
+    SergeantMilestoneAdapter,
     freeze_assurance_request,
-    missing_mandatory_assurance,
     required_assurance_for_milestone,
-    satisfaction_record,
 )
 from tenfold.contracts import (
     AssuranceBinding,
@@ -46,6 +43,7 @@ from tenfold.qualification import (
 )
 from tenfold.recovery import recover_frontier_snapshot, takeover
 from tenfold.scheduler import ResourceCapacity, ResourceScheduler, WorkItem
+from tenfold.sergeant_transport import MappingReviewMaterialResolver, SergeantAppReviewTransport
 from tenfold.workers import JobKind, LocalWorkerRuntime, ResourceRequest, WorkerJob, WorkerSpec
 from tenfold.workforce import LocalWorkforce
 
@@ -55,6 +53,8 @@ _ROADMAP_TARGET = (
     "Tenfold can take an approved roadmap, derive and independently assure the campaign"
 )
 _ROADMAP_MODE6 = "Mode 6 — qualified full engineering campaigns"
+_SERGEANT_SHA = "4a277cc5950aa08a98157b950c96fb88f2178c79"
+_SERGEANT_AUTHORITY = f"0.4.1@{_SERGEANT_SHA}"
 
 
 def _root() -> Path:
@@ -103,7 +103,7 @@ def blueprint(source_sha: str) -> BlueprintManifest:
 
 
 def campaign(bp: BlueprintManifest, source_sha: str) -> CampaignManifest:
-    attrs = ("security",)
+    attrs: tuple[str, ...] = ()
     return CampaignManifest(
         "tf31-full-engineering",
         1,
@@ -233,22 +233,6 @@ class AssuranceSnapshot:
     gates: tuple = ()
 
 
-class IndependentSecOpsTransport:
-    def __init__(self):
-        self.requests = []
-
-    def review(self, request):
-        self.requests.append(request)
-        return ExternalAssuranceResponse(
-            request.digest,
-            "sec_ops",
-            "tf31-independent-protocol-v1",
-            AssuranceVerdict.PASS,
-            evidence_refs=request.evidence_refs,
-            independent=True,
-        )
-
-
 def prove_recovery(tmp_path: Path, manifest: CampaignManifest) -> bool:
     store = DurableCampaignStore(tmp_path / "recovery.db")
     initial = store.create(CampaignSnapshot.from_campaign(manifest))
@@ -269,6 +253,49 @@ def repository_only_proof_active(source_sha: str) -> bool:
         and expected == source_sha
         and repository_head() == source_sha
     )
+
+
+def independent_sergeant_review(
+    snapshot: AssuranceSnapshot,
+    manifest: CampaignManifest,
+    packet: EvidencePacket,
+    council,
+):
+    council_digest = canonical_digest(council)
+    request = freeze_assurance_request(
+        snapshot,
+        manifest,
+        FOUNDING_MATRIX,
+        request_id="tf31-sergeant",
+        milestone_id="TF-31",
+        assurance_id="sergeant",
+        authority_id="sergeant",
+        evidence_refs=(packet.digest, council_digest),
+        question="Independently attack the frozen TF-31 engineering qualification package.",
+    )
+    resolver = MappingReviewMaterialResolver(
+        {packet.digest: packet, council_digest: council}
+    )
+    transport = SergeantAppReviewTransport(
+        repository_root=_root(),
+        resolver=resolver,
+        authority_version=_SERGEANT_AUTHORITY,
+        changed_files=(
+            ".github/workflows/ci.yml",
+            "PICKUP.md",
+            "src/tenfold/qualification.py",
+            "tests/test_ci_contract.py",
+            "tests/test_tf31_full_qualification.py",
+        ),
+    )
+    verified = SergeantMilestoneAdapter(transport).review(request)
+    assert verified.verdict is AssuranceVerdict.PASS
+    assert verified.eligible_for_satisfaction
+    assert not verified.mandatory
+    assert not verified.grants_authority
+    assert verified.authority_id == "sergeant"
+    assert verified.authority_version == _SERGEANT_AUTHORITY
+    return request, verified
 
 
 @pytest.mark.skipif(
@@ -321,32 +348,11 @@ def test_tf31_qualifies_complete_model_free_engineering_campaign(tmp_path):
         (council_digest,),
     )
     assert required_assurance_for_milestone(snapshot, manifest, FOUNDING_MATRIX, "TF-31") == (
-        "sec_ops",
         "tenfold_council",
     )
-    assert missing_mandatory_assurance(snapshot, manifest, FOUNDING_MATRIX, "TF-31") == (
-        "sec_ops",
+    sergeant_request, sergeant = independent_sergeant_review(
+        snapshot, manifest, packets[0], council
     )
-
-    request = freeze_assurance_request(
-        snapshot,
-        manifest,
-        FOUNDING_MATRIX,
-        request_id="tf31-secops",
-        milestone_id="TF-31",
-        assurance_id="sec_ops",
-        authority_id="sec_ops",
-        evidence_refs=(packets[0].digest, council_digest),
-        question="Attack the frozen TF-31 evidence package.",
-    )
-    transport = IndependentSecOpsTransport()
-    verified = SecOpsAssuranceAdapter(transport).review(request)
-    satisfaction = satisfaction_record(verified)
-    assert transport.requests == [request]
-    assert verified.eligible_for_satisfaction and not verified.grants_authority
-    assert missing_mandatory_assurance(
-        snapshot, manifest, FOUNDING_MATRIX, "TF-31", satisfactions=(satisfaction,)
-    ) == ()
 
     recovered = prove_recovery(tmp_path, manifest)
     for state in (
@@ -371,7 +377,8 @@ def test_tf31_qualifies_complete_model_free_engineering_campaign(tmp_path):
         manifest.digest,
         canonical_digest(derivation),
         council_digest,
-        verified.response_digest,
+        sergeant_request.digest,
+        sergeant.response_digest,
     )
     evidence = FullEngineeringEvidence(
         approved_roadmap_bound=(
@@ -385,7 +392,9 @@ def test_tf31_qualifies_complete_model_free_engineering_campaign(tmp_path):
         deterministic_job_failures=len(result.failures),
         officer_council_reconciled=council.accepted_for_rebrief,
         external_assurance_deterministic=(
-            transport.requests == [request] and verified.eligible_for_satisfaction
+            sergeant.verdict is AssuranceVerdict.PASS
+            and sergeant.authority_id == "sergeant"
+            and sergeant.authority_version == _SERGEANT_AUTHORITY
         ),
         failure_recovery=recovered,
         frozen_proven_result=foreman.runtime.states["EXECUTE"] is NodeState.PROVEN,
