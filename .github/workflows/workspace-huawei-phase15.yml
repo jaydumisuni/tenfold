@@ -43,26 +43,33 @@ jobs:
           set -euo pipefail
           python -m pip install --disable-pip-version-check -e .
 
-      - name: Recover exact Huawei and Builder authority
+      - name: Check out exact Huawei authority
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: jaydumisuni/TECHGUYTOOL-Huawei
+          ref: ${{ env.HUAWEI_HEAD }}
+          path: .workspace-authority/huawei
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out exact Builder authority
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: jaydumisuni/thetechguy-software-builder
+          ref: ${{ env.BUILDER_HEAD }}
+          path: .workspace-authority/builder
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Assert exact authority heads and clean inputs
         shell: bash
         run: |
           set -euo pipefail
-          AUTHORITY="$RUNNER_TEMP/huawei-phase15-authority"
-          rm -rf "$AUTHORITY"
-          mkdir -p "$AUTHORITY"
-
-          git init -q "$AUTHORITY/huawei"
-          git -C "$AUTHORITY/huawei" fetch -q --no-tags --depth=1 https://github.com/jaydumisuni/TECHGUYTOOL-Huawei.git "$HUAWEI_HEAD"
-          git -C "$AUTHORITY/huawei" checkout -q --detach FETCH_HEAD
+          AUTHORITY="$GITHUB_WORKSPACE/.workspace-authority"
           test "$(git -C "$AUTHORITY/huawei" rev-parse HEAD)" = "$HUAWEI_HEAD"
           test -z "$(git -C "$AUTHORITY/huawei" status --porcelain)"
-
-          git init -q "$AUTHORITY/builder"
-          git -C "$AUTHORITY/builder" fetch -q --no-tags --depth=1 https://github.com/jaydumisuni/thetechguy-software-builder.git "$BUILDER_HEAD"
-          git -C "$AUTHORITY/builder" checkout -q --detach FETCH_HEAD
           test "$(git -C "$AUTHORITY/builder" rev-parse HEAD)" = "$BUILDER_HEAD"
           test -z "$(git -C "$AUTHORITY/builder" status --porcelain)"
-
           printf '%s\n' "$AUTHORITY" > "$RUNNER_TEMP/huawei-phase15-authority-root"
 
       - name: Execute real Tenfold Huawei campaign
@@ -97,6 +104,10 @@ jobs:
           test -z "$(git -C "$AUTHORITY/huawei" status --porcelain)"
           test "$(git -C "$AUTHORITY/builder" rev-parse HEAD)" = "$BUILDER_HEAD"
           test -z "$(git -C "$AUTHORITY/builder" status --porcelain)"
+
+      - name: Remove construction-only authority checkouts
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/.workspace-authority"
 
       - name: Prove Tenfold workspace remained clean
         shell: bash
