@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .durability import DurableCampaignStore
+from .ownership import LeaseRegistry
 from .persistence import CampaignSnapshot, campaign_from_payload
 
 
@@ -26,6 +27,13 @@ def validate_command(snapshot: CampaignSnapshot, fence: CommandFence) -> None:
         raise StaleCommand("stale campaign revision")
 
 
+def validate_live_command(store: DurableCampaignStore, fence: CommandFence) -> CampaignSnapshot:
+    """Validate a command against live durable authority, never caller-held state."""
+    snapshot = store.read(fence.campaign_id)
+    validate_command(snapshot, fence)
+    return snapshot
+
+
 def takeover(store: DurableCampaignStore, campaign_id: str, expected_revision: int) -> CampaignSnapshot:
     """Advance the Foreman epoch through the authoritative fenced transition."""
     return store.takeover_epoch(campaign_id, expected_revision)
@@ -38,3 +46,8 @@ def recover_frontier_snapshot(snapshot: CampaignSnapshot) -> dict[str, tuple[str
     campaign = campaign_from_payload(snapshot)
     foreman = Foreman.restore(campaign, snapshot.state_map())
     return foreman.frontier()
+
+
+def recover_lease_registry(snapshot: CampaignSnapshot) -> LeaseRegistry:
+    """Rebuild complete write/resource ownership from durable lease authority."""
+    return LeaseRegistry.restore(snapshot.leases)

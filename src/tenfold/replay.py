@@ -105,6 +105,8 @@ class DirtyRecoveryDecision:
 
 
 class ReplayLedger:
+    """Durable replay storage primitive. Authority-bearing use goes through AuthorizedReplayLedger."""
+
     def __init__(self, path: str | Path):
         self.path = str(path)
         self._initialize()
@@ -140,7 +142,11 @@ class ReplayLedger:
                 CREATE TABLE IF NOT EXISTS operations (
                     idempotency_key TEXT PRIMARY KEY,
                     operation_id TEXT NOT NULL UNIQUE,
+                    campaign_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
                     assignment_id TEXT NOT NULL,
+                    attempt INTEGER NOT NULL,
+                    side_effect_class TEXT NOT NULL,
                     identity_digest TEXT NOT NULL,
                     status TEXT NOT NULL,
                     artifact_digests TEXT NOT NULL
@@ -156,6 +162,20 @@ class ReplayLedger:
                 );
                 """
             )
+            self._migrate_legacy_operations(connection)
+
+    @staticmethod
+    def _migrate_legacy_operations(connection: sqlite3.Connection) -> None:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(operations)")}
+        additions = {
+            "campaign_id": "TEXT NOT NULL DEFAULT ''",
+            "task_id": "TEXT NOT NULL DEFAULT ''",
+            "attempt": "INTEGER NOT NULL DEFAULT 0",
+            "side_effect_class": "TEXT NOT NULL DEFAULT ''",
+        }
+        for name, declaration in additions.items():
+            if name not in columns:
+                connection.execute(f"ALTER TABLE operations ADD COLUMN {name} {declaration}")
 
     def register_dispatch(self, task: TaskPacket) -> str:
         if not task.dispatch_digest:
@@ -190,9 +210,7 @@ class ReplayLedger:
                 raise ReplayConflict("evidence does not match authorized dispatch")
             if current_epoch is not None and packet.dispatch_epoch > current_epoch:
                 raise ReplayConflict("evidence claims a future Foreman epoch")
-            existing_packet = connection.execute(
-                "SELECT digest FROM evidence WHERE packet_id = ?", (packet.packet_id,)
-            ).fetchone()
+            existing_packet = connection.execute("SELECT digest FROM evidence WHERE packet_id = ?", (packet.packet_id,)).fetchone()
             if existing_packet:
                 if existing_packet[0] == digest:
                     return "duplicate"
@@ -213,6 +231,40 @@ class ReplayLedger:
             return "accepted_late"
         return "accepted"
 
+    @staticmethod
+    def _operation_identity_tuple(record: OperationRecord) -> tuple:
+        return (
+            record.operation_id,
+            record.campaign_id,
+            record.task_id,
+            record.assignment_id,
+            record.attempt,
+            record.side_effect_class.value,
+            record.identity_digest,
+        )
+
+    @staticmethod
+    def _operation_from_row(row) -> OperationRecord:
+        if not row:
+            raise ReplayConflict("operation record missing")
+        operation_id, campaign_id, task_id, assignment_id, attempt, side_effect_class, idempotency_key, status, artifact_json, identity_digest = row
+        if not campaign_id or not task_id or not side_effect_class:
+            raise ReplayConflict("legacy operation lacks complete recovery authority")
+        record = OperationRecord(
+            operation_id,
+            campaign_id,
+            task_id,
+            assignment_id,
+            attempt,
+            SideEffectClass(side_effect_class),
+            idempotency_key,
+            OperationStatus(status),
+            tuple(json.loads(artifact_json)),
+        )
+        if record.identity_digest != identity_digest:
+            raise ReplayConflict("persisted operation identity digest mismatch")
+        return record
+
     def begin_operation(self, record: OperationRecord) -> str:
         if record.normalized_status is not OperationStatus.STARTED:
             raise ReplayConflict("new operation must begin in started state")
@@ -220,39 +272,65 @@ class ReplayLedger:
             raise ReplayConflict("new operation cannot begin with completed artifacts")
         with self._connect() as connection:
             existing = connection.execute(
-                "SELECT identity_digest, status, artifact_digests FROM operations WHERE idempotency_key = ?",
+                "SELECT operation_id, campaign_id, task_id, assignment_id, attempt, side_effect_class, identity_digest, status, artifact_digests FROM operations WHERE idempotency_key = ?",
                 (record.idempotency_key,),
             ).fetchone()
             if existing:
-                if existing[0] != record.identity_digest:
+                expected = self._operation_identity_tuple(record)
+                actual = existing[:6] + (existing[6],)
+                if actual != expected:
                     raise ReplayConflict("idempotency key reused for different operation")
-                if tuple(json.loads(existing[2])) != record.artifact_digests:
+                if tuple(json.loads(existing[8])) != record.artifact_digests:
                     raise ReplayConflict("idempotent operation artifact set changed")
-                return existing[1]
+                return existing[7]
             connection.execute(
-                "INSERT INTO operations(idempotency_key, operation_id, assignment_id, identity_digest, status, artifact_digests) VALUES (?, ?, ?, ?, ?, ?)",
-                (record.idempotency_key, record.operation_id, record.assignment_id, record.identity_digest, record.normalized_status.value, json.dumps(record.artifact_digests)),
+                """INSERT INTO operations(
+                    idempotency_key, operation_id, campaign_id, task_id, assignment_id, attempt,
+                    side_effect_class, identity_digest, status, artifact_digests
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    record.idempotency_key, record.operation_id, record.campaign_id, record.task_id,
+                    record.assignment_id, record.attempt, record.side_effect_class.value,
+                    record.identity_digest, record.normalized_status.value, json.dumps(record.artifact_digests),
+                ),
             )
         return record.normalized_status.value
 
-    def update_operation(self, record: OperationRecord) -> str:
+    def operation_record(self, idempotency_key: str) -> OperationRecord | None:
         with self._connect() as connection:
-            existing = connection.execute(
-                "SELECT identity_digest, status, artifact_digests FROM operations WHERE idempotency_key = ?",
-                (record.idempotency_key,),
+            row = connection.execute(
+                """SELECT operation_id, campaign_id, task_id, assignment_id, attempt, side_effect_class,
+                          idempotency_key, status, artifact_digests, identity_digest
+                     FROM operations WHERE idempotency_key = ?""",
+                (idempotency_key,),
             ).fetchone()
-            if not existing:
-                raise ReplayConflict("operation was not started")
-            if existing[0] != record.identity_digest:
-                raise ReplayConflict("operation identity changed during lifecycle")
-            current = OperationStatus(existing[1])
-            target = record.normalized_status
-            if target is current:
-                if tuple(json.loads(existing[2])) != record.artifact_digests:
-                    raise ReplayConflict("same operation state presented with different artifact set")
-                return current.value
-            if target not in ALLOWED_OPERATION_TRANSITIONS[current]:
-                raise ReplayConflict(f"illegal operation transition: {current.value}->{target.value}")
+        return None if row is None else self._operation_from_row(row)
+
+    def operation_by_id(self, operation_id: str) -> OperationRecord | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT operation_id, campaign_id, task_id, assignment_id, attempt, side_effect_class,
+                          idempotency_key, status, artifact_digests, identity_digest
+                     FROM operations WHERE operation_id = ?""",
+                (operation_id,),
+            ).fetchone()
+        return None if row is None else self._operation_from_row(row)
+
+    def update_operation(self, record: OperationRecord) -> str:
+        current_record = self.operation_record(record.idempotency_key)
+        if current_record is None:
+            raise ReplayConflict("operation was not started")
+        if current_record.identity_digest != record.identity_digest:
+            raise ReplayConflict("operation identity changed during lifecycle")
+        current = current_record.normalized_status
+        target = record.normalized_status
+        if target is current:
+            if current_record.artifact_digests != record.artifact_digests:
+                raise ReplayConflict("same operation state presented with different artifact set")
+            return current.value
+        if target not in ALLOWED_OPERATION_TRANSITIONS[current]:
+            raise ReplayConflict(f"illegal operation transition: {current.value}->{target.value}")
+        with self._connect() as connection:
             if target in {OperationStatus.COMPLETED, OperationStatus.ADOPTED} and record.artifact_digests:
                 registered = {
                     row[0]
@@ -273,21 +351,15 @@ class ReplayLedger:
     def record_artifact(self, artifact: ArtifactRecord) -> str:
         if not artifact.content_digest:
             raise ReplayConflict("artifact content digest required")
+        operation = self.operation_by_id(artifact.operation_id)
+        if operation is None:
+            raise ReplayConflict("artifact references unknown operation")
+        if operation.assignment_id != artifact.producer_assignment_id:
+            raise ReplayConflict("artifact producer does not match operation assignment")
+        if operation.normalized_status not in {OperationStatus.STARTED, OperationStatus.DIRTY_UNKNOWN}:
+            raise ReplayConflict("artifact cannot be attached after operation became terminal")
         with self._connect() as connection:
-            operation = connection.execute(
-                "SELECT assignment_id, status FROM operations WHERE operation_id = ?",
-                (artifact.operation_id,),
-            ).fetchone()
-            if operation is None:
-                raise ReplayConflict("artifact references unknown operation")
-            if operation[0] != artifact.producer_assignment_id:
-                raise ReplayConflict("artifact producer does not match operation assignment")
-            if OperationStatus(operation[1]) not in {OperationStatus.STARTED, OperationStatus.DIRTY_UNKNOWN}:
-                raise ReplayConflict("artifact cannot be attached after operation became terminal")
-            existing = connection.execute(
-                "SELECT record_digest FROM artifacts WHERE artifact_id = ?",
-                (artifact.artifact_id,),
-            ).fetchone()
+            existing = connection.execute("SELECT record_digest FROM artifacts WHERE artifact_id = ?", (artifact.artifact_id,)).fetchone()
             if existing:
                 if existing[0] == artifact.digest:
                     return "duplicate"
@@ -304,16 +376,11 @@ class ReplayLedger:
                 "SELECT content_digest, producer_assignment_id, source_binding, environment_identity, operation_id FROM artifacts WHERE artifact_id = ?",
                 (artifact_id,),
             ).fetchone()
-        if row is None:
-            return None
-        return ArtifactRecord(artifact_id, *row)
+        return None if row is None else ArtifactRecord(artifact_id, *row)
 
     def operation_status(self, idempotency_key: str) -> str | None:
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT status FROM operations WHERE idempotency_key = ?", (idempotency_key,)
-            ).fetchone()
-        return None if row is None else row[0]
+        record = self.operation_record(idempotency_key)
+        return None if record is None else record.normalized_status.value
 
 
 def retry_allowed(side_effect_class: SideEffectClass, *, provider_idempotency_proven: bool = False) -> bool:
@@ -325,10 +392,7 @@ def retry_allowed(side_effect_class: SideEffectClass, *, provider_idempotency_pr
 
 
 def recover_dirty_state(
-    *,
-    process_completed: bool | None,
-    artifacts_verified: bool,
-    rollback_available: bool,
+    *, process_completed: bool | None, artifacts_verified: bool, rollback_available: bool,
     side_effect_class: SideEffectClass,
 ) -> DirtyRecoveryDecision:
     if process_completed is True and artifacts_verified:
