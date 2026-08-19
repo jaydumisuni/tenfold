@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from enum import Enum
 from hashlib import sha256
 import json
@@ -223,15 +223,28 @@ class CouplingAssuranceRecord:
 
 
 @dataclass(frozen=True)
+class AdviceClaim:
+    claim: str
+    evidence_refs: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class AdvicePacket:
     consultation_id: str
     campaign_id: str
+    campaign_generation: int
+    milestone_id: str
     milestone_generation: int
+    source_binding: str
     question: str
-    claims: tuple[str, ...] = ()
+    claims: tuple[AdviceClaim, ...] = ()
     hypotheses: tuple[str, ...] = ()
     proposals: tuple[str, ...] = ()
     blueprint_proposals: tuple[str, ...] = ()
     evidence_refs: tuple[str, ...] = ()
     assumptions: tuple[str, ...] = ()
     uncertainty: tuple[str, ...] = ()
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(self)
