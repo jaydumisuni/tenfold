@@ -4,7 +4,8 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - "workspace/huawei_phase15_campaign.py"
+      - "workspace/huawei_phase15_campaign_v2.py"
+      - "workspace/authority/huawei_phase15_builder/**"
       - ".github/workflows/workspace-huawei-phase15.yml"
 
 permissions:
@@ -52,24 +53,28 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Check out exact Builder authority
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          repository: jaydumisuni/thetechguy-software-builder
-          ref: ${{ env.BUILDER_HEAD }}
-          path: .workspace-authority/builder
-          fetch-depth: 1
-          persist-credentials: false
+      - name: Materialize exact private Builder authority snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.workspace-authority/builder"
+          cp -a "$GITHUB_WORKSPACE/workspace/authority/huawei_phase15_builder/." "$GITHUB_WORKSPACE/.workspace-authority/builder/"
 
-      - name: Assert exact authority heads and clean inputs
+      - name: Assert exact Huawei head and snapshot identity
         shell: bash
         run: |
           set -euo pipefail
           AUTHORITY="$GITHUB_WORKSPACE/.workspace-authority"
           test "$(git -C "$AUTHORITY/huawei" rev-parse HEAD)" = "$HUAWEI_HEAD"
           test -z "$(git -C "$AUTHORITY/huawei" status --porcelain)"
-          test "$(git -C "$AUTHORITY/builder" rev-parse HEAD)" = "$BUILDER_HEAD"
-          test -z "$(git -C "$AUTHORITY/builder" status --porcelain)"
+          python - "$AUTHORITY/builder/manifest.json" "$BUILDER_HEAD" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert data['schema'] == 'tenfold.workspace-authority-snapshot.v1'
+          assert data['construction_only'] is True
+          assert data['repository'] == 'jaydumisuni/thetechguy-software-builder'
+          assert data['head'] == sys.argv[2]
+          PY
           printf '%s\n' "$AUTHORITY" > "$RUNNER_TEMP/huawei-phase15-authority-root"
 
       - name: Execute real Tenfold Huawei campaign
@@ -78,7 +83,7 @@ jobs:
           set -euo pipefail
           AUTHORITY="$(cat "$RUNNER_TEMP/huawei-phase15-authority-root")"
           OUT="$RUNNER_TEMP/huawei-phase15-tenfold.json"
-          python workspace/huawei_phase15_campaign.py --authority-root "$AUTHORITY" --output "$OUT" | tee "$RUNNER_TEMP/huawei-phase15-tenfold.log"
+          python workspace/huawei_phase15_campaign_v2.py --authority-root "$AUTHORITY" --output "$OUT" | tee "$RUNNER_TEMP/huawei-phase15-tenfold.log"
           grep -q 'TENFOLD_HUAWEI_PHASE15_CAMPAIGN_OK' "$RUNNER_TEMP/huawei-phase15-tenfold.log"
           python - "$OUT" <<'PY'
           import json, sys
@@ -88,6 +93,7 @@ jobs:
           assert data['authority_council']['accepted_for_rebrief'] is True
           assert data['static_contract_failures'] == []
           assert data['shadow_campaign_retired'] is True
+          assert data['builder']['source'] == 'construction_only_exact_blob_snapshot'
           assert data['frontier']['ready'] == ['ORACLE_LIVE']
           assert set(data['frontier']['blocked']) == {
               'BUILDER_PLAN', 'FINAL_BUILD', 'PHASE15_REFREEZE', 'RUNTIME_PROOF', 'SOURCE_UI'
@@ -95,17 +101,15 @@ jobs:
           print(json.dumps(data, indent=2, sort_keys=True))
           PY
 
-      - name: Prove product repositories remained clean
+      - name: Prove Huawei authority remained clean
         shell: bash
         run: |
           set -euo pipefail
           AUTHORITY="$(cat "$RUNNER_TEMP/huawei-phase15-authority-root")"
           test "$(git -C "$AUTHORITY/huawei" rev-parse HEAD)" = "$HUAWEI_HEAD"
           test -z "$(git -C "$AUTHORITY/huawei" status --porcelain)"
-          test "$(git -C "$AUTHORITY/builder" rev-parse HEAD)" = "$BUILDER_HEAD"
-          test -z "$(git -C "$AUTHORITY/builder" status --porcelain)"
 
-      - name: Remove construction-only authority checkouts
+      - name: Remove construction-only authority materialization
         shell: bash
         run: rm -rf "$GITHUB_WORKSPACE/.workspace-authority"
 
