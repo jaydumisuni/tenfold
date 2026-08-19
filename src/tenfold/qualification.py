@@ -116,6 +116,14 @@ _REQUIRED = {
 }
 
 
+def _missing_reason(check_id: str) -> str:
+    return f"missing-check:{check_id}"
+
+
+def _failed_reason(check: QualificationCheck) -> str:
+    return f"failed-check:{check.check_id}"
+
+
 def evaluate_qualification(report: QualificationReport) -> tuple[bool, tuple[str, ...]]:
     reasons: list[str] = []
     if not report.campaign_id or report.campaign_generation < 1 or not report.source_binding:
@@ -126,8 +134,10 @@ def evaluate_qualification(report: QualificationReport) -> tuple[bool, tuple[str
         if prior is not None and prior != check:
             reasons.append(f"conflicting-check:{check.check_id}")
         seen[check.check_id] = check
-    reasons.extend(f"missing-check:{item}" for item in sorted(_REQUIRED[report.kind] - set(seen)))
-    reasons.extend(f"failed-check:{check.check_id}" for check in report.checks if not check.passed)
+    missing = sorted(_REQUIRED[report.kind] - set(seen))
+    reasons.extend(map(_missing_reason, missing))
+    failed = filter(lambda check: not check.passed, report.checks)
+    reasons.extend(map(_failed_reason, failed))
     if report.kind in {
         QualificationKind.ISOLATED_MUTATION,
         QualificationKind.CHAOS,
@@ -195,7 +205,7 @@ class ShadowComparison:
 
 def shadow_checks(comparison: ShadowComparison) -> tuple[QualificationCheck, ...]:
     def pairs(items: tuple[tuple[str, str], ...]) -> set[tuple[str, str]]:
-        return {tuple(sorted(pair)) for pair in items}
+        return set(map(lambda pair: tuple(sorted(pair)), items))
 
     return (
         QualificationCheck("derivation_matches_blueprint", comparison.derivation_passed),
@@ -229,20 +239,19 @@ def scale_checks(
     *,
     max_coordinator_items: int = 100,
 ) -> tuple[QualificationCheck, ...]:
-    by_target = {sample.target: sample for sample in samples}
+    by_target = dict(map(lambda sample: (sample.target, sample), samples))
     checks: list[QualificationCheck] = []
     for target in (20, 50, 100, 500):
         sample = by_target.get(target)
         passed = bool(sample and sample.completed == target and sample.failures == 0)
         detail = "missing sample" if sample is None else f"completed={sample.completed};failures={sample.failures}"
         checks.append(QualificationCheck(f"scale_{target}", passed, detail=detail))
-    checks.append(QualificationCheck("no_mutation", all(not sample.mutated for sample in samples)))
-    checks.append(
-        QualificationCheck(
-            "bounded_information",
-            all(sample.coordinator_items <= max_coordinator_items for sample in samples),
-        )
+    no_mutation = all(map(lambda sample: not sample.mutated, samples))
+    checks.append(QualificationCheck("no_mutation", no_mutation))
+    bounded_information = all(
+        map(lambda sample: sample.coordinator_items <= max_coordinator_items, samples)
     )
+    checks.append(QualificationCheck("bounded_information", bounded_information))
     return tuple(checks)
 
 
@@ -255,7 +264,7 @@ class ChaosCase:
 
 
 def chaos_checks(cases: tuple[ChaosCase, ...]) -> tuple[QualificationCheck, ...]:
-    by_event = {case.event: case for case in cases}
+    by_event = dict(map(lambda case: (case.event, case), cases))
     required = (
         "foreman_crash",
         "worker_crash",
@@ -280,6 +289,8 @@ def chaos_checks(cases: tuple[ChaosCase, ...]) -> tuple[QualificationCheck, ...]
                 detail="missing case" if case is None else ("recovered" if case.recovered else "not recovered"),
             )
         )
-    checks.append(QualificationCheck("no_authority_leakage", all(not case.authority_leakage for case in cases)))
-    checks.append(QualificationCheck("no_false_completion", all(not case.false_completion for case in cases)))
+    no_authority_leakage = all(map(lambda case: not case.authority_leakage, cases))
+    no_false_completion = all(map(lambda case: not case.false_completion, cases))
+    checks.append(QualificationCheck("no_authority_leakage", no_authority_leakage))
+    checks.append(QualificationCheck("no_false_completion", no_false_completion))
     return tuple(checks)
