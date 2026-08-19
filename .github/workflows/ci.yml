@@ -56,6 +56,6 @@ jobs:
           "$VENV/bin/python" -m pip install "git+https://github.com/jaydumisuni/Sergeant.git@4a277cc5950aa08a98157b950c96fb88f2178c79"
           (
             cd "$CLEAN"
-            TENFOLD_REPOSITORY_ONLY_PROOF=1 "$VENV/bin/python" -m compileall -q src
-            TENFOLD_REPOSITORY_ONLY_PROOF=1 "$VENV/bin/python" -m pytest -q
+            PATH="$VENV/bin:$PATH" TENFOLD_REPOSITORY_ONLY_PROOF=1 "$VENV/bin/python" -m compileall -q src
+            PATH="$VENV/bin:$PATH" TENFOLD_REPOSITORY_ONLY_PROOF=1 "$VENV/bin/python" -m pytest -q
           )
