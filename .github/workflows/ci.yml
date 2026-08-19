@@ -37,3 +37,24 @@ jobs:
 
       - name: Run full test suite
         run: python -m pytest -q
+
+      - name: TF-31 repository-only clean-clone qualification
+        env:
+          TENFOLD_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          CLEAN="$RUNNER_TEMP/tenfold-tf31-clean"
+          VENV="$RUNNER_TEMP/tenfold-tf31-venv"
+          rm -rf "$CLEAN" "$VENV"
+          git init "$CLEAN"
+          git -C "$CLEAN" fetch --no-tags --depth=1 "$GITHUB_WORKSPACE" "$TENFOLD_CANDIDATE_SHA"
+          git -C "$CLEAN" checkout --detach FETCH_HEAD
+          test "$(git -C "$CLEAN" rev-parse HEAD)" = "$TENFOLD_CANDIDATE_SHA"
+          test -z "$(git -C "$CLEAN" status --porcelain)"
+          python -m venv "$VENV"
+          "$VENV/bin/python" -m pip install --upgrade pip
+          "$VENV/bin/python" -m pip install "$CLEAN[dev,browser]"
+          (
+            cd "$CLEAN"
+            TENFOLD_REPOSITORY_ONLY_PROOF=1 "$VENV/bin/python" -m compileall -q src
+            TENFOLD_REPOSITORY_ONLY_PROOF=1 "$VENV/bin/python" -m pytest -q
+          )

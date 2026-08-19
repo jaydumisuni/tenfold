@@ -21,6 +21,7 @@ class QualificationKind(str, Enum):
     READ_ONLY_SCALE = "read_only_scale"
     ISOLATED_MUTATION = "isolated_mutation"
     CHAOS = "chaos"
+    FULL_ENGINEERING = "full_engineering"
 
 
 @dataclass(frozen=True)
@@ -97,6 +98,21 @@ _REQUIRED = {
             "no_false_completion",
         }
     ),
+    QualificationKind.FULL_ENGINEERING: frozenset(
+        {
+            "approved_roadmap_bound",
+            "independent_derivation_assured",
+            "safe_frontier_executed",
+            "large_deterministic_labour",
+            "officer_council_reconciled",
+            "external_assurance_deterministic",
+            "failure_recovery",
+            "frozen_proven_result",
+            "model_independent",
+            "ordinary_execution_not_human_serialized",
+            "repository_only_bootstrap",
+        }
+    ),
 }
 
 
@@ -112,9 +128,58 @@ def evaluate_qualification(report: QualificationReport) -> tuple[bool, tuple[str
         seen[check.check_id] = check
     reasons.extend(f"missing-check:{item}" for item in sorted(_REQUIRED[report.kind] - set(seen)))
     reasons.extend(f"failed-check:{check.check_id}" for check in report.checks if not check.passed)
-    if report.kind in {QualificationKind.ISOLATED_MUTATION, QualificationKind.CHAOS} and not report.council_report_digest:
+    if report.kind in {
+        QualificationKind.ISOLATED_MUTATION,
+        QualificationKind.CHAOS,
+        QualificationKind.FULL_ENGINEERING,
+    } and not report.council_report_digest:
         reasons.append("missing-council-report")
+    if report.kind is QualificationKind.FULL_ENGINEERING and report.mode is not ActivationMode.QUALIFIED_FULL_ENGINEERING:
+        reasons.append("full-engineering-mode-mismatch")
     return (not reasons, tuple(dict.fromkeys(reasons)))
+
+
+@dataclass(frozen=True)
+class FullEngineeringEvidence:
+    approved_roadmap_bound: bool
+    independent_derivation_assured: bool
+    safe_frontier_executed: bool
+    deterministic_jobs_completed: int
+    deterministic_job_failures: int
+    officer_council_reconciled: bool
+    external_assurance_deterministic: bool
+    failure_recovery: bool
+    frozen_proven_result: bool
+    model_calls: int
+    human_serialization_required: bool
+    repository_only_bootstrap: bool
+    evidence_refs: tuple[str, ...] = ()
+
+
+def full_engineering_checks(evidence: FullEngineeringEvidence) -> tuple[QualificationCheck, ...]:
+    refs = tuple(sorted(set(evidence.evidence_refs)))
+    return (
+        QualificationCheck("approved_roadmap_bound", evidence.approved_roadmap_bound, refs),
+        QualificationCheck("independent_derivation_assured", evidence.independent_derivation_assured, refs),
+        QualificationCheck("safe_frontier_executed", evidence.safe_frontier_executed, refs),
+        QualificationCheck(
+            "large_deterministic_labour",
+            evidence.deterministic_jobs_completed >= 100 and evidence.deterministic_job_failures == 0,
+            refs,
+            detail=f"completed={evidence.deterministic_jobs_completed};failures={evidence.deterministic_job_failures}",
+        ),
+        QualificationCheck("officer_council_reconciled", evidence.officer_council_reconciled, refs),
+        QualificationCheck("external_assurance_deterministic", evidence.external_assurance_deterministic, refs),
+        QualificationCheck("failure_recovery", evidence.failure_recovery, refs),
+        QualificationCheck("frozen_proven_result", evidence.frozen_proven_result, refs),
+        QualificationCheck("model_independent", evidence.model_calls == 0, refs, detail=f"model_calls={evidence.model_calls}"),
+        QualificationCheck(
+            "ordinary_execution_not_human_serialized",
+            not evidence.human_serialization_required,
+            refs,
+        ),
+        QualificationCheck("repository_only_bootstrap", evidence.repository_only_bootstrap, refs),
+    )
 
 
 @dataclass(frozen=True)
