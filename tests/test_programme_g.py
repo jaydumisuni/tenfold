@@ -60,7 +60,7 @@ def _report(kind, mode, checks, *, council=""):
 
 def test_tf26_shadow_campaign_matches_blueprint_frontier_coupling_and_council():
     manifest = programme_a_campaign()
-    proof = independently_assure(blueprint(), manifest)
+    proof = indepently_assure(blueprint(), manifest)
     frontier = Foreman(manifest).frontier()
 
     coupling_campaign = simple_campaign()
@@ -88,7 +88,7 @@ def test_tf26_shadow_campaign_matches_blueprint_frontier_coupling_and_council():
         declared_couplings=(("A", "B"),),
         observed_couplings=((interaction.left_unit, interaction.right_unit),),
         council_findings=council.anomalies,
-        independent_findings=proof.issues,
+        independent_findings=proof.findings,
     )
     report = _report(QualificationKind.SHADOW, ActivationMode.SIMULATION, shadow_checks(comparison))
     passed, reasons = evaluate_qualification(report)
@@ -192,3 +192,45 @@ def test_tf28_isolated_mutable_campaign_integrates_ownership_recovery_and_rebind
         reviewer_identity="independent",
         reviewer_method="separate",
     )
+    coupling_enforced = coupling.serialization_required
+    with pytest.raises(ValueError):
+        require_valid_parallelism(coupling.record, campaign)
+
+    durable_root = tmp_path / "durable"
+    durable_root.mkdir()
+    store, snapshot = store_and_snapshot(durable_root)
+    taken = takeover(store, snapshot.campaign_id, snapshot.revision)
+    stale_generation_rejected = False
+    try:
+        validate_command(taken, CommandFence(taken.campaign_id, 1, taken.revision))
+    except StaleCommand:
+        stale_generation_rejected = True
+
+    reopened = type(store)(durable_root / "state.db")
+    recovered = reopened.read(snapshot.campaign_id)
+    crash_restart_recovered = recovered.foreman_epoch == 2 and isinstance(recover_frontier_snapshot(recovered), dict)
+
+    old = UpstreamBinding("A", "sha:x", "contract:1", "proof:1")
+    disposition, changed = classify_rebind(
+        ConsumptionRecord("A08", (old,)),
+        {"A07": UpstreamBinding("A07", "sha:y", "contract:1", "proof:1")},
+    )
+    targeted_reconciliation = disposition is RebindDisposition.REBIND_REQUIRED and changed == ("A07",)
+
+    checks = (
+        QualificationCheck("canonical_unchanged", canonical_unchanged),
+        QualificationCheck("isolated_write_observed", isolated_write_observed),
+        QualificationCheck("write_ownership_enforced", write_ownership_enforced),
+        QualificationCheck("coupling_enforced", coupling_enforced),
+        QualificationCheck("stale_generation_rejected", stale_generation_rejected),
+        QualificationCheck("crash_restart_recovered", crash_restart_recovered),
+        QualificationCheck("targeted_reconciliation", targeted_reconciliation),
+    )
+    report = _report(
+        QualificationKind.ISOLATED_MUTATION,
+        ActivationMode.ISOLATED_MUTABLE_WORKTREES,
+        checks,
+        council=canonical_digest({"programme": "G", "milestone": "TF-28"}),
+    )
+    passed, reasons = evaluate_qualification(report)
+    assert passed, reasons
