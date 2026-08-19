@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import os
+import re
 import subprocess
 
 import pytest
@@ -49,26 +50,56 @@ from tenfold.workers import JobKind, LocalWorkerRuntime, ResourceRequest, Worker
 from tenfold.workforce import LocalWorkforce
 
 
-SOURCE_BINDING = "tf31-repository-candidate"
+_SHA40 = re.compile(r"^[0-9a-f]{40}$")
 
 
-def blueprint() -> BlueprintManifest:
+def _repository_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def repository_head() -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(_repository_root()), "rev-parse", "HEAD"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    source_sha = completed.stdout.strip().lower()
+    assert _SHA40.fullmatch(source_sha), source_sha
+    return source_sha
+
+
+def roadmap_authority(source_sha: str) -> tuple[str, str]:
+    roadmap = (_repository_root() / "docs" / "01-roadmap.md").read_text(encoding="utf-8")
+    assert "TF-31" in roadmap
+    assert "QUALIFIED_FULL_ENGINEERING" in roadmap
+    authority = (
+        f"git:{source_sha}:docs/01-roadmap.md#TF-31:"
+        f"{canonical_digest(roadmap)}"
+    )
+    return authority, roadmap
+
+
+def blueprint(source_sha: str) -> BlueprintManifest:
+    authority, _ = roadmap_authority(source_sha)
     return BlueprintManifest(
         "tf31-blueprint",
         1,
-        ("docs/01-roadmap.md#TF-31",),
+        (authority,),
         (
             Requirement(
                 "R-TF31",
                 "Qualify Tenfold for full engineering campaigns without model or human serialization of ordinary execution.",
-                "docs/01-roadmap.md#TF-31",
+                authority,
                 ("engineering_result",),
             ),
         ),
     )
 
 
-def campaign(bp: BlueprintManifest) -> CampaignManifest:
+def campaign(bp: BlueprintManifest, source_sha: str) -> CampaignManifest:
     attrs = ("security",)
     return CampaignManifest(
         "tf31-full-engineering",
@@ -78,7 +109,9 @@ def campaign(bp: BlueprintManifest) -> CampaignManifest:
         bp.digest,
         "tf31-campaign-deriver",
         "1",
-        canonical_digest({"compiler": "tf31-campaign-deriver", "version": 1}),
+        canonical_digest(
+            {"compiler": "tf31-campaign-deriver", "version": 1, "source_sha": source_sha}
+        ),
         (
             CampaignNode(
                 "EXECUTE",
@@ -100,7 +133,12 @@ def campaign(bp: BlueprintManifest) -> CampaignManifest:
     )
 
 
-def task(manifest: CampaignManifest, index: int, path: str) -> TaskPacket:
+def task(
+    manifest: CampaignManifest,
+    source_sha: str,
+    index: int,
+    path: str,
+) -> TaskPacket:
     return TaskPacket(
         task_id=f"tf31-task-{index}",
         campaign_id=manifest.campaign_id,
@@ -115,11 +153,15 @@ def task(manifest: CampaignManifest, index: int, path: str) -> TaskPacket:
         evidence_obligations=("engineering_result",),
         stop_conditions=("source_moved", "authority_changed"),
         reporting_officer="verification",
-        source_binding=SOURCE_BINDING,
+        source_binding=source_sha,
     ).sealed()
 
 
-def run_deterministic_frontier(tmp_path: Path, manifest: CampaignManifest):
+def run_deterministic_frontier(
+    tmp_path: Path,
+    manifest: CampaignManifest,
+    source_sha: str,
+):
     root = tmp_path / "work"
     root.mkdir()
     scheduler = ResourceScheduler()
@@ -127,10 +169,17 @@ def run_deterministic_frontier(tmp_path: Path, manifest: CampaignManifest):
     worker_count = 20
     for index in range(worker_count):
         worker_id = f"tf31-worker-{index}"
-        scheduler.register_worker(worker_id, frozenset({"hash"}), ResourceCapacity(8, 512))
+        scheduler.register_worker(
+            worker_id, frozenset({"hash"}), ResourceCapacity(8, 512)
+        )
         runtimes[worker_id] = LocalWorkerRuntime(
-            WorkerSpec(worker_id, frozenset({"hash"}), frozenset({"read"}), str(root)),
-            source_identity=SOURCE_BINDING,
+            WorkerSpec(
+                worker_id,
+                frozenset({"hash"}),
+                frozenset({"read"}),
+                str(root),
+            ),
+            source_identity=source_sha,
         )
 
     jobs = {}
@@ -139,7 +188,7 @@ def run_deterministic_frontier(tmp_path: Path, manifest: CampaignManifest):
     for index in range(100):
         path = f"input-{index}.txt"
         (root / path).write_text(f"engineering-input-{index}\n", encoding="utf-8")
-        packet = task(manifest, index, path)
+        packet = task(manifest, source_sha, index, path)
         request = ResourceRequest(cpu_slots=1, memory_mb=8)
         item_id = f"tf31-job-{index}"
         jobs[item_id] = WorkerJob(
@@ -164,7 +213,9 @@ def run_deterministic_frontier(tmp_path: Path, manifest: CampaignManifest):
         )
         task_packets[item_id] = packet
 
-    result = LocalWorkforce(scheduler, runtimes).run(jobs, tuple(items), max_threads=32)
+    result = LocalWorkforce(scheduler, runtimes).run(
+        jobs, tuple(items), max_threads=32
+    )
     return result, task_packets
 
 
@@ -186,7 +237,11 @@ def evidence_packets(result, tasks):
                 source_binding=packet.source_binding,
                 observations=(f"result_digest={worker_evidence.result_digest}",),
                 results=(worker_evidence.status,),
-                limitations=(() if worker_evidence.limitation is None else (worker_evidence.limitation,)),
+                limitations=(
+                    ()
+                    if worker_evidence.limitation is None
+                    else (worker_evidence.limitation,)
+                ),
                 dispatch_epoch=packet.foreman_epoch,
             )
         )
@@ -241,19 +296,14 @@ def prove_recovery(tmp_path: Path, manifest: CampaignManifest) -> bool:
     )
 
 
-def repository_only_proof_active() -> bool:
-    expected = os.environ.get("TENFOLD_CANDIDATE_SHA", "")
-    if os.environ.get("TENFOLD_REPOSITORY_ONLY_PROOF") != "1" or len(expected) != 40:
-        return False
-    root = Path(__file__).resolve().parents[1]
-    completed = subprocess.run(
-        ["git", "-C", str(root), "rev-parse", "HEAD"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
+def repository_only_proof_active(source_sha: str) -> bool:
+    expected = os.environ.get("TENFOLD_CANDIDATE_SHA", "").lower()
+    return (
+        os.environ.get("TENFOLD_REPOSITORY_ONLY_PROOF") == "1"
+        and _SHA40.fullmatch(expected) is not None
+        and expected == source_sha
+        and repository_head() == source_sha
     )
-    return completed.returncode == 0 and completed.stdout.strip() == expected
 
 
 @pytest.mark.skipif(
@@ -261,8 +311,13 @@ def repository_only_proof_active() -> bool:
     reason="TF-31 full qualification runs only in canonical repository-only proof lane",
 )
 def test_tf31_qualifies_complete_model_free_engineering_campaign(tmp_path):
-    bp = blueprint()
-    manifest = campaign(bp)
+    source_sha = repository_head()
+    expected_sha = os.environ.get("TENFOLD_CANDIDATE_SHA", "").lower()
+    assert source_sha == expected_sha
+
+    authority_ref, roadmap_text = roadmap_authority(source_sha)
+    bp = blueprint(source_sha)
+    manifest = campaign(bp, source_sha)
 
     derivation = independently_assure(
         bp,
@@ -274,20 +329,26 @@ def test_tf31_qualifies_complete_model_free_engineering_campaign(tmp_path):
 
     foreman = Foreman(manifest)
     initial_frontier = foreman.frontier()
-    assert initial_frontier == {"ready": ("EXECUTE",), "prepare_only": (), "blocked": ()}
+    assert initial_frontier == {
+        "ready": ("EXECUTE",),
+        "prepare_only": (),
+        "blocked": (),
+    }
 
-    result, tasks = run_deterministic_frontier(tmp_path, manifest)
+    result, tasks = run_deterministic_frontier(tmp_path, manifest, source_sha)
     assert len(result.evidence) == 100
     assert result.failures == ()
     assert all(not item.touched_paths for item in result.evidence)
+    assert all(item.source_binding == source_sha for item in result.evidence)
 
     packets = evidence_packets(result, tasks)
+    assert all(packet.source_binding == source_sha for packet in packets)
     construction = OfficerReport("construction")
     verification = OfficerReport("verification")
     for packet in packets:
         construction.ingest(packet)
         verification.ingest(packet)
-    council = reconcile("TF-31", (construction, verification))
+    council = reconcile("TF-31", [construction, verification])
     assert council.accepted_for_rebrief
     assert council.evidence_packets == 200
     council_digest = canonical_digest(council)
@@ -350,12 +411,18 @@ def test_tf31_qualifies_complete_model_free_engineering_campaign(tmp_path):
     ):
         foreman.transition("EXECUTE", state)
     assert foreman.runtime.states["EXECUTE"] is NodeState.PROVEN
-    assert foreman.frontier() == {"ready": (), "prepare_only": (), "blocked": ()}
+    assert foreman.frontier() == {
+        "ready": (),
+        "prepare_only": (),
+        "blocked": (),
+    }
 
-    repository_only = repository_only_proof_active()
+    repository_only = repository_only_proof_active(source_sha)
     assert repository_only
 
     proof_refs = (
+        source_sha,
+        canonical_digest(roadmap_text),
         bp.digest,
         manifest.digest,
         canonical_digest(derivation),
@@ -363,7 +430,11 @@ def test_tf31_qualifies_complete_model_free_engineering_campaign(tmp_path):
         verified.response_digest,
     )
     evidence = FullEngineeringEvidence(
-        approved_roadmap_bound="docs/01-roadmap.md#TF-31" in bp.authority_refs,
+        approved_roadmap_bound=(
+            authority_ref in bp.authority_refs
+            and "TF-31" in roadmap_text
+            and "QUALIFIED_FULL_ENGINEERING" in roadmap_text
+        ),
         independent_derivation_assured=derivation.passed,
         safe_frontier_executed=initial_frontier["ready"] == ("EXECUTE",),
         deterministic_jobs_completed=len(result.evidence),
@@ -383,7 +454,7 @@ def test_tf31_qualifies_complete_model_free_engineering_campaign(tmp_path):
     report = QualificationReport(
         manifest.campaign_id,
         manifest.generation,
-        SOURCE_BINDING,
+        source_sha,
         QualificationKind.FULL_ENGINEERING,
         ActivationMode.QUALIFIED_FULL_ENGINEERING,
         full_engineering_checks(evidence),
@@ -396,6 +467,7 @@ def test_tf31_qualifies_complete_model_free_engineering_campaign(tmp_path):
     )
     passed, reasons = evaluate_qualification(report)
     assert passed, reasons
+    assert report.source_binding == source_sha
     assert not report.grants_authority
 
 
@@ -417,7 +489,7 @@ def test_full_engineering_qualification_fails_closed_without_repository_bootstra
     report = QualificationReport(
         "tf31",
         1,
-        "sha:exact",
+        "0" * 40,
         QualificationKind.FULL_ENGINEERING,
         ActivationMode.QUALIFIED_FULL_ENGINEERING,
         full_engineering_checks(evidence),
@@ -430,11 +502,12 @@ def test_full_engineering_qualification_fails_closed_without_repository_bootstra
     wrong_mode = QualificationReport(
         "tf31",
         1,
-        "sha:exact",
+        "0" * 40,
         QualificationKind.FULL_ENGINEERING,
         ActivationMode.CONNECTED_FACILITY_MUTATION,
         tuple(
-            check if check.check_id != "repository_only_bootstrap"
+            check
+            if check.check_id != "repository_only_bootstrap"
             else type(check)(check.check_id, True)
             for check in full_engineering_checks(evidence)
         ),
