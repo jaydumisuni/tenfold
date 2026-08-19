@@ -41,6 +41,31 @@ class LeaseRegistry:
         self._leases: dict[str, WriteLease] = {}
         self._generation = 0
 
+    @classmethod
+    def restore(cls, leases: tuple[WriteLease, ...]) -> "LeaseRegistry":
+        registry = cls()
+        for lease in leases:
+            if lease.lease_id in registry._leases:
+                raise LeaseConflict(f"lease-id-reuse:{lease.lease_id}")
+            registry._leases[lease.lease_id] = lease
+            registry._generation = max(registry._generation, lease.generation)
+        # Re-validate active leases pairwise so corrupted durable state cannot reopen
+        # with overlapping ownership that the live registry would have rejected.
+        active = registry.active()
+        for index, left in enumerate(active):
+            for right in active[index + 1 :]:
+                same_namespace = left.namespace == right.namespace
+                path_conflict = same_namespace and any(
+                    surfaces_overlap(a, b) for a in left.surfaces for b in right.surfaces
+                )
+                semantic_conflict = same_namespace and bool(
+                    set(left.conflict_groups) & set(right.conflict_groups)
+                )
+                resource_conflict = bool(set(left.resources) & set(right.resources))
+                if path_conflict or semantic_conflict or resource_conflict:
+                    raise LeaseConflict(f"durable-lease-conflict:{left.lease_id}:{right.lease_id}")
+        return registry
+
     def active(self) -> tuple[WriteLease, ...]:
         return tuple(lease for lease in self._leases.values() if lease.active)
 

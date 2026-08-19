@@ -151,6 +151,16 @@ class TaskPacket:
     source_binding: str
     dispatch_digest: str = ""
     foreman_epoch: int = 1
+    lease_id: str = ""
+    lease_epoch: int = 0
+    lease_generation: int = 0
+    request_binding: str = ""
+
+    @property
+    def lease_token(self) -> tuple[int, int] | None:
+        if not self.lease_id:
+            return None
+        return (self.lease_epoch, self.lease_generation)
 
     def sealed(self) -> "TaskPacket":
         raw = asdict(self)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, replace
 from enum import Enum
 import json
 import sqlite3
@@ -8,10 +8,11 @@ from pathlib import Path
 from typing import Callable
 
 from .contracts import CampaignManifest, NodeState, canonical_digest
+from .ownership import WriteLease
 
 
 class RevisionConflict(RuntimeError):
-    """Raised when compare-and-swap observes a newer campaign revision."""
+    """Raised when compare-and-swap observes a newer campaign revision or epoch."""
 
 
 class CampaignNotFound(KeyError):
@@ -31,10 +32,18 @@ class AssignmentRef:
     node_id: str
     attempt: int
     status: str
+    dispatch_digest: str = ""
+
+
 
 
 @dataclass(frozen=True)
 class LeaseRef:
+    """Legacy raw-storage lease shape retained only for SQLiteCampaignStore compatibility.
+
+    DurableCampaignStore rejects this reduced form because it cannot reconstruct
+    write/resource ownership after restart.
+    """
     lease_id: str
     epoch: int
     generation: int
@@ -55,7 +64,7 @@ class CampaignSnapshot:
     revision: int = 0
     node_states: tuple[tuple[str, str], ...] = ()
     assignments: tuple[AssignmentRef, ...] = ()
-    leases: tuple[LeaseRef, ...] = ()
+    leases: tuple[WriteLease | LeaseRef, ...] = ()
     evidence_digests: tuple[str, ...] = ()
     council_report_digests: tuple[str, ...] = ()
     satisfied_assurance: tuple[str, ...] = ()
@@ -93,6 +102,29 @@ def _snapshot_to_json(snapshot: CampaignSnapshot) -> str:
     return json.dumps(asdict(snapshot), sort_keys=True, separators=(",", ":"))
 
 
+def _lease_from_json(item: dict) -> WriteLease | LeaseRef:
+    if "campaign_id" not in item:
+        return LeaseRef(
+            lease_id=item["lease_id"],
+            epoch=item["epoch"],
+            generation=item["generation"],
+            active=item.get("active", True),
+        )
+    return WriteLease(
+        lease_id=item["lease_id"],
+        campaign_id=item["campaign_id"],
+        campaign_generation=item["campaign_generation"],
+        epoch=item["epoch"],
+        generation=item["generation"],
+        owner_lane=item["owner_lane"],
+        namespace=item["namespace"],
+        surfaces=tuple(item.get("surfaces", ())),
+        conflict_groups=tuple(item.get("conflict_groups", ())),
+        resources=tuple(item.get("resources", ())),
+        active=item.get("active", True),
+    )
+
+
 def _snapshot_from_json(raw: str) -> CampaignSnapshot:
     data = json.loads(raw)
     return CampaignSnapshot(
@@ -108,7 +140,7 @@ def _snapshot_from_json(raw: str) -> CampaignSnapshot:
         revision=data["revision"],
         node_states=tuple(tuple(item) for item in data.get("node_states", ())),
         assignments=tuple(AssignmentRef(**item) for item in data.get("assignments", ())),
-        leases=tuple(LeaseRef(**item) for item in data.get("leases", ())),
+        leases=tuple(_lease_from_json(item) for item in data.get("leases", ())),
         evidence_digests=tuple(data.get("evidence_digests", ())),
         council_report_digests=tuple(data.get("council_report_digests", ())),
         satisfied_assurance=tuple(data.get("satisfied_assurance", ())),
@@ -176,11 +208,35 @@ def campaign_from_payload(snapshot: CampaignSnapshot) -> CampaignManifest:
     )
     if campaign.digest != snapshot.campaign_digest:
         raise RuntimeError("persisted campaign payload digest mismatch")
+    mirrors = {
+        "campaign_id": (snapshot.campaign_id, campaign.campaign_id),
+        "campaign_generation": (snapshot.campaign_generation, campaign.generation),
+        "blueprint_generation": (snapshot.blueprint_generation, campaign.blueprint_generation),
+        "blueprint_digest": (snapshot.blueprint_digest, campaign.blueprint_digest),
+        "matrix_generation": (snapshot.matrix_generation, campaign.assurance.matrix_generation),
+        "matrix_digest": (snapshot.matrix_digest, campaign.assurance.matrix_digest),
+    }
+    drift = [name for name, (stored, actual) in mirrors.items() if stored != actual]
+    if drift:
+        raise RuntimeError(f"persisted campaign authority mirror mismatch: {','.join(drift)}")
     return campaign
 
 
+def _validate_row_binding(snapshot: CampaignSnapshot, revision: int, epoch: int, digest: str) -> None:
+    if snapshot.digest != digest:
+        raise RuntimeError("campaign snapshot digest mismatch")
+    if snapshot.revision != revision:
+        raise RuntimeError("campaign row revision disagrees with integrity-bound snapshot")
+    if snapshot.foreman_epoch != epoch:
+        raise RuntimeError("campaign row epoch disagrees with integrity-bound snapshot")
+
+
 class SQLiteCampaignStore:
-    """Durable compare-and-swap campaign state using stdlib SQLite."""
+    """Durable compare-and-swap storage primitive.
+
+    Authority-bearing callers should use DurableCampaignStore. This class only supplies
+    atomic persistence and integrity checks.
+    """
 
     def __init__(self, path: str | Path):
         self.path = str(path)
@@ -221,14 +277,14 @@ class SQLiteCampaignStore:
     def read(self, campaign_id: str) -> CampaignSnapshot:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT snapshot_json, snapshot_digest FROM campaigns WHERE campaign_id = ?",
+                "SELECT revision, foreman_epoch, snapshot_json, snapshot_digest FROM campaigns WHERE campaign_id = ?",
                 (campaign_id,),
             ).fetchone()
         if row is None:
             raise CampaignNotFound(campaign_id)
-        snapshot = _snapshot_from_json(row[0])
-        if snapshot.digest != row[1]:
-            raise RuntimeError("campaign snapshot digest mismatch")
+        revision, epoch, raw, stored_digest = row
+        snapshot = _snapshot_from_json(raw)
+        _validate_row_binding(snapshot, revision, epoch, stored_digest)
         return snapshot
 
     def compare_and_swap(
@@ -254,8 +310,7 @@ class SQLiteCampaignStore:
             if epoch != expected_epoch:
                 raise RevisionConflict(f"expected epoch {expected_epoch}, found {epoch}")
             current = _snapshot_from_json(raw)
-            if current.digest != stored_digest:
-                raise RuntimeError("campaign snapshot digest mismatch")
+            _validate_row_binding(current, revision, epoch, stored_digest)
             candidate = mutate(current)
             self._validate_ordinary_mutation(current, candidate)
             committed = replace(candidate, revision=current.revision + 1)
@@ -288,6 +343,7 @@ class SQLiteCampaignStore:
             raise
         finally:
             connection.close()
+
     @staticmethod
     def _validate_ordinary_mutation(current: CampaignSnapshot, candidate: CampaignSnapshot) -> None:
         immutable = (
@@ -321,8 +377,7 @@ class SQLiteCampaignStore:
             if revision != expected_revision:
                 raise RevisionConflict(f"expected revision {expected_revision}, found {revision}")
             current = _snapshot_from_json(raw)
-            if current.digest != stored_digest:
-                raise RuntimeError("campaign snapshot digest mismatch")
+            _validate_row_binding(current, revision, epoch, stored_digest)
             leases = tuple(replace(lease, active=False) for lease in current.leases)
             committed = replace(
                 current,
@@ -359,4 +414,3 @@ class SQLiteCampaignStore:
             raise
         finally:
             connection.close()
-
