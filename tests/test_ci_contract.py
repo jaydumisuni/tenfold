@@ -29,6 +29,15 @@ def test_ci_actions_are_pinned_to_immutable_commits():
     assert "actions/setup-python@v5" not in text
 
 
+def test_ci_binds_checkout_and_proof_to_exact_candidate_sha():
+    text = workflow_text()
+    expression = "${{ github.event.pull_request.head.sha || github.sha }}"
+    assert f"ref: {expression}" in text
+    assert "fetch-depth: 1" in text
+    assert "git rev-parse HEAD" in text
+    assert expression in text
+
+
 def test_ci_installs_declared_full_test_environment_and_runs_compile_and_suite():
     text = workflow_text()
     assert "python -m pip install -e '.[dev,browser]'" in text
