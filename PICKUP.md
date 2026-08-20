@@ -65,12 +65,27 @@ Therefore **TF-00 through TF-31 are complete**. Future work is product evolution
 
 `QUALIFIED_FULL_ENGINEERING` is a qualification result, **not universal Ship/release authority**. Governing project policy and the Assurance Matrix remain authoritative.
 
+## Post-TF31 operating-method registry
+
+Field-tested ways of applying Tenfold to real external engineering campaigns are recorded in `docs/05-operating-methods.md`.
+
+Current methods:
+
+- **OM-001 — Private Workspace / Canonical Milestone Promotion**, revision `0.1.0`.
+  - First field campaign: Ptah Phase 0C, 2026-08-19 through 2026-08-20.
+  - Core use: keep Tenfold construction/review/testing in the private execution plane; publish coherent milestone candidates only at Review/Freeze quality; keep working the safe dependency frontier when a promotion gate is blocked; require final repository-only sufficiency proof.
+
+Operating methods are evolvable convenience/execution patterns. They are not permitted to weaken TF-00, the Assurance Matrix, project-owned architecture, exact-state binding, mutation safety, or final proof authority.
+
+After substantial campaigns, recover the relevant method and append field evidence/improvements rather than inventing the method again from chat memory.
+
 ## Recovery procedure after TF-31
 
 1. Recover live `main` and open PRs.
 2. Verify the exact TF-31 merge/proof state rather than trusting this prose alone.
 3. If live evidence remains consistent with the completion merge above, treat the founding implementation roadmap as complete.
-4. New work after that is product evolution, integration, packaging, performance, authority expansion, or a new approved roadmap — not unfinished TF-01..TF-31 work.
+4. Read `docs/05-operating-methods.md` before using Tenfold on a new external campaign; select only methods whose prerequisites match the project.
+5. New work after that is product evolution, integration, packaging, performance, authority expansion, a new approved roadmap, or field-method evolution — not unfinished TF-01..TF-31 work.
 
 ## Non-negotiable recovery rules
 
@@ -86,4 +101,4 @@ Do not:
 - treat Mode 6 qualification as blanket release authority;
 - restart TF-01 or any other founding-roadmap phase merely because `README.md` still contains stale pre-implementation wording.
 
-Before any readiness/merge/completion claim, verify current `main`, open PRs, exact candidate head, review threads, checks/proof, authority bindings, and current facility limitations.
+Before any readiness/merge/completion claim, verify current `main`, open PRs, exact candidate head, review threads, checks/proof, authority bindings, current facility limitations, and the applicable operating-method revision.
