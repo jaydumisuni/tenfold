@@ -79,13 +79,40 @@ Operating methods are evolvable convenience/execution patterns. They are not per
 
 After substantial campaigns, recover the relevant method and append field evidence/improvements rather than inventing the method again from chat memory.
 
+## Project Method Profile system
+
+Tenfold now has an active project-specific method-learning layer in `docs/06-project-method-profiles.md`.
+
+Substantial external-project campaigns must:
+
+1. recover the applicable global Operating Method(s);
+2. recover the existing Project Method Profile for the exact project, or create a provisional one from recovered project evidence;
+3. execute using that profile while observing coordination/rework/proof behavior;
+4. revise the profile when credible field evidence shows a better project-specific method;
+5. promote lessons into global Operating Methods only after cross-project evidence or authority-level justification.
+
+Canonical profiles live under `docs/project-methods/`.
+
+Current profiles:
+
+- **PM-PTAH-001 — Ptah Roadmap Construction Profile**, revision `0.1.0`, status **ACTIVE**.
+  - Base global method: OM-001.
+  - Captures exact-predecessor isolation, blocked-promotion-not-blocked-construction, clean canonical milestone publication, continuous layered proof, strict failure classification, exact physical backend qualification, reusable Ptah construction assets and active method-discovery targets.
+
+Template for new projects:
+
+- `docs/project-methods/TEMPLATE.md`
+
+This profile system is an execution-learning mechanism, not project architecture authority. It optimizes **how** Tenfold executes approved work and must never redefine **what** the project is or weaken its proof/authority boundaries.
+
 ## Recovery procedure after TF-31
 
 1. Recover live `main` and open PRs.
 2. Verify the exact TF-31 merge/proof state rather than trusting this prose alone.
 3. If live evidence remains consistent with the completion merge above, treat the founding implementation roadmap as complete.
-4. Read `docs/05-operating-methods.md` before using Tenfold on a new external campaign; select only methods whose prerequisites match the project.
-5. New work after that is product evolution, integration, packaging, performance, authority expansion, a new approved roadmap, or field-method evolution — not unfinished TF-01..TF-31 work.
+4. Read `docs/05-operating-methods.md` and `docs/06-project-method-profiles.md` before using Tenfold on a new external campaign.
+5. For a known project, recover its profile under `docs/project-methods/`. For a substantial new project, create a provisional profile from canonical project evidence before broad campaign execution.
+6. New work after that is product evolution, integration, packaging, performance, authority expansion, a new approved roadmap, or field-method evolution — not unfinished TF-01..TF-31 work.
 
 ## Non-negotiable recovery rules
 
@@ -99,6 +126,8 @@ Do not:
 - substitute stale chat/local workspace state for newer canonical repository truth;
 - silently enable remote browser networking or broader physical/high-risk authority;
 - treat Mode 6 qualification as blanket release authority;
-- restart TF-01 or any other founding-roadmap phase merely because `README.md` still contains stale pre-implementation wording.
+- restart TF-01 or any other founding-roadmap phase merely because `README.md` still contains stale pre-implementation wording;
+- start a substantial known-project campaign without recovering its Project Method Profile;
+- promote a one-project convenience into a global method without sufficient evidence.
 
-Before any readiness/merge/completion claim, verify current `main`, open PRs, exact candidate head, review threads, checks/proof, authority bindings, current facility limitations, and the applicable operating-method revision.
+Before any readiness/merge/completion claim, verify current `main`, open PRs, exact candidate head, review threads, checks/proof, authority bindings, current facility limitations, the applicable Operating Method revision, and the current Project Method Profile revision.
