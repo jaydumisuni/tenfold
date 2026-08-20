@@ -5,7 +5,7 @@ from dataclasses import asdict
 import json
 from pathlib import Path
 
-import workspace.pete_phase14_campaign_v4  # installs current generation 3 binding
+import workspace.pete_phase14_campaign_v5  # installs current generation 4 binding
 import workspace.pete_phase14_campaign as campaign_base
 
 from tenfold.contracts import EvidencePacket, NodeState, TaskPacket
@@ -26,7 +26,7 @@ EXPECTED = {
         "file": "workspace/evidence/pete_phase14/static_hunter.json",
         "repository": "jaydumisuni/hunter",
         "pr": 174,
-        "head": "c3406d6d51828e41961b09be2c124a48973675ee",
+        "head": "18dc8bea1c94982b9744aa24a2d63ca489d998f0",
         "officer": "security",
     },
     "STATIC_ADMIN_REVIEW": {
@@ -131,16 +131,16 @@ def main() -> int:
 
     blueprint = campaign_base.blueprint()
     manifest = campaign_base.campaign(blueprint)
-    if manifest.generation != 3 or blueprint.generation != 3:
+    if manifest.generation != 4 or blueprint.generation != 4:
         raise RuntimeError("unexpected Pete Phase 14 campaign generation")
     derivation = independently_assure(
         blueprint,
         manifest,
         reviewer_identity="tenfold-pete-phase14-static-advance-derivation",
-        reviewer_method="exact-generation-3-cross-check-v1",
+        reviewer_method="exact-generation-4-cross-check-v1",
     )
     if not derivation.passed:
-        raise RuntimeError(f"generation 3 derivation failed:{derivation.findings}")
+        raise RuntimeError(f"generation 4 derivation failed:{derivation.findings}")
 
     foreman = Foreman(manifest)
     prove_node(foreman, "AUTHORITY_PREFLIGHT")
