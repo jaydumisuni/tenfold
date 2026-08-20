@@ -104,7 +104,9 @@ class MethodLearningSnapshot:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "MethodLearningSnapshot":
-        binding = MethodProfileBinding(**data["binding"])
+        binding_data = dict(data["binding"])
+        binding_data["applicable_methods"] = tuple(binding_data.get("applicable_methods", ()))
+        binding = MethodProfileBinding(**binding_data)
         observations = tuple(
             MethodObservation(
                 observation_id=item["observation_id"],
