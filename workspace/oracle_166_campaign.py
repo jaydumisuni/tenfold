@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict
-from hashlib import sha256
 import json
 from pathlib import Path
 import subprocess
@@ -36,19 +35,25 @@ ORACLE_ISSUE = 166
 ORACLE_PR = 169
 ORACLE_HEAD = "0da59cf295cad3b2fcaaae34294969005ee876fb"
 ORACLE_BASE = "32d836e1fdac35755b1bbbaddc55d689cf117112"
-SOURCE_BINDING = f"oracle-pr169:{ORACLE_HEAD}"
+SOURCE_BINDING = f"oracle-pr169-receipts:{ORACLE_HEAD}"
 
 SUPERSEDED_HEADS = (
     "fea677286ee4598fa180e3a63bcd7d96fb7aefd4",
     "2edf29caed5e1d7f48130073715853a61665600c",
 )
 
-CRITICAL_PATHS = (
-    "ORACLE_TERMINAL_HANDOFF.md",
+SOURCE_BLOBS = {
+    "ORACLE_TERMINAL_HANDOFF.md": "8456dd399e449d3869beddf08e84e1d2dcd0c788",
+    "scripts/Oracle-RecoveryRelaySupervisor.sh": "35117e8e6e08d4fdd956756e01d2afa56132c841",
+    "scripts/install-oracle-recovery-relay-systemd-user.sh": "71500fc523756c79c3bb84e700a1ad3eb10beb08",
+    "tests/oracle-relay-linux-bootstrap.test.ts": "acbc7dd95822331c82622be9272bcb3ff749c07a",
+    "tests/recovery-relay-persistence.test.ts": "bc2b2a76dac415111d011dd6a9c4a346281d252c",
+}
+
+LOCAL_INPUTS = (
+    "authority-manifest.json",
     "scripts/Oracle-RecoveryRelaySupervisor.sh",
     "scripts/install-oracle-recovery-relay-systemd-user.sh",
-    "tests/oracle-relay-linux-bootstrap.test.ts",
-    "tests/recovery-relay-persistence.test.ts",
 )
 
 PHYSICAL_GATE = (
@@ -82,95 +87,98 @@ def git(root: Path, *args: str) -> str:
     return cp.stdout.strip()
 
 
-def file_sha(path: Path) -> str:
-    return sha256(path.read_bytes()).hexdigest()
-
-
-def assert_exact_checkout(root: Path) -> str:
-    actual = git(root, "rev-parse", "HEAD").lower()
-    if actual != ORACLE_HEAD:
-        raise RuntimeError(f"Oracle source moved: expected {ORACLE_HEAD}, got {actual}")
-    if actual in SUPERSEDED_HEADS:
+def load_authority(root: Path) -> dict:
+    manifest_path = root / "authority-manifest.json"
+    if not manifest_path.is_file():
+        raise RuntimeError("Oracle authority receipt manifest is missing")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("schemaVersion") != "tenfold.workspace-authority-receipt.v1":
+        raise RuntimeError("Oracle authority receipt schema mismatch")
+    if manifest.get("repository") != ORACLE_REPOSITORY:
+        raise RuntimeError("Oracle repository receipt mismatch")
+    if manifest.get("issue") != ORACLE_ISSUE or manifest.get("pullRequest") != ORACLE_PR:
+        raise RuntimeError("Oracle issue/PR receipt mismatch")
+    if manifest.get("head") != ORACLE_HEAD or manifest.get("base") != ORACLE_BASE:
+        raise RuntimeError("Oracle candidate generation moved")
+    if ORACLE_HEAD in SUPERSEDED_HEADS:
         raise RuntimeError("superseded Oracle #166 candidate cannot be admitted")
-    if git(root, "status", "--porcelain"):
-        raise RuntimeError("Oracle authority checkout is not clean")
-    return actual
+
+    files = manifest.get("changedFiles")
+    if not isinstance(files, list):
+        raise RuntimeError("Oracle changed-file receipts missing")
+    received = {item.get("path"): item.get("sourceGitBlob") for item in files if isinstance(item, dict)}
+    if received != SOURCE_BLOBS:
+        raise RuntimeError(f"Oracle five-file blob receipts changed: {received}")
+    if manifest.get("localMaterializationIsAuthority") is not False:
+        raise RuntimeError("workspace materialization must not self-promote to source authority")
+    return manifest
 
 
 def semantic_contract_checks(root: Path) -> tuple[str, ...]:
     failures: list[str] = []
     supervisor = (root / "scripts/Oracle-RecoveryRelaySupervisor.sh").read_text(encoding="utf-8")
     installer = (root / "scripts/install-oracle-recovery-relay-systemd-user.sh").read_text(encoding="utf-8")
-    bootstrap_tests = (root / "tests/oracle-relay-linux-bootstrap.test.ts").read_text(encoding="utf-8")
-    persistence_tests = (root / "tests/recovery-relay-persistence.test.ts").read_text(encoding="utf-8")
-    handoff = (root / "ORACLE_TERMINAL_HANDOFF.md").read_text(encoding="utf-8")
 
-    for token in (
+    supervisor_required = (
         "/proc/self/mountinfo",
+        "resolve_isolated_state_root()",
         "runtime-rejected-mount",
         "runtime-rejected-nested-mount",
+        "runtime_local_config_safe()",
         "--no-includes",
         "remote.origin.fetch",
         "branch.main.merge",
+        "state_directory_isolated()",
+        "runtime_directory_isolated()",
         "mktemp",
-    ):
+        "mv -Tf",
+    )
+    for token in supervisor_required:
         if token not in supervisor:
             failures.append(f"supervisor-missing:{token}")
     if "umount" in supervisor:
         failures.append("supervisor-must-not-unmount-rejected-runtime")
+    if 'git -C "$SOURCE_ROOT" reset' in supervisor or 'git -C "$SOURCE_ROOT" fetch' in supervisor:
+        failures.append("supervisor-must-not-mutate-operator-git-control-state")
 
-    for token in (
-        "resolve_isolated_state_root",
-        "assert_mount_isolation",
-        "assert_state_directory_isolated",
-        "atomic_install_file",
-        "mv -Tf",
+    installer_required = (
+        "resolve_isolated_state_root()",
+        "assert_mount_isolation()",
+        "assert_state_directory_isolated()",
+        "atomic_install_file()",
         "bootstrap-source",
         "UNIT_TEMP",
+        "mv -Tf",
         "systemctl --user restart",
-    ):
+        "tokenExposed",
+        "primaryInteractiveTransport",
+        "recoveryTransport",
+    )
+    for token in installer_required:
         if token not in installer:
             failures.append(f"installer-missing:{token}")
     if "umount" in installer:
         failures.append("installer-must-not-unmount-rejected-runtime")
-
-    combined_tests = bootstrap_tests + "\n" + persistence_tests
-    for token in (
-        "runtime-rejected-mount",
-        "runtime-rejected-nested-mount",
-        "bind",
-        "filter",
-        "bootstrap-source",
-        "symlink",
-    ):
-        if token.lower() not in combined_tests.lower():
-            failures.append(f"tests-missing:{token}")
-
-    for token in (
-        "Oracle Live",
-        "recovery",
-        "isolated",
-    ):
-        if token.lower() not in handoff.lower():
-            failures.append(f"handoff-missing:{token}")
+    if "ORACLE_ADMIN_TOKEN=" in installer or "Bearer " in installer:
+        failures.append("installer-secret-embedding-marker")
     return tuple(failures)
 
 
-def blueprint(digests: dict[str, str]) -> BlueprintManifest:
+def blueprint() -> BlueprintManifest:
     pr_ref = f"github:{ORACLE_REPOSITORY}:pull/{ORACLE_PR}:head={ORACLE_HEAD}:base={ORACLE_BASE}"
     issue_ref = f"github:{ORACLE_REPOSITORY}:issue/{ORACLE_ISSUE}"
     refs = [pr_ref, issue_ref]
-    refs.extend(f"git:{ORACLE_HEAD}:{path}:{digests[path]}" for path in CRITICAL_PATHS)
+    refs.extend(f"gitblob:{ORACLE_REPOSITORY}:{ORACLE_HEAD}:{path}:{blob}" for path, blob in SOURCE_BLOBS.items())
     return BlueprintManifest(
         blueprint_id="oracle-166-linux-recovery-isolation-closeout",
-        generation=1,
+        generation=2,
         authority_refs=tuple(refs),
         requirements=(
             Requirement(
                 "R-AUTHORITY",
-                "Bind all continuation work to the current five-file Oracle PR #169 candidate and reject superseded Freeze/proof generations.",
+                "Bind all continuation work to the current five-file Oracle PR #169 candidate using exact GitHub head/blob receipts and reject superseded proof generations.",
                 pr_ref,
-                ("exact_head", "five_file_scope", "superseded_evidence_fenced"),
+                ("authority_receipts_pinned", "five_file_scope", "superseded_evidence_fenced"),
             ),
             Requirement(
                 "R-REVIEW",
@@ -180,7 +188,7 @@ def blueprint(digests: dict[str, str]) -> BlueprintManifest:
             ),
             Requirement(
                 "R-PREP",
-                "Prepare the current fourteen-case KRATOS physical proof packet without dispatching it before review/Live prerequisites are satisfied.",
+                "Prepare the current fourteen-case KRATOS physical proof packet without dispatching mutation before review/Live prerequisites are satisfied.",
                 issue_ref,
                 ("physical_packet_exact_head", "physical_gate_complete"),
             ),
@@ -215,12 +223,13 @@ def blueprint(digests: dict[str, str]) -> BlueprintManifest:
             "no token or credential publication",
             "no reset/fetch/delete of operator checkout merely to make recovery start",
             "rejected bind/external mounts are preserved; Oracle does not unmount them",
-            "old fea67728 and later superseded physical packets are invalid for this generation",
+            "workspace semantic materialization is not source identity",
+            "all pre-0da59cf physical packets are invalid for this generation",
             "Merge/Ship remains outside this workspace campaign",
         ),
         known_couplings=(
-            "KRATOS_PHYSICAL_SUITE consumes the exact reviewed Oracle candidate and a concrete KRATOS Live context",
-            "FREEZE consumes exact-head independent review plus physical and Live-primary evidence",
+            "KRATOS_PHYSICAL_SUITE consumes exact-head independent review, the prepared physical packet and a concrete KRATOS Live context",
+            "FREEZE consumes physical suite plus Live-primary evidence for this source generation",
             "all KRATOS mutable proof cases share one physical host and must serialize",
         ),
         resource_constraints=("KRATOS is a single physical proof resource",),
@@ -233,17 +242,17 @@ def campaign(bp: BlueprintManifest) -> CampaignManifest:
             "AUTHORITY_PREFLIGHT",
             "M-AUTHORITY",
             ("R-AUTHORITY",),
-            "Hash and reconcile the exact five-file current Oracle #166 candidate with deterministic read-only workers.",
+            "Reconcile exact Oracle head/blob receipts and bounded semantic materialization with deterministic read-only workers.",
             required_capabilities=("hash",),
-            evidence_obligations=("exact_head", "five_file_scope", "superseded_evidence_fenced"),
-            stop_conditions=("source_moved", "scope_changed", "superseded_head"),
-            max_useful_workers=len(CRITICAL_PATHS),
+            evidence_obligations=("authority_receipts_pinned", "five_file_scope", "superseded_evidence_fenced"),
+            stop_conditions=("receipt_moved", "scope_changed", "superseded_head"),
+            max_useful_workers=len(LOCAL_INPUTS),
         ),
         CampaignNode(
             "EXACT_HEAD_REVIEW",
             "M-REVIEW",
             ("R-REVIEW",),
-            "Obtain independent security/authority review pinned to the exact current Oracle candidate.",
+            "Obtain independent security/authority review pinned to exact Oracle head 0da59cf.",
             dependencies=(Dependency("AUTHORITY_PREFLIGHT", NodeState.PROVEN, DependencyClass.FROZEN_CONTRACT, ORACLE_HEAD),),
             evidence_obligations=("exact_head_independent_review",),
             stop_conditions=("source_moved", "review_not_exact_head", "material_finding"),
@@ -252,7 +261,7 @@ def campaign(bp: BlueprintManifest) -> CampaignManifest:
             "PROOF_PACKET_PREP",
             "M-REVIEW",
             ("R-PREP",),
-            "Prepare all fourteen physical proof cases and assertions against the exact candidate without dispatching mutation.",
+            "Prepare all fourteen physical proof cases and exact-head assertions without dispatching mutation.",
             dependencies=(Dependency("AUTHORITY_PREFLIGHT", NodeState.PROVEN, DependencyClass.PREPARATION_SAFE, ORACLE_HEAD),),
             evidence_obligations=("physical_packet_exact_head", "physical_gate_complete"),
             stop_conditions=("source_moved", "gate_omission"),
@@ -271,7 +280,7 @@ def campaign(bp: BlueprintManifest) -> CampaignManifest:
             "KRATOS_PHYSICAL_SUITE",
             "M-PROVE",
             ("R-PHYSICAL",),
-            "Execute the fourteen-case adversarial KRATOS proof against the exact reviewed candidate.",
+            "Execute the fourteen-case adversarial KRATOS proof against the exact independently reviewed candidate.",
             dependencies=(
                 Dependency("EXACT_HEAD_REVIEW", NodeState.PROVEN, DependencyClass.BLOCKED),
                 Dependency("PROOF_PACKET_PREP", NodeState.PROVEN, DependencyClass.BLOCKED),
@@ -297,7 +306,7 @@ def campaign(bp: BlueprintManifest) -> CampaignManifest:
             "FREEZE",
             "M-FREEZE",
             ("R-FREEZE",),
-            "Reconcile exact-head independent review, physical suite and Live-primary proof before declaring the candidate Freeze-eligible.",
+            "Reconcile exact-head independent review, physical suite and Live-primary proof before declaring this candidate Freeze-eligible.",
             dependencies=(
                 Dependency("KRATOS_PHYSICAL_SUITE", NodeState.PROVEN, DependencyClass.BLOCKED),
                 Dependency("LIVE_PRIMARY_REPROVE", NodeState.PROVEN, DependencyClass.BLOCKED),
@@ -308,21 +317,21 @@ def campaign(bp: BlueprintManifest) -> CampaignManifest:
         ),
     )
     milestones = (
-        Milestone("M-AUTHORITY", 1, ("AUTHORITY_PREFLIGHT",), ("security", "authority")),
-        Milestone("M-REVIEW", 1, ("EXACT_HEAD_REVIEW", "PROOF_PACKET_PREP"), ("security", "authority")),
-        Milestone("M-PROVE", 1, ("ORACLE_LIVE_CONTEXT", "KRATOS_PHYSICAL_SUITE", "LIVE_PRIMARY_REPROVE"), ("security", "authority", "physical")),
-        Milestone("M-FREEZE", 1, ("FREEZE",), ("security", "authority", "physical")),
+        Milestone("M-AUTHORITY", 2, ("AUTHORITY_PREFLIGHT",), ("security", "authority")),
+        Milestone("M-REVIEW", 2, ("EXACT_HEAD_REVIEW", "PROOF_PACKET_PREP"), ("security", "authority")),
+        Milestone("M-PROVE", 2, ("ORACLE_LIVE_CONTEXT", "KRATOS_PHYSICAL_SUITE", "LIVE_PRIMARY_REPROVE"), ("security", "authority", "physical")),
+        Milestone("M-FREEZE", 2, ("FREEZE",), ("security", "authority", "physical")),
     )
     required = FOUNDING_MATRIX.required_for(("security", "authority", "physical"))
     return CampaignManifest(
         campaign_id="oracle-166-tenfold-workspace",
-        generation=1,
+        generation=2,
         blueprint_id=bp.blueprint_id,
         blueprint_generation=bp.generation,
         blueprint_digest=bp.digest,
         compiler_id="oracle-166-workspace-deriver",
-        compiler_version="1",
-        compiler_digest=canonical_digest({"compiler": "oracle-166-workspace-deriver", "version": 1}),
+        compiler_version="2",
+        compiler_digest=canonical_digest({"compiler": "oracle-166-workspace-deriver", "version": 2}),
         nodes=nodes,
         milestones=milestones,
         assurance=AssuranceBinding(FOUNDING_MATRIX.generation, FOUNDING_MATRIX.digest, required),
@@ -337,12 +346,12 @@ def task(manifest: CampaignManifest, index: int, relpath: str) -> TaskPacket:
         node_id="AUTHORITY_PREFLIGHT",
         assignment_id=f"oracle166-assignment-{index}",
         attempt=1,
-        objective=f"hash exact Oracle #166 authority input {relpath}",
+        objective=f"hash bounded Oracle #166 workspace input {relpath}",
         scope=(relpath,),
         capabilities=("hash",),
         permissions=("read",),
-        evidence_obligations=("exact_head", "five_file_scope", "superseded_evidence_fenced"),
-        stop_conditions=("source_moved", "scope_changed", "superseded_head"),
+        evidence_obligations=("authority_receipts_pinned", "five_file_scope", "superseded_evidence_fenced"),
+        stop_conditions=("receipt_moved", "scope_changed", "superseded_head"),
         reporting_officer="evidence",
         source_binding=SOURCE_BINDING,
     ).sealed()
@@ -364,43 +373,38 @@ def transition_to_proven(foreman: Foreman, node_id: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--oracle-root", type=Path, required=True)
+    parser.add_argument("--authority-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    root = args.oracle_root.resolve()
+    root = args.authority_root.resolve()
+    repo_root = Path(__file__).resolve().parents[1]
 
-    actual_head = assert_exact_checkout(root)
-    missing = [path for path in CRITICAL_PATHS if not (root / path).is_file()]
-    if missing:
-        raise RuntimeError(f"missing exact Oracle #166 authority inputs: {missing}")
+    manifest_receipt = load_authority(root)
+    for relpath in LOCAL_INPUTS:
+        if not (root / relpath).is_file():
+            raise RuntimeError(f"missing bounded Oracle workspace input: {relpath}")
 
-    changed = set(git(root, "diff", "--name-only", ORACLE_BASE, ORACLE_HEAD).splitlines())
-    if changed != set(CRITICAL_PATHS):
-        raise RuntimeError(f"Oracle PR #169 scope changed: {sorted(changed)}")
-
-    digests = {path: file_sha(root / path) for path in CRITICAL_PATHS}
-    bp = blueprint(digests)
+    contract_failures = semantic_contract_checks(root)
+    bp = blueprint()
     manifest = campaign(bp)
     derivation = independently_assure(
         bp,
         manifest,
         reviewer_identity="tenfold-oracle166-independent-derivation",
-        reviewer_method="raw-issue166-pr169-authority-cross-check-v1",
+        reviewer_method="issue166-pr169-receipt-cross-check-v2",
     )
     if not derivation.passed:
         raise RuntimeError(f"Oracle #166 campaign derivation blocked: {derivation.findings}")
 
-    contract_failures = semantic_contract_checks(root)
-
     worker_id = "oracle166-authority-worker"
     worker_spec = WorkerSpec(worker_id, frozenset({"hash"}), frozenset({"read"}), str(root))
     scheduler = ResourceScheduler()
-    scheduler.register_worker(worker_id, frozenset({"hash"}), ResourceCapacity(len(CRITICAL_PATHS), 512))
+    scheduler.register_worker(worker_id, frozenset({"hash"}), ResourceCapacity(len(LOCAL_INPUTS), 512))
 
     jobs: dict[str, WorkerJob] = {}
     items: list[WorkItem] = []
     path_by_job: dict[str, str] = {}
-    for index, relpath in enumerate(CRITICAL_PATHS):
+    for index, relpath in enumerate(LOCAL_INPUTS):
         packet = task(manifest, index, relpath)
         job_id = f"oracle166-hash-{index}"
         request = ResourceRequest(cpu_slots=1, memory_mb=16)
@@ -420,7 +424,7 @@ def main() -> int:
         scheduler,
         {worker_id: LocalWorkerRuntime(worker_spec, source_identity=SOURCE_BINDING)},
     )
-    workforce_result = workforce.run(jobs, tuple(items), max_threads=len(CRITICAL_PATHS))
+    workforce_result = workforce.run(jobs, tuple(items), max_threads=len(LOCAL_INPUTS))
 
     officer = OfficerReport("evidence")
     challenge = OfficerReport("challenge")
@@ -438,7 +442,7 @@ def main() -> int:
             worker_identity=worker_evidence.worker_id,
             source_binding=worker_evidence.source_binding,
             observations=(f"path={relpath}", f"sha256={worker_evidence.result_digest}", f"status={worker_evidence.status}"),
-            results=("authority_input_hashed", "exact_head", "superseded_evidence_fenced") if worker_evidence.status == "completed" else (),
+            results=("workspace_input_hashed", "authority_receipts_pinned", "superseded_evidence_fenced") if worker_evidence.status == "completed" else (),
             limitations=(() if worker_evidence.status == "completed" else (worker_evidence.limitation or "worker failed",)),
         )
         officer.ingest(packet)
@@ -460,29 +464,39 @@ def main() -> int:
     transition_to_proven(foreman, "AUTHORITY_PREFLIGHT")
     frontier = foreman.frontier()
     expected_ready = {"EXACT_HEAD_REVIEW", "ORACLE_LIVE_CONTEXT", "PROOF_PACKET_PREP"}
+    expected_blocked = {"FREEZE", "KRATOS_PHYSICAL_SUITE", "LIVE_PRIMARY_REPROVE"}
     if set(frontier["ready"]) != expected_ready:
         raise RuntimeError(f"unexpected Oracle #166 ready frontier: {frontier}")
-    if set(frontier["blocked"]) != {"FREEZE", "KRATOS_PHYSICAL_SUITE", "LIVE_PRIMARY_REPROVE"}:
+    if set(frontier["blocked"]) != expected_blocked:
         raise RuntimeError(f"unexpected Oracle #166 blocked frontier: {frontier}")
 
+    semantic_blob_ids = {
+        relpath: git(repo_root, "hash-object", str((root / relpath).resolve()))
+        for relpath in LOCAL_INPUTS[1:]
+    }
+    source_blob_match = {
+        "scripts/Oracle-RecoveryRelaySupervisor.sh": semantic_blob_ids["scripts/Oracle-RecoveryRelaySupervisor.sh"] == SOURCE_BLOBS["scripts/Oracle-RecoveryRelaySupervisor.sh"],
+        "scripts/install-oracle-recovery-relay-systemd-user.sh": semantic_blob_ids["scripts/install-oracle-recovery-relay-systemd-user.sh"] == SOURCE_BLOBS["scripts/install-oracle-recovery-relay-systemd-user.sh"],
+    }
+
     output = {
-        "schema": "tenfold.workspace-oracle166.v1",
+        "schema": "tenfold.workspace-oracle166.v2",
         "tenfold_base": TENFOLD_BASE,
-        "tenfold_source": git(Path(__file__).resolve().parents[1], "rev-parse", "HEAD"),
+        "tenfold_source": git(repo_root, "rev-parse", "HEAD"),
         "oracle": {
             "repository": ORACLE_REPOSITORY,
             "issue": ORACLE_ISSUE,
             "pr": ORACLE_PR,
-            "head": actual_head,
+            "head": ORACLE_HEAD,
             "base": ORACLE_BASE,
-            "changed_files": sorted(changed),
+            "source_blob_receipts": SOURCE_BLOBS,
+            "changed_files": sorted(SOURCE_BLOBS),
         },
         "source_binding": SOURCE_BINDING,
         "blueprint_digest": bp.digest,
         "campaign_digest": manifest.digest,
         "derivation_passed": derivation.passed,
         "derivation_findings": list(derivation.findings),
-        "critical_file_digests": digests,
         "static_contract_failures": list(contract_failures),
         "deterministic_worker_evidence": len(workforce_result.evidence),
         "deterministic_worker_failures": len(workforce_result.failures),
@@ -490,12 +504,16 @@ def main() -> int:
         "required_campaign_assurance": list(manifest.assurance.required_assurance),
         "physical_gate": list(PHYSICAL_GATE),
         "superseded_heads": list(SUPERSEDED_HEADS),
-        "superseded_evidence_fenced": actual_head not in SUPERSEDED_HEADS,
+        "superseded_evidence_fenced": ORACLE_HEAD not in SUPERSEDED_HEADS,
+        "local_materialization_is_authority": manifest_receipt["localMaterializationIsAuthority"],
+        "semantic_materialization_git_blobs": semantic_blob_ids,
+        "semantic_materialization_matches_source_blob": source_blob_match,
         "frontier": {key: list(value) for key, value in frontier.items()},
         "next_safe_actions": sorted(frontier["ready"]),
         "shadow_campaign_retired": True,
         "nonclaims": [
-            "The previous fea67728 physical packet is superseded and cannot satisfy this campaign.",
+            "Workspace semantic copies are not exact source authority unless their Git blob IDs equal the source receipts.",
+            "The previous fea67728 and other pre-current physical packets are superseded and cannot satisfy this campaign.",
             "GitHub-hosted static execution cannot substitute KRATOS physical proof.",
             "ATHENA token readiness is not itself a bound OracleLiveContext session/epoch/generation.",
             "This workspace campaign does not merge Oracle PR #169.",
