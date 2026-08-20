@@ -6,7 +6,7 @@
   "base_branch": "master",
   "base_sha": "5f4881ba15c6807aa631e163c16f2e6244885d07",
   "head_branch": "phase14-systems-pete-surface-20260818",
-  "head_sha": "affc4ba01af4594fd8a8b5a4b4d26a6bfdacbec8",
+  "head_sha": "2723466946ae90ec5b6c0c3166ed1cb066e4307c",
   "draft": true,
   "mergeable": true,
   "unresolved_review_threads": 0,
@@ -41,6 +41,10 @@
     "policy_persistence_failure_misclassification_detected",
     "policy_validation_and_persistence_failure_paths_separated",
     "missing_policy_store_now_reports_503_unavailable_without_false_persistence_claim",
+    "policy_read_outage_default_fabrication_detected",
+    "policy_read_state_now_distinguishes_persisted_default_unset_and_unavailable",
+    "owner_snapshot_no_longer_claims_policy_or_sync_when_policy_store_read_fails",
+    "bridge_policy_read_fails_closed_on_store_read_failure",
     "security_regressions_committed"
   ],
   "pending_evidence": [
