@@ -6,7 +6,7 @@
   "base_branch": "master",
   "base_sha": "5f4881ba15c6807aa631e163c16f2e6244885d07",
   "head_branch": "phase14-systems-pete-surface-20260818",
-  "head_sha": "41ba444ce38f9847030cb11ff009213df50a37e0",
+  "head_sha": "c3406d6d51828e41961b09be2c124a48973675ee",
   "draft": true,
   "mergeable": true,
   "unresolved_review_threads": 0,
@@ -22,9 +22,11 @@
     "test_hunter_pete_admin_phase14.py"
   ],
   "earned_evidence": [
-    "static_review_detected_non_https_cloud_policy_secret_transport_risk",
-    "transport_fail_closed_correction_committed",
-    "fractional_max_fallback_semantic_drift_correction_committed"
+    "static_review_detected_non_https_secret_transport_risk",
+    "cloud_policy_transport_fail_closed_correction_committed",
+    "cognitive_bridge_origin_fail_closed_correction_committed",
+    "fractional_max_fallback_semantic_drift_correction_committed",
+    "security_regressions_committed"
   ],
   "pending_evidence": [
     "corrected_head_source_regression",
