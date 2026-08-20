@@ -4,7 +4,7 @@
   "node_id": "STATIC_HUNTER_REVIEW",
   "repository": "jaydumisuni/hunter",
   "pull_request": 174,
-  "head_sha": "affc4ba01af4594fd8a8b5a4b4d26a6bfdacbec8",
+  "head_sha": "2723466946ae90ec5b6c0c3166ed1cb066e4307c",
   "reviewer_identity": "chatgpt-gpt-5.6-sol",
   "reviewer_method": "connector-exact-head-static-review-v1",
   "reviewed_paths": [
@@ -30,7 +30,8 @@
     "cognitive_bridge_origin_validation_was_not_strict_enough_for_secret_transport",
     "python_policy_normalizer_accepted_fractional_maxFallbacks_that_typescript_rejected",
     "production_cognitive_bridge_path_did_not_expose_the_existing_bounded_pete_admin_handlers",
-    "hunter_policy_persistence_outage_was_misclassified_as_invalid_policy"
+    "hunter_policy_persistence_outage_was_misclassified_as_invalid_policy",
+    "hunter_policy_read_failure_could_fabricate_default_policy_and_available_persistence_state"
   ],
   "remaining_actionable_blockers": [],
   "observations": [
@@ -50,11 +51,14 @@
     "the copied Pete admin handlers enforce HUNTER_COGNITIVE_BRIDGE_SECRET inside the handler itself, so omission of unrelated staging request hooks does not remove the admin secret boundary",
     "bridge-specific runtime requirements include the existing requests dependency used by the Pete MCP client",
     "policy validation failure remains a 400 client error while Hunter route-policy persistence failure is independently classified as 503 PETE_ROUTE_POLICY_PERSISTENCE_UNAVAILABLE",
-    "a persistence outage does not call the local Pete model-control path and does not claim ownerPolicyStatus persisted"
+    "a persistence write outage does not call the local Pete model-control path and does not claim ownerPolicyStatus persisted",
+    "policy reads distinguish persisted, default_unset and unavailable instead of collapsing read failure into the default policy",
+    "owner snapshot reports ownerPolicy null and policyRuntimeSynchronized null when the policy store cannot be read, while preserving independently available Pete runtime state",
+    "the cognitive bridge policy-read endpoint returns 503 on policy-store read failure instead of supplying a fabricated default to reconciliation"
   ],
   "limitations": [
-    "This is exact-head static engineering review, including the incremental 18dc8bea1c94982b9744aa24a2d63ca489d998f0 -> affc4ba01af4594fd8a8b5a4b4d26a6bfdacbec8 persistence correction; it is not governing-target source execution proof.",
-    "The committed source verifier contains the missing-KV 503 assertion, but execution on the governing target remains pending.",
+    "This is exact-head static engineering review, including the incremental affc4ba01af4594fd8a8b5a4b4d26a6bfdacbec8 -> 2723466946ae90ec5b6c0c3166ed1cb066e4307c policy-read correction; it is not governing-target source execution proof.",
+    "The committed source verifier contains missing-binding, write-failure and read-failure assertions, but execution on the governing target remains pending.",
     "No Admin -> Hunter -> Pete live composition or browser/Playwright behavior is claimed by this static review."
   ],
   "unresolved_review_threads": 0,
