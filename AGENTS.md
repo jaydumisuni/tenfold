@@ -12,10 +12,13 @@ Before planning, editing, reviewing, or claiming current state, read:
 4. `docs/02-assurance-matrix.md`
 5. `docs/03-sergeant-donor-map.md`
 6. `docs/04-tf00-review-record.md`
-7. `PICKUP.md`
-8. live repository state: current `main` head, open PRs, exact candidate heads, review threads, checks, and current implementation evidence.
+7. `docs/05-operating-methods.md`
+8. `PICKUP.md`
+9. live repository state: current `main` head, open PRs, exact candidate heads, review threads, checks, and current implementation evidence.
 
 Do not treat chat history, stale branches, old PR descriptions, copied evidence, or model memory as newer authority than the repository plus live state.
+
+Operating methods are evolving field-use records, not founding authority. Use them where their prerequisites match the campaign, and update them from evidence after substantial campaigns without weakening TF-00 or the Assurance Matrix.
 
 ## Non-negotiable identity
 
