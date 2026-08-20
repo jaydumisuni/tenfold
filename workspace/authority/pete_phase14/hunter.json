@@ -6,7 +6,7 @@
   "base_branch": "master",
   "base_sha": "5f4881ba15c6807aa631e163c16f2e6244885d07",
   "head_branch": "phase14-systems-pete-surface-20260818",
-  "head_sha": "18dc8bea1c94982b9744aa24a2d63ca489d998f0",
+  "head_sha": "affc4ba01af4594fd8a8b5a4b4d26a6bfdacbec8",
   "draft": true,
   "mergeable": true,
   "unresolved_review_threads": 0,
@@ -38,6 +38,9 @@
     "workers_vpc_pete_admin_route_allowlist_committed",
     "browser_authorization_header_stripped_before_vpc_forwarding",
     "bridge_runtime_dependency_pin_extended_for_existing_pete_mcp_client",
+    "policy_persistence_failure_misclassification_detected",
+    "policy_validation_and_persistence_failure_paths_separated",
+    "missing_policy_store_now_reports_503_unavailable_without_false_persistence_claim",
     "security_regressions_committed"
   ],
   "pending_evidence": [
