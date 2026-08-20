@@ -1,0 +1,33 @@
+{
+  "schema": "tenfold.workspace-authority-binding.v1",
+  "observed_date": "2026-08-20",
+  "repository": "jaydumisuni/hunter",
+  "pull_request": 174,
+  "base_branch": "master",
+  "base_sha": "5f4881ba15c6807aa631e163c16f2e6244885d07",
+  "head_branch": "phase14-systems-pete-surface-20260818",
+  "head_sha": "717a3e52ba51faf22a63fed0b028584b75c68554",
+  "draft": true,
+  "mergeable": true,
+  "unresolved_review_threads": 0,
+  "changed_paths": [
+    "cloudflare/hunter-api-worker/scripts/verify-pete-admin-phase14.mjs",
+    "cloudflare/hunter-api-worker/src/pete_admin_control.ts",
+    "cloudflare/hunter-api-worker/src/pete_admin_state.ts",
+    "cloudflare/hunter-api-worker/src/phase14_entry.ts",
+    "cloudflare/hunter-api-worker/wrangler.toml",
+    "hunter_pete_admin.py",
+    "hunter_pete_admin_bridge.py",
+    "hunter_pete_runtime.py",
+    "test_hunter_pete_admin_phase14.py"
+  ],
+  "earned_evidence": [],
+  "pending_evidence": [
+    "oracle_target_source_execution",
+    "owner_auth_policy_persistence_and_runtime_sync_proof",
+    "cross_repository_integration",
+    "final_exact_head_regression",
+    "independent_sergeant_review"
+  ],
+  "ship_authorized": false
+}
