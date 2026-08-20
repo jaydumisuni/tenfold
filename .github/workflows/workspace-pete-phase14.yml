@@ -8,7 +8,9 @@ on:
       - "workspace/pete_phase14_campaign_v2.py"
       - "workspace/pete_phase14_campaign_v3.py"
       - "workspace/pete_phase14_campaign_v4.py"
+      - "workspace/pete_phase14_static_advance.py"
       - "workspace/authority/pete_phase14/**"
+      - "workspace/evidence/pete_phase14/**"
       - ".github/workflows/workspace-pete-phase14.yml"
 
 permissions:
@@ -95,7 +97,34 @@ jobs:
           assert data['additional_assurance'] == ['independent_model_free_sergeant_review']
           assert data['private_source_published_to_tenfold'] is False
           assert data['ship_authorized'] is False
-          print(json.dumps(data, indent=2, sort_keys=True))
+          PY
+
+      - name: Reconcile and advance exact-head static review evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/pete-phase14-static.json"
+          python workspace/pete_phase14_static_advance.py \
+            --root "$GITHUB_WORKSPACE" \
+            --output "$OUT" | tee "$RUNNER_TEMP/pete-phase14-static.log"
+          grep -q 'TENFOLD_PETE_PHASE14_STATIC_ADVANCE_OK' "$RUNNER_TEMP/pete-phase14-static.log"
+          python - "$OUT" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert data['campaign_generation'] == 3
+          assert data['derivation_passed'] is True
+          assert data['static_council']['accepted_for_rebrief'] is True
+          assert data['static_council']['evidence_packets'] == 3
+          assert set(data['frontier_after']['ready']) == {
+              'EXTERNAL_PR_REVIEW_RECONCILE',
+              'ORACLE_LIVE_CONTEXT',
+          }
+          assert 'TARGET_SOURCE_PROOF' in data['frontier_after']['blocked']
+          assert data['target_source_proof_authorized'] is False
+          assert data['external_pr_review_completed'] is False
+          assert data['oracle_live_context_proven'] is False
+          assert data['ship_authorized'] is False
+          print(json.dumps(data['frontier_after'], indent=2, sort_keys=True))
           PY
 
       - name: Prove Tenfold workspace remained clean
