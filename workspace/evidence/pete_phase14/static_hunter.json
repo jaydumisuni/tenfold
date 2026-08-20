@@ -1,0 +1,46 @@
+{
+  "schema": "tenfold.workspace-static-review.v1",
+  "observed_date": "2026-08-20",
+  "node_id": "STATIC_HUNTER_REVIEW",
+  "repository": "jaydumisuni/hunter",
+  "pull_request": 174,
+  "head_sha": "c3406d6d51828e41961b09be2c124a48973675ee",
+  "reviewer_identity": "chatgpt-gpt-5.6-sol",
+  "reviewer_method": "connector-exact-head-static-review-v1",
+  "reviewed_paths": [
+    "cloudflare/hunter-api-worker/scripts/verify-pete-admin-phase14.mjs",
+    "cloudflare/hunter-api-worker/src/pete_admin_control.ts",
+    "cloudflare/hunter-api-worker/src/pete_admin_state.ts",
+    "cloudflare/hunter-api-worker/src/phase14_entry.ts",
+    "cloudflare/hunter-api-worker/wrangler.toml",
+    "hunter_pete_admin.py",
+    "hunter_pete_admin_bridge.py",
+    "hunter_pete_runtime.py",
+    "test_hunter_pete_admin_phase14.py"
+  ],
+  "findings_corrected_before_admission": [
+    "cloud_policy_bridge_secret_could_be_sent_to_non_https_configured_origin",
+    "cognitive_bridge_origin_validation_was_not_strict_enough_for_secret_transport",
+    "python_policy_normalizer_accepted_fractional_maxFallbacks_that_typescript_rejected"
+  ],
+  "remaining_actionable_blockers": [],
+  "observations": [
+    "owner identity uses the repository canonical TTG_AUTH /auth/me owner_admin + approved rule",
+    "Hunter owns only the persisted owner route-policy preference while Pete remains the policy evaluator",
+    "manual/approved paid model validation requires current Pete registry evidence when model-specific state is changed",
+    "local Pete MCP target remains exact loopback and bearer authenticated",
+    "cloud KV persistence and local mirror do not contain Pete MCP credentials",
+    "failed local runtime application is reported pending_reconciliation rather than falsely synchronized",
+    "cloud policy secret transport now fails closed unless the configured online origin is clean HTTPS",
+    "cognitive bridge secret transport now requires a clean HTTPS origin with no userinfo/path/query/fragment",
+    "Python and TypeScript maxFallbacks integer semantics now match"
+  ],
+  "limitations": [
+    "This is static engineering review, not corrected-head source execution proof.",
+    "Hosted Hunter workflows observed on an intermediate corrected head did not provide executable job-step evidence and are not counted as PASS."
+  ],
+  "unresolved_review_threads": 0,
+  "submitted_github_reviews": 0,
+  "static_review_passed": true,
+  "ship_authorized": false
+}
