@@ -149,6 +149,8 @@ class ProjectMethodRegistry:
     """Recover and exactly bind project method profiles from a Tenfold repository."""
 
     DEFAULT_REGISTRY = Path("docs/project-methods/registry.json")
+    VALID_STATUSES = frozenset({"provisional", "active", "superseded", "retired"})
+    BINDABLE_STATUSES = frozenset({"provisional", "active"})
 
     def __init__(self, repository_root: str | Path, registry_path: str | Path | None = None):
         self.repository_root = Path(repository_root).resolve()
@@ -188,17 +190,20 @@ class ProjectMethodRegistry:
             raise MethodProfileError("method profile path escapes repository root")
         return resolved
 
-    @staticmethod
-    def _descriptor(data: dict[str, Any]) -> ProjectMethodDescriptor:
+    @classmethod
+    def _descriptor(cls, data: dict[str, Any]) -> ProjectMethodDescriptor:
         required = ("project_id", "profile_id", "revision", "status", "profile_path", "applicable_methods")
         missing = [field for field in required if field not in data]
         if missing:
             raise MethodProfileError(f"project method descriptor missing fields: {', '.join(missing)}")
+        status = str(data["status"])
+        if status not in cls.VALID_STATUSES:
+            raise MethodProfileError(f"unsupported project method status: {status}")
         return ProjectMethodDescriptor(
             project_id=str(data["project_id"]),
             profile_id=str(data["profile_id"]),
             revision=str(data["revision"]),
-            status=str(data["status"]),
+            status=status,
             profile_path=str(data["profile_path"]),
             applicable_methods=tuple(str(item) for item in data["applicable_methods"]),
             aliases=tuple(str(item) for item in data.get("aliases", ())),
@@ -210,6 +215,12 @@ class ProjectMethodRegistry:
             raise MethodProfileError(f"method profile does not exist: {descriptor.profile_path}")
         return path
 
+    def _ensure_bindable(self, descriptor: ProjectMethodDescriptor) -> None:
+        if descriptor.status not in self.BINDABLE_STATUSES:
+            raise MethodProfileError(
+                f"project method profile {descriptor.profile_id} is {descriptor.status} and cannot bind new execution"
+            )
+
     def resolve(self, project_id: str) -> ProjectMethodDescriptor:
         descriptor = self._by_project.get(self._normalize_project_id(project_id))
         if descriptor is None:
@@ -218,6 +229,7 @@ class ProjectMethodRegistry:
 
     def bind(self, project_id: str) -> MethodProfileBinding:
         descriptor = self.resolve(project_id)
+        self._ensure_bindable(descriptor)
         profile_path = self._profile_path(descriptor)
         profile_digest = sha256(profile_path.read_bytes()).hexdigest()
         return MethodProfileBinding(
@@ -231,6 +243,7 @@ class ProjectMethodRegistry:
 
     def verify_binding(self, binding: MethodProfileBinding) -> None:
         descriptor = self.resolve(binding.project_id)
+        self._ensure_bindable(descriptor)
         expected = (
             descriptor.profile_id,
             descriptor.revision,

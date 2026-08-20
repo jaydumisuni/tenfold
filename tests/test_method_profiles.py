@@ -34,7 +34,12 @@ def simple_campaign():
     return derive_campaign(blueprint, nodes=nodes, milestones=milestones, matrix=FOUNDING_MATRIX)
 
 
-def write_registry(root: Path, profile_text: str = "# PM-X-001\n") -> ProjectMethodRegistry:
+def write_registry(
+    root: Path,
+    profile_text: str = "# PM-X-001\n",
+    *,
+    status: str = "active",
+) -> ProjectMethodRegistry:
     profiles = root / "docs" / "project-methods"
     profiles.mkdir(parents=True)
     (profiles / "PM-X-001.md").write_text(profile_text, encoding="utf-8")
@@ -47,7 +52,7 @@ def write_registry(root: Path, profile_text: str = "# PM-X-001\n") -> ProjectMet
                         "project_id": "x",
                         "profile_id": "PM-X-001",
                         "revision": "0.1.0",
-                        "status": "active",
+                        "status": status,
                         "profile_path": "docs/project-methods/PM-X-001.md",
                         "applicable_methods": ["OM-001"],
                         "aliases": ["project-x"],
@@ -82,10 +87,19 @@ def test_changed_profile_invalidates_saved_binding(tmp_path: Path):
         registry.verify_binding(binding)
 
 
+def test_retired_profile_remains_recoverable_but_cannot_bind_new_execution(tmp_path: Path):
+    registry = write_registry(tmp_path, status="retired")
+
+    assert registry.resolve("project-x").status == "retired"
+    with pytest.raises(MethodProfileError, match="cannot bind new execution"):
+        registry.bind("project-x")
+
+
 def test_registry_rejects_profile_path_escape(tmp_path: Path):
     profiles = tmp_path / "docs" / "project-methods"
     profiles.mkdir(parents=True)
-    (tmp_path.parent / "outside.md").write_text("outside", encoding="utf-8")
+    outside = tmp_path.parent / "outside.md"
+    outside.write_text("outside", encoding="utf-8")
     (profiles / "registry.json").write_text(
         json.dumps(
             {
@@ -96,7 +110,7 @@ def test_registry_rejects_profile_path_escape(tmp_path: Path):
                         "profile_id": "PM-X-001",
                         "revision": "0.1.0",
                         "status": "active",
-                        "profile_path": "../outside.md",
+                        "profile_path": "../../../outside.md",
                         "applicable_methods": ["OM-001"],
                     }
                 ],
@@ -105,7 +119,7 @@ def test_registry_rejects_profile_path_escape(tmp_path: Path):
         encoding="utf-8",
     )
 
-    with pytest.raises(MethodProfileError, match="does not exist|escapes repository root"):
+    with pytest.raises(MethodProfileError, match="escapes repository root"):
         ProjectMethodRegistry(tmp_path)
 
 
@@ -148,6 +162,17 @@ def test_method_learning_snapshot_is_atomic_and_revision_requires_evidence(tmp_p
 
     with pytest.raises(ValueError, match="unknown supporting observations"):
         session.propose_revision("0.2.0", "unsupported", ("missing",))
+
+
+def test_partial_method_metric_is_rejected():
+    with pytest.raises(ValueError, match="must be supplied together"):
+        MethodObservation(
+            observation_id="obs-partial",
+            category=MethodObservationCategory.PROOF_EFFICIENCY,
+            summary="partial metric must fail",
+            metric_name="test_count",
+            metric_value=10,
+        )
 
 
 def test_method_profile_binding_cannot_change_campaign_authority_or_frontier():
