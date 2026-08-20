@@ -6,7 +6,7 @@
   "base_branch": "main",
   "base_sha": "8fb5364320ac72b266153770947122664a09e03a",
   "head_branch": "phase14-systems-pete-surface-20260818",
-  "head_sha": "eab99faaefd17bca91205bf61457e653894d2f67",
+  "head_sha": "9f493772e3c1e8baa6afcc3f230262fdf71a2e2b",
   "draft": true,
   "mergeable": true,
   "unresolved_review_threads": 0,
@@ -14,16 +14,17 @@
     "docs/PHASE14_SYSTEMS_PETE_SURFACE_ACCEPTANCE_CHECKLIST.md",
     "src/invocation/admin-snapshot.js",
     "src/invocation/server.js",
+    "test/admin-snapshot-mcp.test.js",
     "test/admin-snapshot.test.js",
     "test/invocation.test.js"
   ],
   "earned_evidence": [
-    "direct_oracle_kratos_source_proof",
-    "38_of_38_relevant_invocation_mcp_admin_snapshot_tests_pass",
-    "git_diff_check_pass",
-    "bounded_snapshot_secret_private_url_raw_reasoning_negative_proof"
+    "previous_runtime_head_oracle_proof_fenced_after_test_surface_change",
+    "direct_authenticated_admin_snapshot_mcp_regression_committed",
+    "bearer_denial_and_hidden_argument_rejection_regressions_committed"
   ],
   "pending_evidence": [
+    "corrected_head_source_regression",
     "cross_repository_integration",
     "final_exact_head_regression",
     "playwright_owner_ui",
