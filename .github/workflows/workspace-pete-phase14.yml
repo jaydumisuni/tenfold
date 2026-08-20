@@ -9,6 +9,8 @@ on:
       - "workspace/pete_phase14_campaign_v3.py"
       - "workspace/pete_phase14_campaign_v4.py"
       - "workspace/pete_phase14_static_advance.py"
+      - "workspace/pete_phase14_target_packet.json"
+      - "workspace/pete_phase14_target_packet_validate.py"
       - "workspace/authority/pete_phase14/**"
       - "workspace/evidence/pete_phase14/**"
       - ".github/workflows/workspace-pete-phase14.yml"
@@ -124,7 +126,28 @@ jobs:
           assert data['external_pr_review_completed'] is False
           assert data['oracle_live_context_proven'] is False
           assert data['ship_authorized'] is False
-          print(json.dumps(data['frontier_after'], indent=2, sort_keys=True))
+          PY
+
+      - name: Validate target source and Playwright packet without claiming proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/pete-phase14-target-packet.json"
+          python workspace/pete_phase14_target_packet_validate.py \
+            --packet workspace/pete_phase14_target_packet.json \
+            --output "$OUT" | tee "$RUNNER_TEMP/pete-phase14-target-packet.log"
+          grep -q 'TENFOLD_PETE_PHASE14_TARGET_PACKET_VALID=TRUE' "$RUNNER_TEMP/pete-phase14-target-packet.log"
+          python - "$OUT" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert data['campaignGeneration'] == 3
+          assert data['packetPrepared'] is True
+          assert data['packetValid'] is True
+          assert data['oracleLiveContextProven'] is False
+          assert data['dispatchAuthorized'] is False
+          assert data['sourceProofClaimed'] is False
+          assert data['playwrightProofClaimed'] is False
+          assert data['shipAuthorized'] is False
           PY
 
       - name: Prove Tenfold workspace remained clean
