@@ -6,6 +6,7 @@ on:
     paths:
       - "workspace/pete_phase14_campaign.py"
       - "workspace/pete_phase14_campaign_v2.py"
+      - "workspace/pete_phase14_campaign_v3.py"
       - "workspace/authority/pete_phase14/**"
       - ".github/workflows/workspace-pete-phase14.yml"
 
@@ -59,7 +60,7 @@ jobs:
         run: |
           set -euo pipefail
           OUT="$RUNNER_TEMP/pete-phase14-tenfold.json"
-          python workspace/pete_phase14_campaign_v2.py \
+          python workspace/pete_phase14_campaign_v3.py \
             --authority-root "$GITHUB_WORKSPACE" \
             --output "$OUT" | tee "$RUNNER_TEMP/pete-phase14-tenfold.log"
           grep -q 'TENFOLD_PETE_PHASE14_AUTHORITY_PREFLIGHT_OK' "$RUNNER_TEMP/pete-phase14-tenfold.log"
@@ -67,8 +68,9 @@ jobs:
           import json, sys
           data = json.load(open(sys.argv[1], encoding='utf-8'))
           assert data['tenfold_base'] == '51a220f6554674aa8bfeb1f5f56c9a09fef4de76'
+          assert data['campaign_generation'] == 2
           assert data['bindings']['pete']['head'] == 'eab99faaefd17bca91205bf61457e653894d2f67'
-          assert data['bindings']['hunter']['head'] == '717a3e52ba51faf22a63fed0b028584b75c68554'
+          assert data['bindings']['hunter']['head'] == '41ba444ce38f9847030cb11ff009213df50a37e0'
           assert data['bindings']['admin']['head'] == 'f6333cdf12a24e46fc8649aa2c0be6f713c82038'
           assert data['derivation_passed'] is True
           assert data['derivation_findings'] == []
