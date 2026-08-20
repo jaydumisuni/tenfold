@@ -6,7 +6,7 @@
   "base_branch": "main",
   "base_sha": "34a80c91a3b4acfe0bd359b6833fc88e14549998",
   "head_branch": "phase14-systems-pete-surface-20260818",
-  "head_sha": "f6333cdf12a24e46fc8649aa2c0be6f713c82038",
+  "head_sha": "97acf6ffe60ab5fb42ba81f451f374bf1b43f46c",
   "draft": true,
   "mergeable": true,
   "unresolved_review_threads": 0,
@@ -16,9 +16,13 @@
     "tests/pete-systems-phase14.test.mjs",
     "wrangler.toml"
   ],
-  "earned_evidence": [],
+  "earned_evidence": [
+    "static_review_detected_owner_bearer_transport_origin_risk",
+    "hunter_service_origin_fail_closed_correction_committed",
+    "non_https_origin_regression_committed"
+  ],
   "pending_evidence": [
-    "direct_source_execution",
+    "corrected_head_source_regression",
     "playwright_desktop_mobile_click_reload_offline_proof",
     "same_origin_hunter_proxy_integration",
     "final_exact_head_regression",
