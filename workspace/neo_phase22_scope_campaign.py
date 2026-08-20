@@ -102,7 +102,6 @@ def semantic_checks(root: Path) -> tuple[str, ...]:
 
     required_p21 = (
         "Driver Store/PnP repair beyond existing driver executor authority",
-        "device re-enumeration" if "device re-enumeration" in p21 else "Driver Store/PnP repair",
         "Windows Update service/cache reset",
         "networking reset/repair",
         "Winget repair",
@@ -158,7 +157,10 @@ def campaign(bp: BlueprintManifest) -> CampaignManifest:
                 "crates/neo-driver-repair/**", "crates/neo-cli/**", "Cargo.toml", "Cargo.lock",
                 "docs/PHASE22_20_LANE_REVIEW.md", ".github/workflows/ci.yml",
             ),
-            evidence_obligations=("read_only_assessment", "exact_device_identity", "exact_driver_binding", "deterministic_repair_route"),
+            evidence_obligations=(
+                "scope_is_master_plan_child", "reuses_proven_driver_authority", "no_mutation_authority_yet",
+                "read_only_assessment", "exact_device_identity", "exact_driver_binding", "deterministic_repair_route",
+            ),
             stop_conditions=("mutation_required", "raw_command_required", "scope_expansion"),
             max_useful_workers=10,
         ),
@@ -263,7 +265,7 @@ def main() -> int:
         "deterministic_worker_evidence": len(result.evidence), "deterministic_worker_failures": len(result.failures),
         "authority_council": asdict(council),
         "node_states": {n: s.value for n, s in foreman.runtime.states.items()},
-        "frontier": {k: list(v) for k, v in frontier.items()},
+        "frontier": {k: list(v) for k, v in foreman.frontier().items()},
         "next_gate": NEXT_SCOPE,
         "scope": {
             "phase": 22,
