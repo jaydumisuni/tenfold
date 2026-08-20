@@ -1,0 +1,39 @@
+{
+  "schema": "tenfold.workspace-static-review.v1",
+  "observed_date": "2026-08-20",
+  "node_id": "STATIC_PETE_REVIEW",
+  "repository": "jaydumisuni/pete",
+  "pull_request": 19,
+  "head_sha": "9f493772e3c1e8baa6afcc3f230262fdf71a2e2b",
+  "reviewer_identity": "chatgpt-gpt-5.6-sol",
+  "reviewer_method": "connector-exact-head-static-review-v1",
+  "reviewed_paths": [
+    "docs/PHASE14_SYSTEMS_PETE_SURFACE_ACCEPTANCE_CHECKLIST.md",
+    "src/invocation/admin-snapshot.js",
+    "src/invocation/server.js",
+    "test/admin-snapshot-mcp.test.js",
+    "test/admin-snapshot.test.js",
+    "test/invocation.test.js"
+  ],
+  "findings_corrected_before_admission": [
+    "missing_direct_authenticated_tools_call_regression_for_pete_admin_snapshot"
+  ],
+  "remaining_actionable_blockers": [],
+  "observations": [
+    "pete.admin.snapshot remains read-only, idempotent and non-destructive",
+    "existing MCP bearer/loopback gate applies before admin snapshot dispatch",
+    "admin snapshot accepts no arguments and exposes no mutation input",
+    "snapshot omits Model Fabric adapter credentials and private loopback URLs",
+    "unsupported/non-persisted cognitive state is reported unavailable or not_evaluated rather than fabricated",
+    "specialist registry absence remains truthful because the current invocation startup does not attach a persisted specialist read registry",
+    "new direct MCP regression covers authenticated success, bearer denial and argument rejection"
+  ],
+  "limitations": [
+    "This is static engineering review, not corrected-head source execution proof.",
+    "Previous exact-head Oracle proof is fenced because the candidate head moved when regression coverage was added."
+  ],
+  "unresolved_review_threads": 0,
+  "submitted_github_reviews": 0,
+  "static_review_passed": true,
+  "ship_authorized": false
+}
