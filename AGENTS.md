@@ -13,12 +13,16 @@ Before planning, editing, reviewing, or claiming current state, read:
 5. `docs/03-sergeant-donor-map.md`
 6. `docs/04-tf00-review-record.md`
 7. `docs/05-operating-methods.md`
-8. `PICKUP.md`
-9. live repository state: current `main` head, open PRs, exact candidate heads, review threads, checks, and current implementation evidence.
+8. `docs/06-project-method-profiles.md`
+9. the applicable profile under `docs/project-methods/` for the external project, if one exists
+10. `PICKUP.md`
+11. live repository state: current `main` head, open PRs, exact candidate heads, review threads, checks, and current implementation evidence.
 
 Do not treat chat history, stale branches, old PR descriptions, copied evidence, or model memory as newer authority than the repository plus live state.
 
 Operating methods are evolving field-use records, not founding authority. Use them where their prerequisites match the campaign, and update them from evidence after substantial campaigns without weakening TF-00 or the Assurance Matrix.
+
+Project Method Profiles are mandatory for substantial external-project campaigns. Before broad execution, recover the existing project profile or create a provisional profile from recovered project evidence using `docs/project-methods/TEMPLATE.md`. Do not repeatedly rediscover a project's best execution method from chat memory. Revise the profile when credible field evidence shows a better method, and promote a lesson into a global Operating Method only after sufficient cross-project evidence or authority-level justification.
 
 ## Non-negotiable identity
 
@@ -118,4 +122,4 @@ If the new work adds capability without weakening founding authority, it belongs
 
 ## Current next work
 
-Recover `PICKUP.md` and live repository state. Do not assume TF-01 is still the next valid action if newer accepted work exists.
+Recover `PICKUP.md` and live repository state. For an external project, also recover/create its Project Method Profile before choosing the campaign execution topology. Do not assume TF-01 is still the next valid action if newer accepted work exists.
