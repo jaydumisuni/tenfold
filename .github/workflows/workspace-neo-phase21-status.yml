@@ -1,0 +1,55 @@
+name: Workspace Neo Phase 21 status mirror
+
+on:
+  push:
+    branches:
+      - workspace/neo-phase21-status-20260820
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tenfold-campaign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout Tenfold workspace lane
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Checkout exact Neo authority
+        uses: actions/checkout@v4
+        with:
+          repository: jaydumisuni/Neo-Driver
+          ref: 28fcefe63f11f3bf215ef21f17210be38f0ef780
+          path: workspace/authority/neo
+          fetch-depth: 1
+
+      - name: Execute real Tenfold preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "51a220f6554674aa8bfeb1f5f56c9a09fef4de76" || {
+            echo "Tenfold base moved"
+            exit 1
+          }
+          test "$(git -C workspace/authority/neo rev-parse HEAD)" = "28fcefe63f11f3bf215ef21f17210be38f0ef780" || {
+            echo "Neo authority moved"
+            exit 1
+          }
+          PYTHONPATH=src python workspace/neo_phase21_status_campaign.py \
+            --authority-root workspace/authority/neo \
+            --output workspace/out/neo_phase21_status_campaign.json
+
+      - name: Publish campaign evidence to log
+        if: always()
+        shell: bash
+        run: |
+          if [ -f workspace/out/neo_phase21_status_campaign.json ]; then
+            cat workspace/out/neo_phase21_status_campaign.json
+          fi
