@@ -1,0 +1,59 @@
+name: Workspace Oracle 166 Packet Prep
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "workspace/oracle_166_campaign.py"
+      - "workspace/oracle_166_advance.py"
+      - "workspace/oracle_166_physical_packet.json"
+      - ".github/workflows/workspace-oracle-166-packet.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  packet-prep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONPATH: ${{ github.workspace }}/src
+    steps:
+      - name: Check out exact Tenfold workspace head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Advance Tenfold through packet preparation only
+        shell: bash
+        env:
+          TENFOLD_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TENFOLD_HEAD"
+          OUT="$RUNNER_TEMP/oracle166-packet-prep.json"
+          python workspace/oracle_166_advance.py \
+            --campaign workspace/oracle_166_campaign.py \
+            --packet workspace/oracle_166_physical_packet.json \
+            --output "$OUT" | tee "$RUNNER_TEMP/oracle166-packet-prep.log"
+          grep -q 'TENFOLD_ORACLE166_PACKET_PREP_OK' "$RUNNER_TEMP/oracle166-packet-prep.log"
+          python - "$OUT" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert data['candidateHead'] == '0da59cf295cad3b2fcaaae34294969005ee876fb'
+          assert data['packetPrepared'] is True
+          assert data['physicalProofClaimed'] is False
+          assert len(data['validatedCases']) == 14
+          assert set(data['frontierAfter']['ready']) == {'EXACT_HEAD_REVIEW', 'ORACLE_LIVE_CONTEXT'}
+          assert set(data['frontierAfter']['blocked']) == {'FREEZE', 'KRATOS_PHYSICAL_SUITE', 'LIVE_PRIMARY_REPROVE'}
+          print(json.dumps(data['frontierAfter'], indent=2, sort_keys=True))
+          PY
+          test -z "$(git status --porcelain)"
