@@ -1,0 +1,231 @@
+{
+  "schemaVersion": "tenfold.pete-phase14.target-packet.v1",
+  "campaignId": "pete-phase14-tenfold-workspace",
+  "campaignGeneration": 3,
+  "preparedDate": "2026-08-20",
+  "purpose": "Controlled corrected-head source, integration and Playwright proof for Pete Phase 14.",
+  "candidateGeneration": {
+    "pete": {
+      "repository": "jaydumisuni/pete",
+      "pullRequest": 19,
+      "base": "8fb5364320ac72b266153770947122664a09e03a",
+      "head": "9f493772e3c1e8baa6afcc3f230262fdf71a2e2b"
+    },
+    "hunter": {
+      "repository": "jaydumisuni/hunter",
+      "pullRequest": 174,
+      "base": "5f4881ba15c6807aa631e163c16f2e6244885d07",
+      "head": "c3406d6d51828e41961b09be2c124a48973675ee"
+    },
+    "admin": {
+      "repository": "jaydumisuni/TTG-Admin-Console",
+      "pullRequest": 17,
+      "base": "34a80c91a3b4acfe0bd359b6833fc88e14549998",
+      "head": "97acf6ffe60ab5fb42ba81f451f374bf1b43f46c"
+    }
+  },
+  "target": {
+    "nodeId": "kratos-HP-290-G4-Microtower-PC",
+    "requiredTransport": "oracle.live.v1",
+    "dispatchFacility": "Tenfold OracleFacility",
+    "requiresBoundLiveContext": true,
+    "requiresExclusiveLease": "oracle-node:kratos-hp-290-g4-microtower-pc"
+  },
+  "preconditions": [
+    "Tenfold generation-3 authority preflight is PROVEN.",
+    "STATIC_PETE_REVIEW, STATIC_HUNTER_REVIEW and STATIC_ADMIN_REVIEW are PROVEN through Tenfold Officers/Council.",
+    "The exact three candidate heads above have not moved.",
+    "A current reachable OracleLiveContext is bound to the target node before dispatch.",
+    "Each repository is materialized in an isolated clean worktree at its exact candidate head.",
+    "No private project source is copied into the public Tenfold repository.",
+    "Source-run proof occurs before Wrangler/package/build proof.",
+    "Packet preparation is not execution proof and does not authorize Ship."
+  ],
+  "sourceProof": {
+    "pete": {
+      "cwd": "<isolated-pete-worktree>",
+      "runtime": "Node.js >=22",
+      "commands": [
+        "git rev-parse HEAD",
+        "git status --porcelain",
+        "node --test test/admin-snapshot.test.js test/admin-snapshot-mcp.test.js test/invocation.test.js",
+        "npm test",
+        "git diff --check",
+        "git status --porcelain"
+      ],
+      "requiredResults": [
+        "HEAD equals 9f493772e3c1e8baa6afcc3f230262fdf71a2e2b",
+        "focused Phase 14 snapshot/MCP/invocation tests PASS",
+        "full Pete regression PASS",
+        "git diff --check PASS",
+        "worktree clean before and after"
+      ]
+    },
+    "hunter": {
+      "cwd": "<isolated-hunter-worktree>",
+      "runtime": "Python environment containing the existing Hunter Flask/requests dependencies and Node.js >=22",
+      "commands": [
+        "git rev-parse HEAD",
+        "git status --porcelain",
+        "python -m py_compile hunter_pete_admin.py hunter_pete_admin_bridge.py hunter_pete_runtime.py test_hunter_pete_admin_phase14.py",
+        "python -m unittest -v test_hunter_pete_admin_phase14.py",
+        "cd cloudflare/hunter-api-worker && node --experimental-strip-types scripts/verify-pete-admin-phase14.mjs",
+        "cd cloudflare/hunter-api-worker && node scripts/verify-admin-control-boundary.mjs",
+        "git diff --check",
+        "git status --porcelain"
+      ],
+      "requiredResults": [
+        "HEAD equals c3406d6d51828e41961b09be2c124a48973675ee",
+        "Python Phase 14 policy/local-runtime regression PASS",
+        "Cloud owner-plane Phase 14 source verifier PASS",
+        "existing Admin-control owner-auth boundary regression PASS",
+        "HTTPS/clean-origin negative cases PASS without secret dispatch",
+        "git diff --check PASS",
+        "worktree clean before and after"
+      ]
+    },
+    "admin": {
+      "cwd": "<isolated-admin-worktree>",
+      "runtime": "Node.js >=22",
+      "commands": [
+        "git rev-parse HEAD",
+        "git status --porcelain",
+        "npm test",
+        "git diff --check",
+        "git status --porcelain"
+      ],
+      "requiredResults": [
+        "HEAD equals 97acf6ffe60ab5fb42ba81f451f374bf1b43f46c",
+        "all Admin source tests PASS including Phase 14 one-mount/proxy/origin-negative cases",
+        "git diff --check PASS",
+        "worktree clean before and after"
+      ]
+    }
+  },
+  "integrationProof": {
+    "requiredComposition": "Admin same-origin -> Hunter owner plane -> Hunter cognitive bridge -> local Hunter runtime -> private Pete MCP",
+    "cases": [
+      {
+        "id": "I01_OWNER_SNAPSHOT",
+        "action": "As an approved owner_admin session, GET /api/hunter/pete through the Admin source server.",
+        "assert": [
+          "HTTP 200",
+          "Hunter remains visible identity",
+          "Pete snapshot schema is pete.admin_snapshot.v1",
+          "provider/model state comes from Pete",
+          "ownerPolicy/controlOwner come from Hunter",
+          "no Pete token, cognitive bridge secret, private loopback URL, raw prompt/transcript or hidden reasoning is returned"
+        ]
+      },
+      {
+        "id": "I02_MANUAL_POLICY_SAVE",
+        "action": "Select a real current Pete registry model and POST manual policy through /api/hunter/pete/model-control.",
+        "assert": [
+          "unknown model is rejected before persistence",
+          "known model is persisted by Hunter",
+          "runtime application is truthful",
+          "paid model auto-adds to explicit approved paid allow-list where required",
+          "Pete registry itself is not mutated"
+        ]
+      },
+      {
+        "id": "I03_RESET_FREE_ONLY",
+        "action": "Reset owner policy through the Admin route.",
+        "assert": [
+          "mode becomes auto_free_only",
+          "manualTarget becomes null",
+          "allowPaidFallback becomes false"
+        ]
+      },
+      {
+        "id": "I04_RELOAD_PERSISTENCE",
+        "action": "Re-read state after process/browser reload rather than relying on in-memory UI state.",
+        "assert": [
+          "Hunter persisted policy is re-read",
+          "policy/runtime synchronization status is truthful"
+        ]
+      },
+      {
+        "id": "I05_EMPLOYEE_PUBLIC_DENIAL",
+        "action": "Repeat state/control requests without an approved owner_admin session.",
+        "assert": [
+          "owner surface/state is denied",
+          "control mutation is denied",
+          "normal non-Pete employee/public behavior remains unchanged"
+        ]
+      },
+      {
+        "id": "I06_INVALID_ORIGIN_SECRET_CONTAINMENT",
+        "action": "Exercise the committed non-HTTPS/invalid-origin negative cases.",
+        "assert": [
+          "owner bearer is never sent to an invalid Admin upstream",
+          "cognitive bridge secret is never sent to an invalid Hunter/local origin"
+        ]
+      }
+    ]
+  },
+  "playwrightProof": {
+    "engine": "Playwright through the governing Oracle/browser facility against source-run services",
+    "viewports": [
+      {"name": "desktop", "width": 1440, "height": 1000},
+      {"name": "mobile", "width": 390, "height": 844}
+    ],
+    "cases": [
+      "Systems contains exactly one Pete region and existing non-Pete Systems controls still function.",
+      "Pete page renders loading, error, unavailable and available state truthfully with no duplicate mount.",
+      "Provider/model table identifies Free/Paid, health, quota, location, effective state and reason.",
+      "Owner can Save a valid manual policy by clicking the rendered control.",
+      "Invalid/unknown manual selection is visibly blocked and is not persisted.",
+      "Reset button returns to free-only and survives reload.",
+      "Reload re-reads persisted Hunter policy rather than only browser memory.",
+      "Unavailable cognitive state remains explicit after reload.",
+      "Employee/public access is denied and owner controls are not exposed.",
+      "Desktop and mobile screenshots are captured.",
+      "DOM and captured network payloads contain no Pete auth token, cognitive bridge secret, private MCP URL, raw prompt/transcript or hidden reasoning."
+    ],
+    "requiredArtifacts": [
+      "desktop screenshot",
+      "mobile screenshot",
+      "network/API status summary",
+      "button/action result log",
+      "reload persistence log",
+      "DOM/private-boundary negative scan"
+    ]
+  },
+  "postBehaviorRegression": {
+    "allowedOnlyAfter": [
+      "sourceProof PASS",
+      "integrationProof PASS",
+      "playwrightProof PASS"
+    ],
+    "commands": [
+      "Pete: npm test && git diff --check",
+      "Hunter worker: npm run check in an isolated exact-head worktree, then prove worktree remains semantically/exactly clean or record any generated-source effect",
+      "Admin: npm run check",
+      "All three: exact changed-file/authority/security negative scan"
+    ],
+    "note": "Wrangler dry-run/package proof is intentionally deferred until source-run and Playwright lanes are green."
+  },
+  "globalStopConditions": [
+    "Any candidate HEAD moves.",
+    "Oracle Live context identity/generation/epoch changes before or during dispatch.",
+    "Any private credential/token/secret appears in output, DOM, network artifacts or screenshots.",
+    "A new authority owner or duplicate policy/state store is required.",
+    "A source test, integration assertion, UI action or reload-persistence assertion fails.",
+    "The target worktree is dirty before proof or unexpectedly dirty after proof.",
+    "An actionable external review or Sergeant finding appears."
+  ],
+  "nonClaims": [
+    "Packet preparation is not Oracle Live proof.",
+    "Packet validation is not source test PASS.",
+    "No Playwright screenshot or button proof is claimed by this file.",
+    "No exact-head Freeze is claimed.",
+    "No mandatory assurance is satisfied by packet preparation.",
+    "Ship remains NOT AUTHORIZED."
+  ],
+  "dispatchAuthorized": false,
+  "sourceProofClaimed": false,
+  "integrationProofClaimed": false,
+  "playwrightProofClaimed": false,
+  "shipAuthorized": false
+}
