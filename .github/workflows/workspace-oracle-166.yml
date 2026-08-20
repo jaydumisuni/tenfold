@@ -1,0 +1,117 @@
+name: Workspace Oracle 166 Tenfold
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "workspace/oracle_166_campaign.py"
+      - ".github/workflows/workspace-oracle-166.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  oracle-166:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      ORACLE_HEAD: 0da59cf295cad3b2fcaaae34294969005ee876fb
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONPATH: ${{ github.workspace }}/src
+    steps:
+      - name: Check out exact Tenfold workspace head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Assert exact Tenfold workspace head
+        shell: bash
+        env:
+          TENFOLD_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: test "$(git rev-parse HEAD)" = "$TENFOLD_HEAD"
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Bind qualified Tenfold source runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import tenfold
+          print(tenfold.__file__)
+          PY
+          test -z "$(git status --porcelain)"
+
+      - name: Check out exact Oracle PR 169 candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: jaydumisuni/Oracle-
+          ref: ${{ env.ORACLE_HEAD }}
+          path: .workspace-authority/oracle
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Assert exact Oracle authority and five-file scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          ORACLE="$GITHUB_WORKSPACE/.workspace-authority/oracle"
+          test "$(git -C "$ORACLE" rev-parse HEAD)" = "$ORACLE_HEAD"
+          test -z "$(git -C "$ORACLE" status --porcelain)"
+          test "$(git -C "$ORACLE" diff --name-only 32d836e1fdac35755b1bbbaddc55d689cf117112 "$ORACLE_HEAD" | sort | wc -l | tr -d ' ')" = "5"
+
+      - name: Execute real Tenfold Oracle 166 campaign
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/oracle166-tenfold.json"
+          python workspace/oracle_166_campaign.py \
+            --oracle-root "$GITHUB_WORKSPACE/.workspace-authority/oracle" \
+            --output "$OUT" | tee "$RUNNER_TEMP/oracle166-tenfold.log"
+          grep -q 'TENFOLD_ORACLE166_CAMPAIGN_OK' "$RUNNER_TEMP/oracle166-tenfold.log"
+          python - "$OUT" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert data['oracle']['head'] == '0da59cf295cad3b2fcaaae34294969005ee876fb'
+          assert len(data['oracle']['changed_files']) == 5
+          assert data['derivation_passed'] is True
+          assert data['deterministic_worker_failures'] == 0
+          assert data['authority_council']['accepted_for_rebrief'] is True
+          assert data['static_contract_failures'] == []
+          assert data['superseded_evidence_fenced'] is True
+          assert data['shadow_campaign_retired'] is True
+          assert set(data['frontier']['ready']) == {
+              'EXACT_HEAD_REVIEW', 'ORACLE_LIVE_CONTEXT', 'PROOF_PACKET_PREP'
+          }
+          assert set(data['frontier']['blocked']) == {
+              'FREEZE', 'KRATOS_PHYSICAL_SUITE', 'LIVE_PRIMARY_REPROVE'
+          }
+          assert len(data['physical_gate']) == 14
+          print(json.dumps(data, indent=2, sort_keys=True))
+          PY
+
+      - name: Prove Oracle authority remained clean
+        shell: bash
+        run: |
+          set -euo pipefail
+          ORACLE="$GITHUB_WORKSPACE/.workspace-authority/oracle"
+          test "$(git -C "$ORACLE" rev-parse HEAD)" = "$ORACLE_HEAD"
+          test -z "$(git -C "$ORACLE" status --porcelain)"
+
+      - name: Remove authority materialization
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/.workspace-authority"
+
+      - name: Prove Tenfold workspace remained clean
+        shell: bash
+        env:
+          TENFOLD_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TENFOLD_HEAD"
+          test -z "$(git status --porcelain)"
