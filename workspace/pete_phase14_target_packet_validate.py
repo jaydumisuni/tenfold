@@ -6,7 +6,7 @@ from pathlib import Path
 
 EXPECTED = {
     "pete": "9f493772e3c1e8baa6afcc3f230262fdf71a2e2b",
-    "hunter": "affc4ba01af4594fd8a8b5a4b4d26a6bfdacbec8",
+    "hunter": "2723466946ae90ec5b6c0c3166ed1cb066e4307c",
     "admin": "97acf6ffe60ab5fb42ba81f451f374bf1b43f46c",
 }
 EXPECTED_INTEGRATION_CASES = {
@@ -17,7 +17,8 @@ EXPECTED_INTEGRATION_CASES = {
     "I05_EMPLOYEE_PUBLIC_DENIAL",
     "I06_INVALID_ORIGIN_SECRET_CONTAINMENT",
     "I07_VPC_BOUNDED_ROUTE_SURFACE",
-    "I08_POLICY_PERSISTENCE_OUTAGE",
+    "I08_POLICY_PERSISTENCE_WRITE_OUTAGE",
+    "I09_POLICY_PERSISTENCE_READ_OUTAGE",
 }
 
 
@@ -35,7 +36,7 @@ def main() -> int:
     packet = json.loads(args.packet.read_text(encoding="utf-8"))
     require(packet.get("schemaVersion") == "tenfold.pete-phase14.target-packet.v1", "packet schema mismatch")
     require(packet.get("campaignId") == "pete-phase14-tenfold-workspace", "campaign id mismatch")
-    require(packet.get("campaignGeneration") == 5, "campaign generation mismatch")
+    require(packet.get("campaignGeneration") == 6, "campaign generation mismatch")
 
     candidates = packet.get("candidateGeneration") or {}
     for name, head in EXPECTED.items():
@@ -66,22 +67,32 @@ def main() -> int:
     require(any("verify-phase14-pete-admin-vpc.mjs" in item for item in hunter_commands), "Hunter Workers VPC Pete-admin proof missing")
     require(any("verify-admin-control-boundary.mjs" in item for item in hunter_commands), "Hunter existing owner-auth regression missing")
     require("PETE_ROUTE_POLICY_PERSISTENCE_UNAVAILABLE" in hunter_results, "Hunter persistence-outage source obligation missing")
+    require("missing HUNTER_PORTAL_KV binding and KV read failure" in hunter_results, "Hunter policy-read outage source obligation missing")
+    require("bridge policy read returns HTTP 503" in hunter_results, "Hunter bridge policy-read fail-closed obligation missing")
 
     integration = packet.get("integrationProof") or {}
     case_ids = {case.get("id") for case in integration.get("cases") or []}
     require(case_ids == EXPECTED_INTEGRATION_CASES, "integration case set mismatch")
     require("Workers VPC Cognitive Bridge" in str(integration.get("requiredComposition") or ""), "VPC bridge composition missing")
-    persistence_case = next(case for case in integration.get("cases") or [] if case.get("id") == "I08_POLICY_PERSISTENCE_OUTAGE")
-    persistence_assertions = "\n".join(persistence_case.get("assert") or [])
-    require("HTTP 503 PETE_ROUTE_POLICY_PERSISTENCE_UNAVAILABLE" in persistence_assertions, "persistence outage status obligation missing")
-    require("local Pete model-control route is not called" in persistence_assertions, "persistence-before-runtime ordering obligation missing")
+
+    write_case = next(case for case in integration.get("cases") or [] if case.get("id") == "I08_POLICY_PERSISTENCE_WRITE_OUTAGE")
+    write_assertions = "\n".join(write_case.get("assert") or [])
+    require("HTTP 503 PETE_ROUTE_POLICY_PERSISTENCE_UNAVAILABLE" in write_assertions, "persistence write outage status obligation missing")
+    require("local Pete model-control route is not called" in write_assertions, "persistence-before-runtime ordering obligation missing")
+
+    read_case = next(case for case in integration.get("cases") or [] if case.get("id") == "I09_POLICY_PERSISTENCE_READ_OUTAGE")
+    read_assertions = "\n".join(read_case.get("assert") or [])
+    require("ownerPolicy null" in read_assertions, "policy-read outage owner-state obligation missing")
+    require("policyRuntimeSynchronized is unknown/null" in read_assertions, "policy-read synchronization truth obligation missing")
+    require("Cognitive Bridge policy-read endpoint returns HTTP 503" in read_assertions, "policy-read reconciliation fail-closed obligation missing")
 
     playwright = packet.get("playwrightProof") or {}
     viewports = {(item.get("name"), item.get("width"), item.get("height")) for item in playwright.get("viewports") or []}
     require(("desktop", 1440, 1000) in viewports, "desktop Playwright viewport missing")
     require(("mobile", 390, 844) in viewports, "mobile Playwright viewport missing")
     require(len(playwright.get("requiredArtifacts") or []) >= 6, "Playwright artifact set incomplete")
-    require(any("Policy-persistence outage" in item for item in playwright.get("cases") or []), "persistence-outage UI proof missing")
+    require(any("Policy-persistence write outage" in item for item in playwright.get("cases") or []), "persistence-write-outage UI proof missing")
+    require(any("Policy-persistence read outage" in item for item in playwright.get("cases") or []), "persistence-read-outage UI proof missing")
 
     post = packet.get("postBehaviorRegression") or {}
     require(set(post.get("allowedOnlyAfter") or []) == {"sourceProof PASS", "integrationProof PASS", "playwrightProof PASS"}, "package/build ordering guard lost")
@@ -104,7 +115,7 @@ def main() -> int:
 
     result = {
         "schema": "tenfold.workspace-pete-phase14-target-packet-validation.v1",
-        "campaignGeneration": 5,
+        "campaignGeneration": 6,
         "heads": EXPECTED,
         "target": target["nodeId"],
         "transport": target["requiredTransport"],
