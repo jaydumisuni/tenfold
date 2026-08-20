@@ -1,0 +1,37 @@
+{
+  "schema": "tenfold.workspace-static-review.v1",
+  "observed_date": "2026-08-20",
+  "node_id": "STATIC_ADMIN_REVIEW",
+  "repository": "jaydumisuni/TTG-Admin-Console",
+  "pull_request": 17,
+  "head_sha": "97acf6ffe60ab5fb42ba81f451f374bf1b43f46c",
+  "reviewer_identity": "chatgpt-gpt-5.6-sol",
+  "reviewer_method": "connector-exact-head-static-review-v1",
+  "reviewed_paths": [
+    "src/pete-systems-extension.js",
+    "src/phase14-entry.js",
+    "tests/pete-systems-phase14.test.mjs",
+    "wrangler.toml"
+  ],
+  "findings_corrected_before_admission": [
+    "phase14_admin_proxy_could_forward_owner_bearer_to_non_https_configured_hunter_origin"
+  ],
+  "remaining_actionable_blockers": [],
+  "observations": [
+    "Phase 14 adds exactly one Pete region to the existing Systems shell and enhancement is idempotent",
+    "browser uses only the same-origin /api/hunter/pete resource and /api/hunter/pete/model-control action",
+    "browser never receives Pete MCP credentials or private loopback transport",
+    "runtime/provider/model/specialist/cognitive values are escaped before HTML insertion",
+    "model-specific controls fail unavailable when the Pete registry is unavailable while reset/free-only remains governed",
+    "owner bearer forwarding now fails closed unless HUNTER_SERVICE_ORIGIN is a clean HTTPS origin",
+    "existing non-Pete Admin routing remains delegated to entry-v3"
+  ],
+  "limitations": [
+    "This is static engineering review, not corrected-head source execution or Playwright proof.",
+    "No desktop/mobile screenshot, button/reload persistence or DOM/network browser evidence is claimed."
+  ],
+  "unresolved_review_threads": 0,
+  "submitted_github_reviews": 0,
+  "static_review_passed": true,
+  "ship_authorized": false
+}
