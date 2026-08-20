@@ -4,24 +4,32 @@
   "node_id": "STATIC_HUNTER_REVIEW",
   "repository": "jaydumisuni/hunter",
   "pull_request": 174,
-  "head_sha": "c3406d6d51828e41961b09be2c124a48973675ee",
+  "head_sha": "18dc8bea1c94982b9744aa24a2d63ca489d998f0",
   "reviewer_identity": "chatgpt-gpt-5.6-sol",
   "reviewer_method": "connector-exact-head-static-review-v1",
   "reviewed_paths": [
     "cloudflare/hunter-api-worker/scripts/verify-pete-admin-phase14.mjs",
+    "cloudflare/hunter-api-worker/scripts/verify-phase14-pete-admin-vpc.mjs",
+    "cloudflare/hunter-api-worker/src/cognitive_bridge_proxy.ts",
     "cloudflare/hunter-api-worker/src/pete_admin_control.ts",
     "cloudflare/hunter-api-worker/src/pete_admin_state.ts",
     "cloudflare/hunter-api-worker/src/phase14_entry.ts",
     "cloudflare/hunter-api-worker/wrangler.toml",
     "hunter_pete_admin.py",
     "hunter_pete_admin_bridge.py",
+    "hunter_pete_admin_bridge_runtime.py",
     "hunter_pete_runtime.py",
-    "test_hunter_pete_admin_phase14.py"
+    "requirements-cognitive-bridge.txt",
+    "run_hunter_cognitive_bridge.py",
+    "test_hunter_pete_admin_phase14.py",
+    "tests/test_cognitive_bridge_service_install.py",
+    "tests/test_phase14_pete_admin_bridge.py"
   ],
   "findings_corrected_before_admission": [
     "cloud_policy_bridge_secret_could_be_sent_to_non_https_configured_origin",
     "cognitive_bridge_origin_validation_was_not_strict_enough_for_secret_transport",
-    "python_policy_normalizer_accepted_fractional_maxFallbacks_that_typescript_rejected"
+    "python_policy_normalizer_accepted_fractional_maxFallbacks_that_typescript_rejected",
+    "production_cognitive_bridge_path_did_not_expose_the_existing_bounded_pete_admin_handlers"
   ],
   "remaining_actionable_blockers": [],
   "observations": [
@@ -31,13 +39,20 @@
     "local Pete MCP target remains exact loopback and bearer authenticated",
     "cloud KV persistence and local mirror do not contain Pete MCP credentials",
     "failed local runtime application is reported pending_reconciliation rather than falsely synchronized",
-    "cloud policy secret transport now fails closed unless the configured online origin is clean HTTPS",
-    "cognitive bridge secret transport now requires a clean HTTPS origin with no userinfo/path/query/fragment",
-    "Python and TypeScript maxFallbacks integer semantics now match"
+    "cloud policy secret transport fails closed unless the configured online origin is clean HTTPS",
+    "cognitive bridge secret transport requires a clean HTTPS origin with no userinfo/path/query/fragment",
+    "Python and TypeScript maxFallbacks integer semantics match",
+    "Workers VPC permits exactly the two Phase 14 Pete admin routes in addition to the existing cognitive status/preflight/observe routes",
+    "the VPC proxy strips the browser Authorization header and forwards only the dedicated cognitive bridge secret plus bounded content headers",
+    "the dedicated Cognitive Bridge mounts the existing canonical Pete admin handlers through a non-listening staging registration adapter rather than duplicating policy logic",
+    "Pete invoke, Pete status and chat routes are not mounted on the dedicated Cognitive Bridge",
+    "the copied Pete admin handlers enforce HUNTER_COGNITIVE_BRIDGE_SECRET inside the handler itself, so omission of unrelated staging request hooks does not remove the admin secret boundary",
+    "bridge-specific runtime requirements now include the existing requests dependency used by the Pete MCP client"
   ],
   "limitations": [
-    "This is static engineering review, not corrected-head source execution proof.",
-    "Hosted Hunter workflows observed on an intermediate corrected head did not provide executable job-step evidence and are not counted as PASS."
+    "This is exact-head static engineering review, including the incremental c3406d6d51828e41961b09be2c124a48973675ee -> 18dc8bea1c94982b9744aa24a2d63ca489d998f0 bridge integration diff; it is not governing-target source execution proof.",
+    "Hosted Hunter workflows at the current head expose failed jobs with no executable step evidence and are not counted as PASS.",
+    "No Admin -> Hunter -> Pete live composition or browser/Playwright behavior is claimed by this static review."
   ],
   "unresolved_review_threads": 0,
   "submitted_github_reviews": 0,
