@@ -1,7 +1,7 @@
 {
   "schemaVersion": "tenfold.pete-phase14.target-packet.v1",
   "campaignId": "pete-phase14-tenfold-workspace",
-  "campaignGeneration": 3,
+  "campaignGeneration": 4,
   "preparedDate": "2026-08-20",
   "purpose": "Controlled corrected-head source, integration and Playwright proof for Pete Phase 14.",
   "candidateGeneration": {
@@ -15,7 +15,7 @@
       "repository": "jaydumisuni/hunter",
       "pullRequest": 174,
       "base": "5f4881ba15c6807aa631e163c16f2e6244885d07",
-      "head": "c3406d6d51828e41961b09be2c124a48973675ee"
+      "head": "18dc8bea1c94982b9744aa24a2d63ca489d998f0"
     },
     "admin": {
       "repository": "jaydumisuni/TTG-Admin-Console",
@@ -32,8 +32,8 @@
     "requiresExclusiveLease": "oracle-node:kratos-hp-290-g4-microtower-pc"
   },
   "preconditions": [
-    "Tenfold generation-3 authority preflight is PROVEN.",
-    "STATIC_PETE_REVIEW, STATIC_HUNTER_REVIEW and STATIC_ADMIN_REVIEW are PROVEN through Tenfold Officers/Council.",
+    "Tenfold generation-4 authority preflight is PROVEN.",
+    "STATIC_PETE_REVIEW, STATIC_HUNTER_REVIEW and STATIC_ADMIN_REVIEW are PROVEN through Tenfold Officers/Council on generation 4.",
     "The exact three candidate heads above have not moved.",
     "A current reachable OracleLiveContext is bound to the target node before dispatch.",
     "Each repository is materialized in an isolated clean worktree at its exact candidate head.",
@@ -63,20 +63,24 @@
     },
     "hunter": {
       "cwd": "<isolated-hunter-worktree>",
-      "runtime": "Python environment containing the existing Hunter Flask/requests dependencies and Node.js >=22",
+      "runtime": "Python environment containing the existing Hunter Flask/requests and repository test dependencies plus Node.js >=22",
       "commands": [
         "git rev-parse HEAD",
         "git status --porcelain",
-        "python -m py_compile hunter_pete_admin.py hunter_pete_admin_bridge.py hunter_pete_runtime.py test_hunter_pete_admin_phase14.py",
+        "python -m py_compile hunter_pete_admin.py hunter_pete_admin_bridge.py hunter_pete_admin_bridge_runtime.py hunter_pete_runtime.py run_hunter_cognitive_bridge.py test_hunter_pete_admin_phase14.py tests/test_phase14_pete_admin_bridge.py tests/test_cognitive_bridge_service_install.py",
         "python -m unittest -v test_hunter_pete_admin_phase14.py",
+        "python -m pytest -q tests/test_phase14_pete_admin_bridge.py tests/test_cognitive_bridge_service_install.py",
         "cd cloudflare/hunter-api-worker && node --experimental-strip-types scripts/verify-pete-admin-phase14.mjs",
+        "cd cloudflare/hunter-api-worker && node --experimental-strip-types scripts/verify-phase14-pete-admin-vpc.mjs",
         "cd cloudflare/hunter-api-worker && node scripts/verify-admin-control-boundary.mjs",
         "git diff --check",
         "git status --porcelain"
       ],
       "requiredResults": [
-        "HEAD equals c3406d6d51828e41961b09be2c124a48973675ee",
+        "HEAD equals 18dc8bea1c94982b9744aa24a2d63ca489d998f0",
         "Python Phase 14 policy/local-runtime regression PASS",
+        "dedicated Cognitive Bridge mounts only bounded Pete admin state/control and enforces bridge-secret denial",
+        "Workers VPC allows Pete admin state/control, strips browser Authorization, and rejects Pete invoke exposure",
         "Cloud owner-plane Phase 14 source verifier PASS",
         "existing Admin-control owner-auth boundary regression PASS",
         "HTTPS/clean-origin negative cases PASS without secret dispatch",
@@ -103,7 +107,7 @@
     }
   },
   "integrationProof": {
-    "requiredComposition": "Admin same-origin -> Hunter owner plane -> Hunter cognitive bridge -> local Hunter runtime -> private Pete MCP",
+    "requiredComposition": "Admin same-origin -> Hunter owner plane -> authenticated Workers VPC Cognitive Bridge -> dedicated local Hunter Cognitive Bridge -> bounded Pete admin handlers -> private Pete MCP",
     "cases": [
       {
         "id": "I01_OWNER_SNAPSHOT",
@@ -156,10 +160,20 @@
       },
       {
         "id": "I06_INVALID_ORIGIN_SECRET_CONTAINMENT",
-        "action": "Exercise the committed non-HTTPS/invalid-origin negative cases.",
+        "action": "Exercise the committed non-HTTPS/invalid-origin negative cases across Admin upstream and Hunter bridge transport.",
         "assert": [
           "owner bearer is never sent to an invalid Admin upstream",
           "cognitive bridge secret is never sent to an invalid Hunter/local origin"
+        ]
+      },
+      {
+        "id": "I07_VPC_BOUNDED_ROUTE_SURFACE",
+        "action": "Exercise the deployed bridge route allow-list through the Workers VPC transport.",
+        "assert": [
+          "GET /api/local/cognitive/pete is forwarded only with the dedicated bridge secret",
+          "POST /api/local/cognitive/pete/model-control is forwarded only with the dedicated bridge secret",
+          "browser Authorization is not forwarded to the VPC target",
+          "/api/local/pete/invoke and chat routes are not exposed by the VPC bridge"
         ]
       }
     ]
