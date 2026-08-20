@@ -6,26 +6,38 @@
   "base_branch": "master",
   "base_sha": "5f4881ba15c6807aa631e163c16f2e6244885d07",
   "head_branch": "phase14-systems-pete-surface-20260818",
-  "head_sha": "c3406d6d51828e41961b09be2c124a48973675ee",
+  "head_sha": "18dc8bea1c94982b9744aa24a2d63ca489d998f0",
   "draft": true,
   "mergeable": true,
   "unresolved_review_threads": 0,
   "changed_paths": [
     "cloudflare/hunter-api-worker/scripts/verify-pete-admin-phase14.mjs",
+    "cloudflare/hunter-api-worker/scripts/verify-phase14-pete-admin-vpc.mjs",
+    "cloudflare/hunter-api-worker/src/cognitive_bridge_proxy.ts",
     "cloudflare/hunter-api-worker/src/pete_admin_control.ts",
     "cloudflare/hunter-api-worker/src/pete_admin_state.ts",
     "cloudflare/hunter-api-worker/src/phase14_entry.ts",
     "cloudflare/hunter-api-worker/wrangler.toml",
     "hunter_pete_admin.py",
     "hunter_pete_admin_bridge.py",
+    "hunter_pete_admin_bridge_runtime.py",
     "hunter_pete_runtime.py",
-    "test_hunter_pete_admin_phase14.py"
+    "requirements-cognitive-bridge.txt",
+    "run_hunter_cognitive_bridge.py",
+    "test_hunter_pete_admin_phase14.py",
+    "tests/test_cognitive_bridge_service_install.py",
+    "tests/test_phase14_pete_admin_bridge.py"
   ],
   "earned_evidence": [
     "static_review_detected_non_https_secret_transport_risk",
     "cloud_policy_transport_fail_closed_correction_committed",
     "cognitive_bridge_origin_fail_closed_correction_committed",
     "fractional_max_fallback_semantic_drift_correction_committed",
+    "canonical_online_bridge_missing_pete_admin_routes_detected",
+    "canonical_pete_admin_handlers_mounted_on_dedicated_cognitive_bridge",
+    "workers_vpc_pete_admin_route_allowlist_committed",
+    "browser_authorization_header_stripped_before_vpc_forwarding",
+    "bridge_runtime_dependency_pin_extended_for_existing_pete_mcp_client",
     "security_regressions_committed"
   ],
   "pending_evidence": [
@@ -33,6 +45,7 @@
     "oracle_target_source_execution",
     "owner_auth_policy_persistence_and_runtime_sync_proof",
     "cross_repository_integration",
+    "playwright_owner_ui",
     "final_exact_head_regression",
     "independent_sergeant_review"
   ],
