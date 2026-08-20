@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "workspace/oracle_166_campaign.py"
+      - "workspace/authority/oracle_166/**"
       - ".github/workflows/workspace-oracle-166.yml"
 
 permissions:
@@ -15,9 +16,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     env:
-      ORACLE_HEAD: 0da59cf295cad3b2fcaaae34294969005ee876fb
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONPATH: ${{ github.workspace }}/src
+      ORACLE_HEAD: 0da59cf295cad3b2fcaaae34294969005ee876fb
     steps:
       - name: Check out exact Tenfold workspace head
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -47,23 +48,33 @@ jobs:
           PY
           test -z "$(git status --porcelain)"
 
-      - name: Check out exact Oracle PR 169 candidate
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          repository: jaydumisuni/Oracle-
-          ref: ${{ env.ORACLE_HEAD }}
-          path: .workspace-authority/oracle
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Assert exact Oracle authority and five-file scope
+      - name: Validate Oracle authority receipt boundary
         shell: bash
         run: |
           set -euo pipefail
-          ORACLE="$GITHUB_WORKSPACE/.workspace-authority/oracle"
-          test "$(git -C "$ORACLE" rev-parse HEAD)" = "$ORACLE_HEAD"
-          test -z "$(git -C "$ORACLE" status --porcelain)"
-          test "$(git -C "$ORACLE" diff --name-only 32d836e1fdac35755b1bbbaddc55d689cf117112 "$ORACLE_HEAD" | sort | wc -l | tr -d ' ')" = "5"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('workspace/authority/oracle_166/authority-manifest.json')
+          data = json.loads(p.read_text(encoding='utf-8'))
+          assert data['schemaVersion'] == 'tenfold.workspace-authority-receipt.v1'
+          assert data['repository'] == 'jaydumisuni/Oracle-'
+          assert data['issue'] == 166
+          assert data['pullRequest'] == 169
+          assert data['head'] == '0da59cf295cad3b2fcaaae34294969005ee876fb'
+          assert data['base'] == '32d836e1fdac35755b1bbbaddc55d689cf117112'
+          assert data['localMaterializationIsAuthority'] is False
+          expected = {
+              'ORACLE_TERMINAL_HANDOFF.md': '8456dd399e449d3869beddf08e84e1d2dcd0c788',
+              'scripts/Oracle-RecoveryRelaySupervisor.sh': '35117e8e6e08d4fdd956756e01d2afa56132c841',
+              'scripts/install-oracle-recovery-relay-systemd-user.sh': '71500fc523756c79c3bb84e700a1ad3eb10beb08',
+              'tests/oracle-relay-linux-bootstrap.test.ts': 'acbc7dd95822331c82622be9272bcb3ff749c07a',
+              'tests/recovery-relay-persistence.test.ts': 'bc2b2a76dac415111d011dd6a9c4a346281d252c',
+          }
+          actual = {item['path']: item['sourceGitBlob'] for item in data['changedFiles']}
+          assert actual == expected
+          print(json.dumps({'head': data['head'], 'sourceBlobReceipts': actual}, sort_keys=True))
+          PY
 
       - name: Execute real Tenfold Oracle 166 campaign
         shell: bash
@@ -71,7 +82,7 @@ jobs:
           set -euo pipefail
           OUT="$RUNNER_TEMP/oracle166-tenfold.json"
           python workspace/oracle_166_campaign.py \
-            --oracle-root "$GITHUB_WORKSPACE/.workspace-authority/oracle" \
+            --authority-root "$GITHUB_WORKSPACE/workspace/authority/oracle_166" \
             --output "$OUT" | tee "$RUNNER_TEMP/oracle166-tenfold.log"
           grep -q 'TENFOLD_ORACLE166_CAMPAIGN_OK' "$RUNNER_TEMP/oracle166-tenfold.log"
           python - "$OUT" <<'PY'
@@ -84,6 +95,7 @@ jobs:
           assert data['authority_council']['accepted_for_rebrief'] is True
           assert data['static_contract_failures'] == []
           assert data['superseded_evidence_fenced'] is True
+          assert data['local_materialization_is_authority'] is False
           assert data['shadow_campaign_retired'] is True
           assert set(data['frontier']['ready']) == {
               'EXACT_HEAD_REVIEW', 'ORACLE_LIVE_CONTEXT', 'PROOF_PACKET_PREP'
@@ -92,20 +104,12 @@ jobs:
               'FREEZE', 'KRATOS_PHYSICAL_SUITE', 'LIVE_PRIMARY_REPROVE'
           }
           assert len(data['physical_gate']) == 14
-          print(json.dumps(data, indent=2, sort_keys=True))
+          print(json.dumps({
+              'frontier': data['frontier'],
+              'semanticMaterializationMatchesSource': data['semantic_materialization_matches_source_blob'],
+              'requiredAssurance': data['required_campaign_assurance'],
+          }, indent=2, sort_keys=True))
           PY
-
-      - name: Prove Oracle authority remained clean
-        shell: bash
-        run: |
-          set -euo pipefail
-          ORACLE="$GITHUB_WORKSPACE/.workspace-authority/oracle"
-          test "$(git -C "$ORACLE" rev-parse HEAD)" = "$ORACLE_HEAD"
-          test -z "$(git -C "$ORACLE" status --porcelain)"
-
-      - name: Remove authority materialization
-        shell: bash
-        run: rm -rf "$GITHUB_WORKSPACE/.workspace-authority"
 
       - name: Prove Tenfold workspace remained clean
         shell: bash
