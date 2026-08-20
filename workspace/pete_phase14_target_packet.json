@@ -1,7 +1,7 @@
 {
   "schemaVersion": "tenfold.pete-phase14.target-packet.v1",
   "campaignId": "pete-phase14-tenfold-workspace",
-  "campaignGeneration": 5,
+  "campaignGeneration": 6,
   "preparedDate": "2026-08-20",
   "purpose": "Controlled corrected-head source, integration and Playwright proof for Pete Phase 14.",
   "candidateGeneration": {
@@ -15,7 +15,7 @@
       "repository": "jaydumisuni/hunter",
       "pullRequest": 174,
       "base": "5f4881ba15c6807aa631e163c16f2e6244885d07",
-      "head": "affc4ba01af4594fd8a8b5a4b4d26a6bfdacbec8"
+      "head": "2723466946ae90ec5b6c0c3166ed1cb066e4307c"
     },
     "admin": {
       "repository": "jaydumisuni/TTG-Admin-Console",
@@ -32,8 +32,8 @@
     "requiresExclusiveLease": "oracle-node:kratos-hp-290-g4-microtower-pc"
   },
   "preconditions": [
-    "Tenfold generation-5 authority preflight is PROVEN.",
-    "STATIC_PETE_REVIEW, STATIC_HUNTER_REVIEW and STATIC_ADMIN_REVIEW are PROVEN through Tenfold Officers/Council on generation 5.",
+    "Tenfold generation-6 authority preflight is PROVEN.",
+    "STATIC_PETE_REVIEW, STATIC_HUNTER_REVIEW and STATIC_ADMIN_REVIEW are PROVEN through Tenfold Officers/Council on generation 6.",
     "The exact three candidate heads above have not moved.",
     "A current reachable OracleLiveContext is bound to the target node before dispatch.",
     "Each repository is materialized in an isolated clean worktree at its exact candidate head.",
@@ -77,12 +77,14 @@
         "git status --porcelain"
       ],
       "requiredResults": [
-        "HEAD equals affc4ba01af4594fd8a8b5a4b4d26a6bfdacbec8",
+        "HEAD equals 2723466946ae90ec5b6c0c3166ed1cb066e4307c",
         "Python Phase 14 policy/local-runtime regression PASS",
         "dedicated Cognitive Bridge mounts only bounded Pete admin state/control and enforces bridge-secret denial",
         "Workers VPC allows Pete admin state/control, strips browser Authorization, and rejects Pete invoke exposure",
         "Cloud owner-plane Phase 14 source verifier PASS",
-        "missing HUNTER_PORTAL_KV returns HTTP 503 PETE_ROUTE_POLICY_PERSISTENCE_UNAVAILABLE and does not claim persistence or apply the local model-control path",
+        "missing HUNTER_PORTAL_KV write capability returns HTTP 503 PETE_ROUTE_POLICY_PERSISTENCE_UNAVAILABLE and does not claim persistence or apply the local model-control path",
+        "missing HUNTER_PORTAL_KV binding and KV read failure are reported as unavailable rather than a fabricated default owner policy",
+        "bridge policy read returns HTTP 503 on KV read failure instead of supplying the default policy to reconciliation",
         "existing Admin-control owner-auth boundary regression PASS",
         "HTTPS/clean-origin negative cases PASS without secret dispatch",
         "git diff --check PASS",
@@ -118,7 +120,7 @@
           "Hunter remains visible identity",
           "Pete snapshot schema is pete.admin_snapshot.v1",
           "provider/model state comes from Pete",
-          "ownerPolicy/controlOwner come from Hunter",
+          "ownerPolicy/controlOwner come from Hunter when the policy store is readable",
           "no Pete token, cognitive bridge secret, private loopback URL, raw prompt/transcript or hidden reasoning is returned"
         ]
       },
@@ -178,13 +180,23 @@
         ]
       },
       {
-        "id": "I08_POLICY_PERSISTENCE_OUTAGE",
-        "action": "Make the Hunter owner route-policy store unavailable and submit a valid reset/control request.",
+        "id": "I08_POLICY_PERSISTENCE_WRITE_OUTAGE",
+        "action": "Make the Hunter owner route-policy store unavailable for writes and submit a valid reset/control request.",
         "assert": [
           "Hunter returns HTTP 503 PETE_ROUTE_POLICY_PERSISTENCE_UNAVAILABLE",
           "the response does not claim ownerPolicyStatus persisted",
           "the local Pete model-control route is not called after failed persistence",
           "the request is not misclassified as invalid policy"
+        ]
+      },
+      {
+        "id": "I09_POLICY_PERSISTENCE_READ_OUTAGE",
+        "action": "Make Hunter route-policy KV reads fail while Pete runtime remains independently reachable.",
+        "assert": [
+          "owner snapshot reports persistence unavailable and ownerPolicy null",
+          "policyRuntimeSynchronized is unknown/null rather than false synchronization or a fabricated default",
+          "Pete runtime state may remain available independently",
+          "the Cognitive Bridge policy-read endpoint returns HTTP 503 and does not send a default policy into reconciliation"
         ]
       }
     ]
@@ -201,7 +213,8 @@
       "Provider/model table identifies Free/Paid, health, quota, location, effective state and reason.",
       "Owner can Save a valid manual policy by clicking the rendered control.",
       "Invalid/unknown manual selection is visibly blocked and is not persisted.",
-      "Policy-persistence outage is visibly unavailable and is not presented as invalid policy or successful save.",
+      "Policy-persistence write outage is visibly unavailable and is not presented as invalid policy or successful save.",
+      "Policy-persistence read outage is visibly unavailable and does not present the fallback free-only policy as persisted owner truth.",
       "Reset button returns to free-only and survives reload.",
       "Reload re-reads persisted Hunter policy rather than only browser memory.",
       "Unavailable cognitive state remains explicit after reload.",
