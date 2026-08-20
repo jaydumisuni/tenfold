@@ -8,6 +8,7 @@ on:
       - "workspace/pete_phase14_campaign_v2.py"
       - "workspace/pete_phase14_campaign_v3.py"
       - "workspace/pete_phase14_campaign_v4.py"
+      - "workspace/pete_phase14_campaign_v5.py"
       - "workspace/pete_phase14_static_advance.py"
       - "workspace/pete_phase14_target_packet.json"
       - "workspace/pete_phase14_target_packet_validate.py"
@@ -65,7 +66,7 @@ jobs:
         run: |
           set -euo pipefail
           OUT="$RUNNER_TEMP/pete-phase14-tenfold.json"
-          python workspace/pete_phase14_campaign_v4.py \
+          python workspace/pete_phase14_campaign_v5.py \
             --authority-root "$GITHUB_WORKSPACE" \
             --output "$OUT" | tee "$RUNNER_TEMP/pete-phase14-tenfold.log"
           grep -q 'TENFOLD_PETE_PHASE14_AUTHORITY_PREFLIGHT_OK' "$RUNNER_TEMP/pete-phase14-tenfold.log"
@@ -73,9 +74,9 @@ jobs:
           import json, sys
           data = json.load(open(sys.argv[1], encoding='utf-8'))
           assert data['tenfold_base'] == '51a220f6554674aa8bfeb1f5f56c9a09fef4de76'
-          assert data['campaign_generation'] == 3
+          assert data['campaign_generation'] == 4
           assert data['bindings']['pete']['head'] == '9f493772e3c1e8baa6afcc3f230262fdf71a2e2b'
-          assert data['bindings']['hunter']['head'] == 'c3406d6d51828e41961b09be2c124a48973675ee'
+          assert data['bindings']['hunter']['head'] == '18dc8bea1c94982b9744aa24a2d63ca489d998f0'
           assert data['bindings']['admin']['head'] == '97acf6ffe60ab5fb42ba81f451f374bf1b43f46c'
           assert data['derivation_passed'] is True
           assert data['derivation_findings'] == []
@@ -113,7 +114,7 @@ jobs:
           python - "$OUT" <<'PY'
           import json, sys
           data = json.load(open(sys.argv[1], encoding='utf-8'))
-          assert data['campaign_generation'] == 3
+          assert data['campaign_generation'] == 4
           assert data['derivation_passed'] is True
           assert data['static_council']['accepted_for_rebrief'] is True
           assert data['static_council']['evidence_packets'] == 3
@@ -140,7 +141,7 @@ jobs:
           python - "$OUT" <<'PY'
           import json, sys
           data = json.load(open(sys.argv[1], encoding='utf-8'))
-          assert data['campaignGeneration'] == 3
+          assert data['campaignGeneration'] == 4
           assert data['packetPrepared'] is True
           assert data['packetValid'] is True
           assert data['oracleLiveContextProven'] is False
