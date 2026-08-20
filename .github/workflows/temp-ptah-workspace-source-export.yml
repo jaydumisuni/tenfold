@@ -11,6 +11,7 @@ on:
 permissions:
   contents: read
 
+# Disposable transport workflow. DO NOT MERGE.
 jobs:
   export:
     runs-on: ubuntu-24.04
