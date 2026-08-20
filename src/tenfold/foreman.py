@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+
 from .contracts import CampaignManifest, CampaignNode, DependencyClass, NodeState
+from .method_profiles import MethodProfileBinding
 
 
 SATISFYING_STATES = {NodeState.PROVEN, NodeState.SHIPPED}
@@ -35,6 +37,7 @@ ALLOWED_TRANSITIONS: dict[NodeState, frozenset[NodeState]] = {
 class CampaignRuntime:
     campaign: CampaignManifest
     states: dict[str, NodeState] = field(default_factory=dict)
+    method_profile: MethodProfileBinding | None = None
 
     def __post_init__(self) -> None:
         for node in self.campaign.nodes:
@@ -42,21 +45,33 @@ class CampaignRuntime:
 
 
 class Foreman:
-    def __init__(self, campaign: CampaignManifest):
-        self.runtime = CampaignRuntime(campaign)
+    def __init__(self, campaign: CampaignManifest, *, method_profile: MethodProfileBinding | None = None):
+        self.runtime = CampaignRuntime(campaign, method_profile=method_profile)
 
     @classmethod
-    def restore(cls, campaign: CampaignManifest, states: dict[str, NodeState]) -> "Foreman":
+    def restore(
+        cls,
+        campaign: CampaignManifest,
+        states: dict[str, NodeState],
+        *,
+        method_profile: MethodProfileBinding | None = None,
+    ) -> "Foreman":
         expected = {node.node_id for node in campaign.nodes}
         if set(states) != expected:
             raise ValueError("persisted node-state set does not match campaign")
-        foreman = cls(campaign)
+        foreman = cls(campaign, method_profile=method_profile)
         foreman.runtime.states = dict(states)
         return foreman
 
     @property
     def campaign(self) -> CampaignManifest:
         return self.runtime.campaign
+
+    @property
+    def method_profile(self) -> MethodProfileBinding | None:
+        """Return execution-method metadata without granting it campaign authority."""
+
+        return self.runtime.method_profile
 
     def transition(self, node_id: str, state: NodeState) -> None:
         if node_id not in self.runtime.states:
@@ -83,7 +98,15 @@ class Foreman:
             state = self.runtime.states[node.node_id]
             if state in TERMINAL_STATES or state in {NodeState.PROVEN, NodeState.FROZEN, NodeState.PROVING, NodeState.CANDIDATE}:
                 continue
-            if state not in {NodeState.AUTHORIZED, NodeState.BLOCKED, NodeState.PREPARE_ONLY, NodeState.READY, NodeState.FAILED, NodeState.REBIND_REQUIRED, NodeState.RECONCILE_REQUIRED}:
+            if state not in {
+                NodeState.AUTHORIZED,
+                NodeState.BLOCKED,
+                NodeState.PREPARE_ONLY,
+                NodeState.READY,
+                NodeState.FAILED,
+                NodeState.REBIND_REQUIRED,
+                NodeState.RECONCILE_REQUIRED,
+            }:
                 continue
             if self._dependency_satisfied(node):
                 ready.append(node.node_id)
