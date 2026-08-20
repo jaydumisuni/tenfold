@@ -1,0 +1,106 @@
+name: Workspace Pete Phase 14 closeout
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "workspace/pete_phase14_campaign.py"
+      - "workspace/authority/pete_phase14/**"
+      - ".github/workflows/workspace-pete-phase14.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  pete-phase14-authority:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONPATH: ${{ github.workspace }}/src
+    steps:
+      - name: Check out exact Tenfold workspace head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Assert exact Tenfold workspace head
+        shell: bash
+        env:
+          TENFOLD_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: test "$(git rev-parse HEAD)" = "$TENFOLD_HEAD"
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Bind qualified Tenfold runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import tenfold
+          from tenfold.foreman import Foreman
+          from tenfold.workforce import LocalWorkforce
+          from tenfold.assurance import FOUNDING_MATRIX
+          print(tenfold.__file__)
+          print(Foreman.__name__)
+          print(LocalWorkforce.__name__)
+          print(FOUNDING_MATRIX.generation, FOUNDING_MATRIX.digest)
+          PY
+          test -z "$(git status --porcelain)"
+
+      - name: Execute real Tenfold Pete Phase 14 authority campaign
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/pete-phase14-tenfold.json"
+          python workspace/pete_phase14_campaign.py \
+            --authority-root "$GITHUB_WORKSPACE" \
+            --output "$OUT" | tee "$RUNNER_TEMP/pete-phase14-tenfold.log"
+          grep -q 'TENFOLD_PETE_PHASE14_AUTHORITY_PREFLIGHT_OK' "$RUNNER_TEMP/pete-phase14-tenfold.log"
+          python - "$OUT" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert data['tenfold_base'] == '51a220f6554674aa8bfeb1f5f56c9a09fef4de76'
+          assert data['bindings']['pete']['head'] == 'eab99faaefd17bca91205bf61457e653894d2f67'
+          assert data['bindings']['hunter']['head'] == '717a3e52ba51faf22a63fed0b028584b75c68554'
+          assert data['bindings']['admin']['head'] == 'f6333cdf12a24e46fc8649aa2c0be6f713c82038'
+          assert data['derivation_passed'] is True
+          assert data['derivation_findings'] == []
+          assert data['deterministic_worker_evidence'] == 3
+          assert data['deterministic_worker_failures'] == 0
+          assert data['authority_council']['accepted_for_rebrief'] is True
+          assert data['frontier']['ready'] == [
+              'ORACLE_LIVE_CONTEXT',
+              'STATIC_ADMIN_REVIEW',
+              'STATIC_HUNTER_REVIEW',
+              'STATIC_PETE_REVIEW',
+          ]
+          assert data['frontier']['prepare_only'] == []
+          assert set(data['required_campaign_assurance']) == {
+              'tenfold_council',
+              'sec_ops',
+              'independent_authority_review',
+              'integration_assurance',
+              'release_activation_assurance',
+          }
+          assert data['additional_assurance'] == ['independent_model_free_sergeant_review']
+          assert data['private_source_published_to_tenfold'] is False
+          assert data['ship_authorized'] is False
+          print(json.dumps(data, indent=2, sort_keys=True))
+          PY
+
+      - name: Prove Tenfold workspace remained clean
+        shell: bash
+        env:
+          TENFOLD_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TENFOLD_HEAD"
+          status="$(git status --porcelain)"
+          printf '%s\n' "$status"
+          test -z "$status"
