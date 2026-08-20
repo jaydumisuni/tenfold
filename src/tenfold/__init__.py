@@ -46,6 +46,20 @@ from .derivation_assurance import DerivationProof, independently_assure
 from .durability import AuthorizedReplayLedger, DurableAuthorityError, DurableCampaignStore
 from .facility import ArtifactEvidence, FacilityError, FacilityEvidence, FacilityKind
 from .foreman import Foreman
+from .method_profiles import (
+    MethodEvidenceStore,
+    MethodLearningSession,
+    MethodLearningSnapshot,
+    MethodObservation,
+    MethodObservationCategory,
+    MethodProfileBinding,
+    MethodProfileError,
+    MethodProfileNotFound,
+    MethodRevisionProposal,
+    ProjectMethodDescriptor,
+    ProjectMethodRegistry,
+    StaleMethodProfile,
+)
 from .oracle_facility import OracleFacility, OracleLiveContext, OracleTerminalSpec
 from .ptah_facility import (
     PTAH_A06_ACCEPTED,
@@ -97,6 +111,15 @@ __all__ = [
     "JobKind",
     "LocalWorkerRuntime",
     "LocalWorkforce",
+    "MethodEvidenceStore",
+    "MethodLearningSession",
+    "MethodLearningSnapshot",
+    "MethodObservation",
+    "MethodObservationCategory",
+    "MethodProfileBinding",
+    "MethodProfileError",
+    "MethodProfileNotFound",
+    "MethodRevisionProposal",
     "Milestone",
     "NodeState",
     "OracleFacility",
@@ -104,6 +127,8 @@ __all__ = [
     "OracleTerminalSpec",
     "PTAH_A06_ACCEPTED",
     "PlaywrightFacility",
+    "ProjectMethodDescriptor",
+    "ProjectMethodRegistry",
     "PtahAuthorityProfile",
     "PtahFacility",
     "PtahProviderContext",
@@ -117,6 +142,7 @@ __all__ = [
     "SecOpsAssuranceAdapter",
     "SergeantMilestoneAdapter",
     "SpecialistAssuranceAdapter",
+    "StaleMethodProfile",
     "TaskPacket",
     "ValidatedAdvice",
     "VerifiedAssurance",
