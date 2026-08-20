@@ -1,0 +1,14 @@
+{
+  "schema_version": "0.1.0",
+  "profiles": [
+    {
+      "project_id": "ptah",
+      "profile_id": "PM-PTAH-001",
+      "revision": "0.1.0",
+      "status": "active",
+      "profile_path": "docs/project-methods/PM-PTAH-001.md",
+      "applicable_methods": ["OM-001"],
+      "aliases": ["Ptah-space", "ptah-roadmap-"]
+    }
+  ]
+}

@@ -58,6 +58,39 @@ Before Tenfold begins substantial work on an external project:
 
 A missing profile does not block emergency or trivial work, but substantial roadmap execution must not continue indefinitely without one.
 
+## Machine runtime use
+
+Project Method Profiles are not documentation-only.
+
+Tenfold provides a machine-readable registry at:
+
+`docs/project-methods/registry.json`
+
+The runtime can:
+
+- resolve a project or registered alias to its current profile;
+- bind the exact profile revision and SHA-256 content digest to a running campaign context;
+- reject a stale saved binding after the profile metadata or content changes;
+- expose the binding through the Foreman runtime as non-authoritative execution metadata;
+- record structured method observations and measurements;
+- persist/restore method-learning snapshots atomically;
+- produce evidence-backed revision proposals.
+
+The binding is intentionally **outside `CampaignManifest`**. Attaching a Project Method Profile must not alter:
+
+- blueprint identity;
+- CampaignManifest digest;
+- dependency truth;
+- Foreman frontier;
+- state-transition authority;
+- Assurance Matrix requirements;
+- mutation permissions;
+- Ship/release authority.
+
+A method revision proposal is not self-applying authority. It is a structured recommendation supported by retained observations. The canonical Markdown profile and machine-readable registry are changed only through the normal reviewed repository process.
+
+This separation lets Tenfold learn how to execute a project better without allowing convenience/learning data to rewrite the approved engineering campaign.
+
 ## Mandatory profile fields
 
 Every Project Method Profile must record:
@@ -214,6 +247,8 @@ A project may have multiple profiles when execution modes are materially differe
 For any known project, a zero-context agent must recover the applicable Project Method Profile before selecting an execution topology.
 
 Do not reconstruct a project's working method from model memory when a canonical profile exists.
+
+When machine execution is available, recover the profile through `ProjectMethodRegistry`, retain the resulting exact `MethodProfileBinding`, and verify that binding after workspace/profile recovery before reusing stored method observations.
 
 ## Authority boundary
 
