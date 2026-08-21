@@ -1,0 +1,13 @@
+Pygments==2.21.0
+greenlet==3.5.5
+iniconfig==2.3.0
+packaging==26.3
+pip==26.2.1
+playwright==1.57.0
+pluggy==1.6.0
+pyee==13.0.1
+pytest==9.1.1
+sergeant-reviewer @ git+https://github.com/jaydumisuni/Sergeant.git@4a277cc5950aa08a98157b950c96fb88f2178c79
+setuptools==79.0.1
+tenfold==0.1.0+source.fd3645cc49126d730c697c4701e3be42eb073d42
+typing_extensions==4.16.0
