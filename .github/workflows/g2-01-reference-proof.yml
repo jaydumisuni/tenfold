@@ -1,0 +1,157 @@
+name: G2-01 exact Gen1 reference proof
+
+on:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 1 * *'
+
+permissions:
+  contents: read
+
+jobs:
+  cold-boot:
+    # The hosted runner label is transport only. The authoritative userspace is
+    # the content-addressed OCI image below, bound together with linux/amd64.
+    runs-on: ubuntu-24.04
+    container:
+      image: mcr.microsoft.com/playwright/python:v1.57.0-amd64@sha256:8331696befd3ee8b5baefca428446345f548e415a2408fe1d3d1224e9d919682
+    steps:
+      - name: Checkout exact G2-01 candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout frozen Gen1 migration reference
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: 05aa384a34a650e677970904079a985ec8b26d90
+          path: gen1-reference
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up exact Python 3.11.16
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11.16'
+
+      - name: Verify frozen environment identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "x86_64"
+          test "$(python --version)" = "Python 3.11.16"
+          test "$(git -C gen1-reference rev-parse HEAD)" = "05aa384a34a650e677970904079a985ec8b26d90"
+          test "$(git -C gen1-reference write-tree)" = "c7c130b573180e74438d70b6e11c17dd9bade648"
+          test -z "$(git -C gen1-reference status --porcelain)"
+
+      - name: Bind exact Python shared runtime for sanitized Gen1 workers
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_lib="$Python_ROOT_DIR/lib/libpython3.11.so.1.0"
+          test -f "$source_lib"
+          install -m 0644 "$source_lib" /usr/local/lib/libpython3.11.so.1.0
+          ldconfig
+          test "$(sha256sum "$source_lib" | awk '{print $1}')" = "$(sha256sum /usr/local/lib/libpython3.11.so.1.0 | awk '{print $1}')"
+          env -i PATH="$PATH" HOME="$HOME" python -c "import sys; assert sys.version_info[:3] == (3, 11, 16)"
+
+      - name: Bind content-addressed Chromium for accepted Gen1 browser proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t browsers < <(find /ms-playwright -type f -name chrome -perm -111 | LC_ALL=C sort)
+          test "${#browsers[@]}" -eq 1
+          browser="${browsers[0]}"
+          ln -sf "$browser" /usr/local/bin/chromium
+          test -x /usr/local/bin/chromium
+          chromium --version
+          sha256sum "$browser" > /tmp/g2-01-chromium.sha256
+
+      - name: Install exact frozen dependency environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --no-deps \
+            pip==26.2.1 setuptools==79.0.1 wheel==0.45.1 \
+            Pygments==2.21.0 greenlet==3.5.5 iniconfig==2.3.0 packaging==26.3 \
+            playwright==1.57.0 pluggy==1.6.0 pyee==13.0.1 pytest==9.1.1 typing_extensions==4.16.0
+          python -m pip install --no-build-isolation --no-deps ./gen1-reference
+          python -m pip install --no-build-isolation --no-deps \
+            'git+https://github.com/jaydumisuni/Sergeant.git@4a277cc5950aa08a98157b950c96fb88f2178c79'
+          test "$(python -m pip --version | awk '{print $1" "$2}')" = "pip 26.2.1"
+          python -m pip freeze --all | grep -v '^tenfold' | LC_ALL=C sort -f > /tmp/g2-01-installed-lock.txt
+          LC_ALL=C sort -f candidate/docs/gen2/g2-01-pip-freeze.txt > /tmp/g2-01-candidate-lock.txt
+          diff -u /tmp/g2-01-candidate-lock.txt /tmp/g2-01-installed-lock.txt
+
+      - name: Verify candidate bindings against exact reference tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=candidate/src python - <<'PY'
+          from pathlib import Path
+          from tenfold.gen2.reference import Gen1ReferenceBundle
+          root = Path('candidate')
+          bundle = Gen1ReferenceBundle.load(root / 'docs/gen2/g2-01-gen1-reference-bundle.json')
+          require_proven = bundle.cold_boot_status == 'PASS'
+          bundle.validate(root, require_proven=require_proven)
+          bundle.validate_reference_tree(root, Path('gen1-reference'))
+          assert bundle.migration_reference_sha == '05aa384a34a650e677970904079a985ec8b26d90'
+          assert bundle.migration_reference_tree_sha == 'c7c130b573180e74438d70b6e11c17dd9bade648'
+          assert bundle.environment.python_version == 'Python 3.11.16'
+          assert bundle.cold_boot_status in {'PENDING', 'PASS'}
+          PY
+
+      - name: Run exact Gen1 repository-only cold boot
+        shell: bash
+        env:
+          TENFOLD_REPOSITORY_ONLY_PROOF: '1'
+          TENFOLD_CANDIDATE_SHA: 05aa384a34a650e677970904079a985ec8b26d90
+        run: |
+          set -euo pipefail
+          cd gen1-reference
+          python -m compileall -q src
+          python -m pytest -q | tee "$GITHUB_WORKSPACE/g2-01-pytest-reference.txt"
+          grep -Eq '^[0-9]+ passed in ' "$GITHUB_WORKSPACE/g2-01-pytest-reference.txt"
+          ! grep -Eq '[0-9]+ skipped' "$GITHUB_WORKSPACE/g2-01-pytest-reference.txt"
+
+      - name: Build cold-boot proof artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo 'TENFOLD_G2_01_COLD_BOOT_PROOF_V1'
+            echo 'status=PASS'
+            echo 'migration_reference_sha=05aa384a34a650e677970904079a985ec8b26d90'
+            echo 'migration_reference_tree_sha=c7c130b573180e74438d70b6e11c17dd9bade648'
+            echo 'platform=linux/amd64'
+            echo 'container_image=mcr.microsoft.com/playwright/python:v1.57.0-amd64@sha256:8331696befd3ee8b5baefca428446345f548e415a2408fe1d3d1224e9d919682'
+            echo 'checkout_action=actions/checkout@11d5960a326750d5838078e36cf38b85af677262'
+            echo 'setup_python_action=actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065'
+            echo "python_version=$(python --version)"
+            echo "pip_version=$(python -m pip --version | awk '{print $1" "$2}')"
+            echo "python_shared_library_sha256=$(sha256sum /usr/local/lib/libpython3.11.so.1.0 | awk '{print $1}')"
+            echo 'python_shared_library_loader_path=/usr/local/lib/libpython3.11.so.1.0'
+            echo "chromium_executable=$(readlink -f /usr/local/bin/chromium)"
+            echo "chromium_sha256=$(sha256sum "$(readlink -f /usr/local/bin/chromium)" | awk '{print $1}')"
+            echo "chromium_version=$(chromium --version)"
+            echo 'sergeant_sha=4a277cc5950aa08a98157b950c96fb88f2178c79'
+            echo "candidate_sha=${{ github.event.pull_request.head.sha || github.sha }}"
+            sha256sum candidate/docs/gen2/g2-01-pip-freeze.txt
+            sha256sum candidate/docs/gen2/g2-01-reference-corpus.sha256
+            sha256sum candidate/docs/gen2/g2-01-semantic-corpus.sha256
+            sha256sum candidate/docs/gen2/g2-01-qualification-fixture-corpus.sha256
+            cat g2-01-pytest-reference.txt
+          } > g2-01-cold-boot-proof.txt
+          sha256sum g2-01-cold-boot-proof.txt
+
+      - name: Upload exact cold-boot proof
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: g2-01-cold-boot-proof
+          path: g2-01-cold-boot-proof.txt
+          if-no-files-found: error
+          retention-days: 7
