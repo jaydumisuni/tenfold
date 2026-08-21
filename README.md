@@ -41,15 +41,24 @@ Tenfold applies that discipline to mass machine execution.
 
 ## Canonical reading order
 
-1. `docs/00-founding-authority.md` — frozen TF-00 product and authority boundary.
-2. `docs/01-roadmap.md` — founding implementation roadmap from TF-01 through TF-31.
-3. `docs/02-assurance-matrix.md` — deterministic external-assurance policy and amendment rules.
-4. `docs/03-sergeant-donor-map.md` — what is inherited from Sergeant and what is deliberately not copied.
-5. `docs/04-tf00-review-record.md` — hostile review findings, dispositions, and final PASS.
-6. `AGENTS.md` — zero-context operating rules for any AI/automation.
-7. `PICKUP.md` — current repository completion state, recovery authority, and future-work boundary.
+For current Tenfold evolution work, read:
+
+1. `docs/00-founding-authority.md` — frozen TF-00 product and superior authority boundary.
+2. `docs/01-roadmap.md` — completed founding implementation roadmap TF-01 through TF-31.
+3. `docs/07-gen2-evolution-authority.md` — frozen G2-00 Gen-2.0 evolution authority.
+4. `docs/08-gen2-roadmap.md` — frozen Gen-2.0 construction roadmap G2-01 through G2-30 and authority-ownership matrix.
+5. `docs/09-gen2-review-record.md` — Gen-2 architecture/reconciliation PASS record and zero-context pickup.
+6. `docs/02-assurance-matrix.md` — deterministic external-assurance policy and amendment rules.
+7. `docs/03-sergeant-donor-map.md` — what is inherited from Sergeant and what is deliberately not copied.
+8. `docs/04-tf00-review-record.md` — hostile TF-00 review findings, dispositions, and final PASS.
+9. `docs/05-operating-methods.md` — field-tested execution methods; not architecture authority.
+10. `docs/06-project-method-profiles.md` — project-specific execution-learning profiles; not architecture authority.
+11. `AGENTS.md` — zero-context operating rules for AI/automation.
+12. `PICKUP.md` — current repository completion/recovery state.
 
 ## Current state
+
+### Gen 1 / founding roadmap
 
 The Tenfold founding implementation roadmap is **complete through TF-31**.
 
@@ -66,6 +75,21 @@ TF-31 proved the repository-only full-engineering qualification path, including 
 
 TF-21 browser authority remains local-source only. Remote browser networking stays fail-closed until a separate independently accepted authority expansion proves and enables it.
 
-Future work is Tenfold product evolution, integration, packaging, performance, authority expansion, or a new approved roadmap — not unfinished TF-01 through TF-31 work.
+### Gen 2 / approved evolution path
 
-No implementation may weaken TF-00 merely for convenience. A newly discovered violation of a founding invariant reopens TF-00; ordinary new functionality belongs to a new approved evolution path.
+Gen-2.0 architecture review and post-PASS reconciliation are complete.
+
+- G2-00 architecture: **FROZEN DESIGN AUTHORITY**.
+- G2-01 through G2-30 roadmap: **FROZEN ROADMAP**.
+- Architecture review: **PASS — 0 blockers / 0 majors**.
+- Post-PASS reconciliation: **PASS / READY_FOR_FREEZE**.
+- Gen-2 implementation: **NOT STARTED**.
+- Gen-2 qualification: **NOT STARTED**.
+- Current next Gen-2 milestone: **G2-01 — Gen-1 Reference and Inheritance Freeze**.
+- Construction runtime at roadmap start: **qualified Tenfold Gen 1**.
+
+The Gen-2 bootstrap is explicit: Gen 1 builds Gen 2 under TF-00 + G2-00 until G2-27 independently proves the Self-Construction Minimum. Only then may Gen 2 execute the remaining already-approved roadmap itself. Gen 1 remains afterward as frozen reference/differential oracle/fallback unless later authority explicitly retires it.
+
+Gen 2.0 deliberately does **not** activate evidence reuse, Work Cells/Execution Forest optimisation, learned scheduling, Method Registry, Experience Graph or institutional self-learning. Those are reserved for later approved generations.
+
+No implementation may weaken TF-00 or G2-00 merely for convenience. A discovered violation of a frozen invariant reopens the applicable authority document; ordinary implementation work follows the approved Gen-2 roadmap.
