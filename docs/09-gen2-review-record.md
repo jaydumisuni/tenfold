@@ -151,9 +151,10 @@ A fresh chat/agent working on Gen 2 must read, in this order:
 3. `docs/08-gen2-roadmap.md` — exact G2-01…G2-30 construction roadmap and ownership matrix.
 4. `docs/09-gen2-review-record.md` — review/freeze context and residual boundaries.
 5. `docs/02-assurance-matrix.md` — external assurance authority.
-6. `docs/05-operating-methods.md` and `docs/06-project-method-profiles.md` — inherited execution guidance, never constitutional authority.
-7. `PICKUP.md` — repository recovery point.
-8. live repository state — current main head, open PRs, exact candidate heads, checks/proof and active milestone evidence.
+6. `docs/10-chat-workspace-execution.md` — canonical chat-workspace execution rule.
+7. `docs/05-operating-methods.md` and `docs/06-project-method-profiles.md` — inherited execution guidance, never constitutional authority.
+8. `PICKUP.md` — repository recovery point.
+9. live repository state — current main head, open PRs, exact candidate heads, checks/proof and active milestone evidence.
 
 Do not restart architecture review merely because a new chat lacks conversation history. Reopen G2-00 only if implementation/evidence demonstrates an actual frozen-authority violation or the Owner explicitly authorises an architecture change.
 
