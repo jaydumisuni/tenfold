@@ -20,12 +20,14 @@ This file records the repository recovery point. Always recover live GitHub stat
 - Gen-2 hostile architecture review: **PASS — 0 blockers / 0 majors**.
 - Post-PASS reconciliation: **PASS / READY_FOR_FREEZE**.
 - Canonical review/freeze record: `docs/09-gen2-review-record.md`.
+- Canonical chat-workspace execution rule: `docs/10-chat-workspace-execution.md`.
+- Complete generational evolution map: `docs/11-generational-evolution-map.md`.
 - Gen-2 implementation: **NOT STARTED**.
 - Gen-2 qualification: **NOT STARTED**.
 - Current next Gen-2 milestone: **G2-01 — Gen-1 Reference and Inheritance Freeze**.
 - Construction runtime at G2-01 start: **qualified Tenfold Gen 1**.
 
-Do not restart Gen-2 architecture design from chat memory. Recover G2-00 and the Gen-2 roadmap first. Reopen G2-00 only if implementation/evidence demonstrates a real frozen-authority violation or the Owner explicitly authorises an architecture change.
+Do not restart Gen-2 architecture design from chat memory. Recover G2-00, the Gen-2 roadmap, workspace rule and generational evolution map first. Reopen G2-00 only if implementation/evidence demonstrates a real frozen-authority violation or the Owner explicitly authorises an architecture change.
 
 ## Current authority
 
@@ -95,6 +97,16 @@ The accepted TF-31 qualification established in one coherent campaign:
 
 `QUALIFIED_FULL_ENGINEERING` is **not universal Ship/release authority**. Governing project policy and the Assurance Matrix remain authoritative.
 
+## Chat-workspace execution rule
+
+When a private chat/agent workspace exists, use it as Tenfold's execution plane and use the **actual qualified Tenfold runtime** there. Canonical repositories remain authority/promotion surfaces.
+
+Do not silently replace actual Tenfold with an ad-hoc shadow runtime, one-off scripts pretending to be Tenfold, or chat-memory-only orchestration when the repository/runtime can be materialised.
+
+For Gen-2 construction, qualified Gen 1 runs inside the chat workspace until G2-27 proves Gen2 Self-Construction Minimum.
+
+See `docs/10-chat-workspace-execution.md`.
+
 ## Gen-2 bootstrap and authority crossover
 
 The canonical construction sequence is:
@@ -142,9 +154,73 @@ Allowed retained Gen1-origin artifacts/components include:
 
 None may require live Gen1 Foreman, campaign state, authority ownership or recovery authority.
 
-## Gen-2 scope boundaries
+## Complete generational evolution loop
 
-Gen 2.0 is the constitutional successor only. It deliberately does **not** activate:
+The Tenfold map does **not** end at G2-30.
+
+The complete intended loop is:
+
+```text
+CURRENT QUALIFIED TENFOLD
+        ↓
+executes approved engineering projects
+        ↓
+measured outcomes / campaign evidence
+        ↓
+execution-method observations
+        ↓
+evidence-backed qualification
+        ↓
+proven better execution methods
+        ↓
+later approved projects execute better
+        ↓
+when a new generation is separately approved:
+current Tenfold builds it using the frozen successor roadmap
+        ↓
+successor runs shadow/hybrid
+        ↓
+successor proves self-construction
+        ↓
+repository-only qualification
+        ↓
+successor may become current qualified Tenfold
+        ↺
+```
+
+Three distinct concepts must remain separate:
+
+```text
+SELF-CONSTRUCTION
+= execute an already-approved Tenfold roadmap against Tenfold itself
+
+INSTITUTIONAL SELF-IMPROVEMENT
+= promote evidence-backed execution methods for future approved work
+
+ARCHITECTURE EVOLUTION
+= external/Owner authority approves a new generation,
+  then current qualified Tenfold builds it
+```
+
+Standing law:
+
+```text
+learned method != project authority
+```
+
+A better method can make Tenfold faster, more efficient and less repetitive. It cannot redefine requirements, proof, mandatory assurance, Root Authority or architecture.
+
+The full map is canonical in `docs/11-generational-evolution-map.md`.
+
+## Gen-2 generation boundaries
+
+### Gen 2.0 — authorised constitutional successor
+
+G2-01…G2-30.
+
+Purpose: constitutional successor, safe authority migration, self-construction and clean repository-only qualification.
+
+Gen 2.0 deliberately does **not** activate:
 
 - evidence reuse / proof cache hits;
 - Work Cells / Execution Forest optimisation;
@@ -156,9 +232,37 @@ Gen 2.0 is the constitutional successor only. It deliberately does **not** activ
 - adaptive placement;
 - organisational reflex learning.
 
-Those require later approved Gen 2.1 / Gen 2.2 authority.
+### Gen 2.1 — RESERVED, NOT AUTHORISED YET
 
-Named Gen-2 residual boundaries:
+Intended scope: scale / incrementality, including Work Cells, Execution Forest, targeted proof invalidation, evidence reuse, minimal safe re-prove, capability/resource optimisation.
+
+Requires a separate approved authority/roadmap before implementation.
+
+### Gen 2.2 — RESERVED, NOT AUTHORISED YET
+
+Intended scope: institutional evolution, including Experience Graph, campaign fingerprints, Python Foundry, Method Packages, controlled experiments, holdouts, transfer trials, Proven Method Registry, adaptive placement and organisational reflexes.
+
+Promotion principle:
+
+```text
+not: "the AI thinks this method is better"
+
+required:
+try it
+→ measure it
+→ challenge it
+→ repeat across campaigns / holdouts as required
+→ prove improvement without constitutional regression
+→ then promote it
+```
+
+Requires a separate approved authority/roadmap before implementation.
+
+### Future generation — NOT YET DEFINED
+
+A future successor generation requires new external/Owner architecture authority plus a frozen roadmap. The then-current qualified Tenfold is the construction system for that separately approved generation until the successor proves its own crossover gate.
+
+## Named Gen-2 residual boundaries
 
 ```text
 R1 — SUBSTRATE HONESTY
@@ -199,11 +303,13 @@ This system optimises **how** Tenfold executes approved work and never redefines
 1. Recover live `main`, open PRs and checks.
 2. Read `docs/00-founding-authority.md`.
 3. For Gen-2 work, read `docs/07-gen2-evolution-authority.md`, then `docs/08-gen2-roadmap.md`, then `docs/09-gen2-review-record.md`.
-4. Read `docs/02-assurance-matrix.md`.
-5. Read `docs/05-operating-methods.md` and `docs/06-project-method-profiles.md`; recover the applicable project profile for external project work.
-6. Verify the exact Gen1 TF-31 reference/proof state rather than trusting prose alone.
-7. If Gen-2 implementation has not started, the next milestone is G2-01. If it has, recover the latest exact milestone evidence and authority ownership before planning.
-8. Do not restart TF-01 or redesign G2-00 merely because a new chat lacks prior conversation history.
+4. Read `docs/10-chat-workspace-execution.md` so the actual runtime is used in the chat/agent workspace.
+5. Read `docs/11-generational-evolution-map.md` so the full Gen1 → Gen2.0 → reserved Gen2.1/2.2 → future-generation loop is recovered.
+6. Read `docs/02-assurance-matrix.md`.
+7. Read `docs/05-operating-methods.md` and `docs/06-project-method-profiles.md`; recover the applicable project profile for external project work.
+8. Verify the exact Gen1 TF-31 reference/proof state rather than trusting prose alone.
+9. If Gen-2 implementation has not started, the next milestone is G2-01. If it has, recover the latest exact milestone evidence and authority ownership before planning.
+10. Do not restart TF-01 or redesign G2-00 merely because a new chat lacks prior conversation history.
 
 ## Non-negotiable recovery rules
 
@@ -224,6 +330,9 @@ Do not:
 - permit Operating Methods/Profiles to affect proof ordering or the method-independent constitutional falsification baseline;
 - permit a new authority-bearing artifact into Gen2 without a Rust Trust Table row and negative fixture;
 - permit blind replay of an uncertain external mutation;
-- treat shadow Gen2 as a second authority owner.
+- treat shadow Gen2 as a second authority owner;
+- treat reserved Gen2.1/Gen2.2 concepts as implemented or authorised;
+- treat method learning as architecture authority;
+- hand-build Gen2 outside actual Tenfold when the qualified runtime is available in the chat workspace.
 
 Before any readiness/merge/completion claim, verify current `main`, open PRs, exact candidate head, review threads, checks/proof, authority bindings, Facility limitations, applicable Operating Method/Profile revisions and the current Gen-2 milestone/authority-ownership state.
