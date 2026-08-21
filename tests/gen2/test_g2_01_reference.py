@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 BUNDLE_PATH = ROOT / "docs/gen2/g2-01-gen1-reference-bundle.json"
 MAIN = "05aa384a34a650e677970904079a985ec8b26d90"
 TREE = "c7c130b573180e74438d70b6e11c17dd9bade648"
-IMAGE = "mcr.microsoft.com/devcontainers/base@sha256:c69eddd04b3f0cbb6573e9a6b3b62323789c6495bd5706de6614a6dcdf6a8383"
+IMAGE = "mcr.microsoft.com/playwright/python:v1.57.0-amd64@sha256:8331696befd3ee8b5baefca428446345f548e415a2408fe1d3d1224e9d919682"
 
 
 def load_bundle() -> Gen1ReferenceBundle:

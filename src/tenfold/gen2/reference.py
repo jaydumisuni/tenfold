@@ -253,6 +253,122 @@ class Gen1ReferenceBundle:
     def load(cls, path: str | Path) -> "Gen1ReferenceBundle":
         return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
 
+    def _validate_cold_boot_proof(self, artifact_root: Path, proof_path: Path) -> None:
+        lines = proof_path.read_text(encoding="utf-8").splitlines()
+        if not lines or lines[0] != "TENFOLD_G2_01_COLD_BOOT_PROOF_V1":
+            raise ReferenceError("cold-boot proof magic mismatch")
+
+        required_fields = {
+            "status",
+            "migration_reference_sha",
+            "migration_reference_tree_sha",
+            "platform",
+            "container_image",
+            "checkout_action",
+            "setup_python_action",
+            "python_version",
+            "pip_version",
+            "python_shared_library_sha256",
+            "python_shared_library_loader_path",
+            "chromium_executable",
+            "chromium_sha256",
+            "chromium_version",
+            "sergeant_sha",
+            "candidate_sha",
+        }
+        fields: dict[str, str] = {}
+        checksum_lines: dict[str, str] = {}
+        test_summary: tuple[int, str] | None = None
+        checksum_pattern = re.compile(r"^([0-9a-f]{64})  candidate/(.+)$")
+        summary_pattern = re.compile(r"^(\d+) passed in (.+)$")
+
+        for line in lines[1:]:
+            checksum_match = checksum_pattern.fullmatch(line)
+            if checksum_match:
+                digest, rel = checksum_match.groups()
+                if rel in checksum_lines:
+                    raise ReferenceError(f"duplicate cold-boot proof checksum: {rel}")
+                checksum_lines[rel] = digest
+                continue
+            summary_match = summary_pattern.fullmatch(line)
+            if summary_match:
+                if test_summary is not None:
+                    raise ReferenceError("cold-boot proof carries multiple test summaries")
+                test_summary = (int(summary_match.group(1)), summary_match.group(2))
+                continue
+            if "=" in line and not line.startswith(("=", ".")):
+                key, value = line.split("=", 1)
+                if key in required_fields:
+                    if key in fields:
+                        raise ReferenceError(f"duplicate cold-boot proof field: {key}")
+                    fields[key] = value
+
+        missing = required_fields - fields.keys()
+        if missing:
+            raise ReferenceError(f"cold-boot proof fields missing: {','.join(sorted(missing))}")
+        if fields["status"] != "PASS":
+            raise ReferenceError("cold-boot proof result is not PASS")
+        if fields["migration_reference_sha"] != self.migration_reference_sha:
+            raise ReferenceError("cold-boot proof migration SHA mismatch")
+        if fields["migration_reference_tree_sha"] != self.migration_reference_tree_sha:
+            raise ReferenceError("cold-boot proof migration tree mismatch")
+
+        environment_fields = {
+            "platform": self.environment.platform,
+            "container_image": self.environment.container_image,
+            "checkout_action": self.environment.checkout_action,
+            "setup_python_action": self.environment.setup_python_action,
+            "python_version": self.environment.python_version,
+            "pip_version": self.environment.pip_version,
+        }
+        for key, expected in environment_fields.items():
+            if fields[key] != expected:
+                raise ReferenceError(f"cold-boot proof environment mismatch: {key}")
+
+        if not _SHA256.fullmatch(fields["python_shared_library_sha256"]):
+            raise ReferenceError("cold-boot proof Python shared-library digest invalid")
+        if fields["python_shared_library_loader_path"] != "/usr/local/lib/libpython3.11.so.1.0":
+            raise ReferenceError("cold-boot proof Python shared-library loader path mismatch")
+        if not fields["chromium_executable"].startswith("/ms-playwright/") or not fields["chromium_executable"].endswith("/chrome"):
+            raise ReferenceError("cold-boot proof Chromium executable is not bound to Playwright image")
+        if not _SHA256.fullmatch(fields["chromium_sha256"]):
+            raise ReferenceError("cold-boot proof Chromium digest invalid")
+        if not fields["chromium_version"].strip():
+            raise ReferenceError("cold-boot proof Chromium version missing")
+        if not _SHA1.fullmatch(fields["candidate_sha"]):
+            raise ReferenceError("cold-boot proof candidate SHA invalid")
+
+        sergeant_pattern = re.compile(
+            r"^sergeant-reviewer @ git\+https://github\.com/jaydumisuni/Sergeant\.git@([0-9a-f]{40})$"
+        )
+        sergeant_shas = [
+            match.group(1)
+            for item in self.dependency_lock
+            if (match := sergeant_pattern.fullmatch(item)) is not None
+        ]
+        if len(sergeant_shas) != 1 or fields["sergeant_sha"] != sergeant_shas[0]:
+            raise ReferenceError("cold-boot proof Sergeant authority mismatch")
+
+        expected_checksums = {
+            "docs/gen2/g2-01-pip-freeze.txt": _file_digest(
+                _relative_path(artifact_root, "docs/gen2/g2-01-pip-freeze.txt")
+            ),
+            self.reference_corpus.path: self.reference_corpus.sha256,
+            self.semantic_corpus.path: self.semantic_corpus.sha256,
+            self.qualification_fixture_corpus.path: self.qualification_fixture_corpus.sha256,
+        }
+        if checksum_lines != expected_checksums:
+            raise ReferenceError("cold-boot proof artifact checksum set mismatch")
+
+        if test_summary is None:
+            raise ReferenceError("cold-boot proof test summary missing")
+        passed, timing = test_summary
+        if passed != 158 or not timing.strip():
+            raise ReferenceError("cold-boot proof did not reproduce the frozen 158-test Gen1 qualification")
+        lowered = "\n".join(lines).lower()
+        if re.search(r"\b(?:skipped|failed|error|errors)\b", lowered):
+            raise ReferenceError("cold-boot proof contains non-pass test outcome")
+
     def validate(self, artifact_root: str | Path, *, require_proven: bool = True) -> None:
         if self.schema != "tenfold.gen1_reference.v2":
             raise ReferenceError("unsupported Gen1 reference bundle schema")
@@ -276,7 +392,8 @@ class Gen1ReferenceBundle:
         if self.cold_boot_status == "PASS":
             if self.cold_boot_proof is None:
                 raise ReferenceError("PASS cold boot lacks bound proof artifact")
-            self.cold_boot_proof.validate(artifact_root)
+            proof_path = self.cold_boot_proof.validate(artifact_root)
+            self._validate_cold_boot_proof(Path(artifact_root).resolve(), proof_path)
         elif self.cold_boot_proof is not None:
             raise ReferenceError("PENDING cold boot must not carry a proof artifact")
         if require_proven and self.cold_boot_status != "PASS":
