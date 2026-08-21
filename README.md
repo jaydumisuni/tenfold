@@ -48,13 +48,15 @@ For current Tenfold evolution work, read:
 3. `docs/07-gen2-evolution-authority.md` — frozen G2-00 Gen-2.0 evolution authority.
 4. `docs/08-gen2-roadmap.md` — frozen Gen-2.0 construction roadmap G2-01 through G2-30 and authority-ownership matrix.
 5. `docs/09-gen2-review-record.md` — Gen-2 architecture/reconciliation PASS record and zero-context pickup.
-6. `docs/02-assurance-matrix.md` — deterministic external-assurance policy and amendment rules.
-7. `docs/03-sergeant-donor-map.md` — what is inherited from Sergeant and what is deliberately not copied.
-8. `docs/04-tf00-review-record.md` — hostile TF-00 review findings, dispositions, and final PASS.
-9. `docs/05-operating-methods.md` — field-tested execution methods; not architecture authority.
-10. `docs/06-project-method-profiles.md` — project-specific execution-learning profiles; not architecture authority.
-11. `AGENTS.md` — zero-context operating rules for AI/automation.
-12. `PICKUP.md` — current repository completion/recovery state.
+6. `docs/10-chat-workspace-execution.md` — canonical rule for using the actual Tenfold runtime inside a chat/agent workspace.
+7. `docs/11-generational-evolution-map.md` — complete Gen1 → Gen2.0 → reserved Gen2.1/2.2 → future-generation evolution map.
+8. `docs/02-assurance-matrix.md` — deterministic external-assurance policy and amendment rules.
+9. `docs/03-sergeant-donor-map.md` — what is inherited from Sergeant and what is deliberately not copied.
+10. `docs/04-tf00-review-record.md` — hostile TF-00 review findings, dispositions, and final PASS.
+11. `docs/05-operating-methods.md` — field-tested execution methods; not architecture authority.
+12. `docs/06-project-method-profiles.md` — project-specific execution-learning profiles; not architecture authority.
+13. `AGENTS.md` — zero-context operating rules for AI/automation.
+14. `PICKUP.md` — current repository completion/recovery state.
 
 ## Current state
 
@@ -89,6 +91,56 @@ Gen-2.0 architecture review and post-PASS reconciliation are complete.
 - Construction runtime at roadmap start: **qualified Tenfold Gen 1**.
 
 The Gen-2 bootstrap is explicit: Gen 1 builds Gen 2 under TF-00 + G2-00 until G2-27 independently proves the Self-Construction Minimum. Only then may Gen 2 execute the remaining already-approved roadmap itself. Gen 1 remains afterward as frozen reference/differential oracle/fallback unless later authority explicitly retires it.
+
+### Complete generational evolution model
+
+The intended long-term pattern does not stop at G2-30:
+
+```text
+current qualified Tenfold
+        ↓
+executes approved projects
+        ↓
+measures outcomes / evidence
+        ↓
+records better execution methods
+        ↓
+qualifies repeatable improvements
+        ↓
+executes later projects better
+        ↓
+uses already-qualified methods while building
+any separately approved successor generation
+        ↓
+successor proves self-construction + repository-only qualification
+        ↓
+successor may become current qualified Tenfold
+        ↺
+```
+
+Gen 2.0 is the constitutional successor only. Gen 2.1 is reserved for scale/incrementality and Gen 2.2 is reserved for institutional method learning. Neither is activated by the current G2-00 roadmap; each requires separate approved authority before implementation.
+
+The complete distinction is:
+
+```text
+SELF-CONSTRUCTION
+= execute an already-approved roadmap against Tenfold itself
+
+INSTITUTIONAL SELF-IMPROVEMENT
+= promote evidence-backed execution methods for future approved work
+
+ARCHITECTURE EVOLUTION
+= external/Owner authority approves a new generation,
+  then current qualified Tenfold builds it
+```
+
+Standing rule:
+
+```text
+learned method != project authority
+```
+
+See `docs/11-generational-evolution-map.md` for the complete recursive build → operate → measure → improve → build-next-generation map.
 
 Gen 2.0 deliberately does **not** activate evidence reuse, Work Cells/Execution Forest optimisation, learned scheduling, Method Registry, Experience Graph or institutional self-learning. Those are reserved for later approved generations.
 
