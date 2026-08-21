@@ -13,14 +13,15 @@ Before planning, editing, reviewing, or claiming current state, read:
 5. `docs/08-gen2-roadmap.md` — current approved Gen-2.0 construction path
 6. `docs/09-gen2-review-record.md` — Gen-2 architecture/reconciliation PASS and freeze context
 7. `docs/10-chat-workspace-execution.md` — canonical rule for using the actual Tenfold system inside the chat/agent workspace
-8. `docs/02-assurance-matrix.md`
-9. `docs/03-sergeant-donor-map.md`
-10. `docs/04-tf00-review-record.md`
-11. `docs/05-operating-methods.md`
-12. `docs/06-project-method-profiles.md`
-13. the applicable profile under `docs/project-methods/` for the external project, if one exists
-14. `PICKUP.md`
-15. live repository state: current `main` head, open PRs, exact candidate heads, review threads, checks, and current implementation evidence.
+8. `docs/11-generational-evolution-map.md` — complete self-construction, later method-learning, and future-generation construction map
+9. `docs/02-assurance-matrix.md`
+10. `docs/03-sergeant-donor-map.md`
+11. `docs/04-tf00-review-record.md`
+12. `docs/05-operating-methods.md`
+13. `docs/06-project-method-profiles.md`
+14. the applicable profile under `docs/project-methods/` for the external project, if one exists
+15. `PICKUP.md`
+16. live repository state: current `main` head, open PRs, exact candidate heads, review threads, checks, and current implementation evidence.
 
 Do not treat chat history, stale branches, old PR descriptions, copied evidence, or model memory as newer authority than the repository plus live state.
 
@@ -55,6 +56,62 @@ The complete rule is `docs/10-chat-workspace-execution.md`.
 Operating methods are evolving field-use records, not founding or Gen-2 constitutional authority. Use them only where prerequisites match. Under frozen G2-00, Operating Methods and Project Method Profiles may influence only task decomposition, construction technique, campaign execution technique, and worker/tool selection within existing authority; every unlisted influence path defaults to DENY. They may not influence closure, policy, obligation existence, falsification baseline, assurance, or proof verdict.
 
 Project Method Profiles are mandatory for substantial external-project campaigns. Before broad execution, recover the existing project profile or create a provisional profile from recovered project evidence using `docs/project-methods/TEMPLATE.md`. Do not repeatedly rediscover a project's best execution method from chat memory. Revise the profile when credible field evidence shows a better method, and promote a lesson into a global Operating Method only after sufficient cross-project evidence or authority-level justification.
+
+## Generational evolution rule
+
+A fresh chat must recover the complete generational model, not only the G2-01…G2-30 bootstrap.
+
+The long-term pattern is:
+
+```text
+CURRENT QUALIFIED TENFOLD
+        ↓
+executes approved projects
+        ↓
+measures outcomes / evidence
+        ↓
+records and qualifies better execution methods
+        ↓
+future approved projects execute better
+        ↓
+when a new generation is separately approved,
+current qualified Tenfold builds that successor
+        ↓
+successor shadow / hybrid / authority migration
+        ↓
+successor self-construction gate
+        ↓
+clean repository-only qualification
+        ↓
+successor may become current qualified Tenfold
+        ↺
+```
+
+Keep these concepts distinct:
+
+```text
+SELF-CONSTRUCTION
+= Tenfold executes an already-approved roadmap against its own codebase
+
+INSTITUTIONAL SELF-IMPROVEMENT
+= evidence-backed execution methods are promoted for future approved work
+
+ARCHITECTURE EVOLUTION
+= external/Owner authority approves a successor generation,
+  then current qualified Tenfold builds it
+```
+
+Gen 2.0 is authorised now. Gen 2.1 and Gen 2.2 are only reserved scopes and require separate approved authority/roadmaps before activation.
+
+Standing law:
+
+```text
+learned method != project authority
+```
+
+Method evidence may improve **how** approved work is executed. It may not define requirements, proof, mandatory assurance, Root Authority, TF-00, G2-00, or a future architecture.
+
+The complete map is `docs/11-generational-evolution-map.md`.
 
 ## Non-negotiable identity
 
@@ -176,7 +233,7 @@ No authority-bearing artifact may enter Gen2 without a Trust Table row and negat
 
 ## Current next work
 
-Recover `PICKUP.md`, `docs/10-chat-workspace-execution.md`, and live repository state.
+Recover `PICKUP.md`, `docs/10-chat-workspace-execution.md`, `docs/11-generational-evolution-map.md`, and live repository state.
 
 Current canonical state at the Gen-2 freeze point:
 
@@ -185,7 +242,10 @@ Current canonical state at the Gen-2 freeze point:
 - G2-01…G2-30: frozen Gen-2.0 construction roadmap;
 - Gen-2 implementation: not started at freeze;
 - next Gen-2 milestone: **G2-01 — Gen-1 Reference and Inheritance Freeze**;
-- construction runtime at start: qualified Tenfold Gen 1.
+- construction runtime at start: qualified Tenfold Gen 1;
+- Gen 2.1: reserved, not authorised;
+- Gen 2.2: reserved, not authorised;
+- future successor generation: not yet defined; requires new external/Owner authority.
 
 For an external project, also recover/create its Project Method Profile before choosing campaign execution topology.
 
