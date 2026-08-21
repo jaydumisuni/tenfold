@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout exact transport candidate
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -62,11 +62,29 @@ jobs:
           "$VENV/bin/python" --version > "$OUT/python-version.txt" 2>&1
           "$VENV/bin/python" -m pip --version > "$OUT/pip-version.txt"
           "$VENV/bin/python" -m pip freeze --all | LC_ALL=C sort > "$OUT/pip-freeze.txt"
+
+          # Canonical reference corpora are source-controlled artifacts at the exact
+          # migration SHA. Generated pyc/cache/install products are never authority.
+          git -C "$CLEAN" ls-tree -r --name-only "$BASE_SHA" -- src tests docs | LC_ALL=C sort > "$OUT/reference-corpus-files.txt"
+          git -C "$CLEAN" ls-tree -r --name-only "$BASE_SHA" -- src | LC_ALL=C sort > "$OUT/semantic-corpus-files.txt"
+          git -C "$CLEAN" ls-tree -r --name-only "$BASE_SHA" -- tests | LC_ALL=C sort > "$OUT/qualification-fixture-files.txt"
           (
             cd "$CLEAN"
-            find src tests docs -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+            while IFS= read -r path; do sha256sum "$path"; done < "$OUT/reference-corpus-files.txt"
           ) > "$OUT/reference-corpus.sha256"
-          sha256sum "$OUT/python-version.txt" "$OUT/pip-version.txt" "$OUT/pip-freeze.txt" "$OUT/reference-corpus.sha256" "$OUT/pytest-reference.txt" > "$OUT/evidence-files.sha256"
+          (
+            cd "$CLEAN"
+            while IFS= read -r path; do sha256sum "$path"; done < "$OUT/semantic-corpus-files.txt"
+          ) > "$OUT/semantic-corpus.sha256"
+          (
+            cd "$CLEAN"
+            while IFS= read -r path; do sha256sum "$path"; done < "$OUT/qualification-fixture-files.txt"
+          ) > "$OUT/qualification-fixture-corpus.sha256"
+
+          sha256sum "$OUT/reference-corpus.sha256" > "$OUT/reference-corpus-manifest.digest"
+          sha256sum "$OUT/semantic-corpus.sha256" > "$OUT/semantic-corpus.digest"
+          sha256sum "$OUT/qualification-fixture-corpus.sha256" > "$OUT/qualification-fixture-corpus.digest"
+          sha256sum "$OUT/python-version.txt" "$OUT/pip-version.txt" "$OUT/pip-freeze.txt" "$OUT/reference-corpus.sha256" "$OUT/semantic-corpus.sha256" "$OUT/qualification-fixture-corpus.sha256" "$OUT/pytest-reference.txt" > "$OUT/evidence-files.sha256"
           printf '%s\n' "$BASE_SHA" > "$OUT/reference-sha.txt"
 
       - name: Upload exact source transport artifact
