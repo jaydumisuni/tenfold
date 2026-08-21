@@ -12,16 +12,45 @@ Before planning, editing, reviewing, or claiming current state, read:
 4. `docs/07-gen2-evolution-authority.md` — when current work concerns Gen 2 or Tenfold evolution
 5. `docs/08-gen2-roadmap.md` — current approved Gen-2.0 construction path
 6. `docs/09-gen2-review-record.md` — Gen-2 architecture/reconciliation PASS and freeze context
-7. `docs/02-assurance-matrix.md`
-8. `docs/03-sergeant-donor-map.md`
-9. `docs/04-tf00-review-record.md`
-10. `docs/05-operating-methods.md`
-11. `docs/06-project-method-profiles.md`
-12. the applicable profile under `docs/project-methods/` for the external project, if one exists
-13. `PICKUP.md`
-14. live repository state: current `main` head, open PRs, exact candidate heads, review threads, checks, and current implementation evidence.
+7. `docs/10-chat-workspace-execution.md` — canonical rule for using the actual Tenfold system inside the chat/agent workspace
+8. `docs/02-assurance-matrix.md`
+9. `docs/03-sergeant-donor-map.md`
+10. `docs/04-tf00-review-record.md`
+11. `docs/05-operating-methods.md`
+12. `docs/06-project-method-profiles.md`
+13. the applicable profile under `docs/project-methods/` for the external project, if one exists
+14. `PICKUP.md`
+15. live repository state: current `main` head, open PRs, exact candidate heads, review threads, checks, and current implementation evidence.
 
 Do not treat chat history, stale branches, old PR descriptions, copied evidence, or model memory as newer authority than the repository plus live state.
+
+## Chat-workspace execution rule
+
+When the chat/agent environment provides a private workspace, **use that workspace as Tenfold's execution plane and use the actual Tenfold system there**.
+
+The default pattern is:
+
+```text
+canonical authority / roadmap
+        ↓
+recover actual Tenfold
+        ↓
+CHAT / AGENT PRIVATE WORKSPACE
+        ↓
+Tenfold construction / review / proof
+        ↓
+reviewed / frozen milestone candidate
+        ↓
+canonical project repository
+```
+
+Do not silently replace the real qualified Tenfold runtime with an ad-hoc "shadow Tenfold", chat-memory-only orchestration, or one-off scripts pretending to be Tenfold when the actual repository/runtime can be materialised.
+
+For external projects, the chat workspace is the private construction plane and the target repository is the canonical promotion surface. For Tenfold Gen-2 construction, qualified Gen 1 runs inside the chat/agent workspace as the live construction system until G2-27 independently proves the Self-Construction Minimum; only then may Gen 2 execute G2-28…G2-30 itself.
+
+If the environment cannot actually materialise/run Tenfold, recover authority and prepare/review work as appropriate, but do **not** claim that Tenfold executed the campaign.
+
+The complete rule is `docs/10-chat-workspace-execution.md`.
 
 Operating methods are evolving field-use records, not founding or Gen-2 constitutional authority. Use them only where prerequisites match. Under frozen G2-00, Operating Methods and Project Method Profiles may influence only task decomposition, construction technique, campaign execution technique, and worker/tool selection within existing authority; every unlisted influence path defaults to DENY. They may not influence closure, policy, obligation existence, falsification baseline, assurance, or proof verdict.
 
@@ -147,7 +176,7 @@ No authority-bearing artifact may enter Gen2 without a Trust Table row and negat
 
 ## Current next work
 
-Recover `PICKUP.md` and live repository state.
+Recover `PICKUP.md`, `docs/10-chat-workspace-execution.md`, and live repository state.
 
 Current canonical state at the Gen-2 freeze point:
 
