@@ -13,15 +13,16 @@ Before planning, editing, reviewing, or claiming current state, read:
 5. `docs/08-gen2-roadmap.md` — current approved Gen-2.0 construction path
 6. `docs/09-gen2-review-record.md` — Gen-2 architecture/reconciliation PASS and freeze context
 7. `docs/10-chat-workspace-execution.md` — canonical rule for using the actual Tenfold system inside the chat/agent workspace
-8. `docs/11-generational-evolution-map.md` — complete self-construction, later method-learning, and future-generation construction map
-9. `docs/02-assurance-matrix.md`
-10. `docs/03-sergeant-donor-map.md`
-11. `docs/04-tf00-review-record.md`
-12. `docs/05-operating-methods.md`
-13. `docs/06-project-method-profiles.md`
-14. the applicable profile under `docs/project-methods/` for the external project, if one exists
-15. `PICKUP.md`
-16. live repository state: current `main` head, open PRs, exact candidate heads, review threads, checks, and current implementation evidence.
+8. `docs/11-generational-evolution-map.md` — complete self-construction, later method-learning, and future-generation construction mechanism map
+9. `docs/12-master-build-horizon.md` — canonical distinction between the current G2-30 roadmap end and the Tenfold core-vision completion boundary
+10. `docs/02-assurance-matrix.md`
+11. `docs/03-sergeant-donor-map.md`
+12. `docs/04-tf00-review-record.md`
+13. `docs/05-operating-methods.md`
+14. `docs/06-project-method-profiles.md`
+15. the applicable profile under `docs/project-methods/` for the external project, if one exists
+16. `PICKUP.md`
+17. live repository state: current `main` head, open PRs, exact candidate heads, review threads, checks, and current implementation evidence.
 
 Do not treat chat history, stale branches, old PR descriptions, copied evidence, or model memory as newer authority than the repository plus live state.
 
@@ -111,7 +112,39 @@ learned method != project authority
 
 Method evidence may improve **how** approved work is executed. It may not define requirements, proof, mandatory assurance, Root Authority, TF-00, G2-00, or a future architecture.
 
-The complete map is `docs/11-generational-evolution-map.md`.
+The complete mechanism map is `docs/11-generational-evolution-map.md`.
+
+### Roadmap end versus core-build end
+
+Do not answer these as though they were the same question.
+
+Current approved/frozen roadmap end:
+
+```text
+G2-30 — Preferred Runtime Gate
+```
+
+That closes **Gen 2.0** only.
+
+The intended original Tenfold core-build horizon is:
+
+```text
+Gen 1
+  ↓
+Gen 2.0 — constitutional / self-hosting successor
+  ↓
+separately approved Gen-2.1-class scale / incrementality generation
+  ↓
+separately approved Gen-2.2-class institutional-learning generation
+  ↓
+TENFOLD CORE VISION COMPLETE
+```
+
+No exact Gen-2.1 or Gen-2.2 milestone numbers are authorised yet. Do not invent them. Each future generation requires its own authority, hostile review, freeze, roadmap, construction and qualification.
+
+After the core-vision boundary, normal mode changes from **BUILD TENFOLD** to **OPERATE → OBSERVE → QUALIFY IMPROVEMENTS → OCCASIONALLY EVOLVE**. Future generations then represent normal successor evolution, not evidence that the original core project was unfinished.
+
+The canonical finish-line statement is `docs/12-master-build-horizon.md`.
 
 ## Non-negotiable identity
 
@@ -233,7 +266,7 @@ No authority-bearing artifact may enter Gen2 without a Trust Table row and negat
 
 ## Current next work
 
-Recover `PICKUP.md`, `docs/10-chat-workspace-execution.md`, `docs/11-generational-evolution-map.md`, and live repository state.
+Recover `PICKUP.md`, `docs/10-chat-workspace-execution.md`, `docs/11-generational-evolution-map.md`, `docs/12-master-build-horizon.md`, and live repository state.
 
 Current canonical state at the Gen-2 freeze point:
 
@@ -245,6 +278,7 @@ Current canonical state at the Gen-2 freeze point:
 - construction runtime at start: qualified Tenfold Gen 1;
 - Gen 2.1: reserved, not authorised;
 - Gen 2.2: reserved, not authorised;
+- Tenfold core-build finish line: after separately authorised and qualified Gen-2.1-class scale/incrementality + Gen-2.2-class institutional learning, while recursive successor construction remains proven;
 - future successor generation: not yet defined; requires new external/Owner authority.
 
 For an external project, also recover/create its Project Method Profile before choosing campaign execution topology.
