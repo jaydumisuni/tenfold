@@ -31,17 +31,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          BASE_SHA=fd3645cc49126d730c697c4701e3be42eb073d42
+          BASE_SHA=486b75d6e050cec6f143d77460e4f2a748858f94
           test "$(git rev-parse "$BASE_SHA")" = "$BASE_SHA"
-          git archive --format=tar.gz --output=tenfold-main-fd3645cc.tar.gz "$BASE_SHA"
-          sha256sum tenfold-main-fd3645cc.tar.gz | tee tenfold-main-fd3645cc.tar.gz.sha256
-          printf '%s\n' "$BASE_SHA" > tenfold-main-fd3645cc.commit
+          git archive --format=tar.gz --output=tenfold-main-486b75d6.tar.gz "$BASE_SHA"
+          sha256sum tenfold-main-486b75d6.tar.gz | tee tenfold-main-486b75d6.tar.gz.sha256
+          printf '%s\n' "$BASE_SHA" > tenfold-main-486b75d6.commit
 
       - name: G2-01 exact Gen1 reference probe
         shell: bash
         run: |
           set -euo pipefail
-          BASE_SHA=fd3645cc49126d730c697c4701e3be42eb073d42
+          BASE_SHA=486b75d6e050cec6f143d77460e4f2a748858f94
           CLEAN="$RUNNER_TEMP/g2-01-gen1-reference"
           VENV="$RUNNER_TEMP/g2-01-gen1-venv"
           OUT="$RUNNER_TEMP/g2-01-reference-evidence"
@@ -90,18 +90,18 @@ jobs:
       - name: Upload exact source transport artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: tenfold-main-fd3645cc-source
+          name: tenfold-main-486b75d6-source
           path: |
-            tenfold-main-fd3645cc.tar.gz
-            tenfold-main-fd3645cc.tar.gz.sha256
-            tenfold-main-fd3645cc.commit
+            tenfold-main-486b75d6.tar.gz
+            tenfold-main-486b75d6.tar.gz.sha256
+            tenfold-main-486b75d6.commit
           if-no-files-found: error
           retention-days: 1
 
       - name: Upload G2-01 reference evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: g2-01-gen1-reference-evidence
+          name: g2-01-gen1-reference-evidence-486b75d6
           path: ${{ runner.temp }}/g2-01-reference-evidence/
           if-no-files-found: error
           retention-days: 1
