@@ -11,7 +11,7 @@ on:
 permissions:
   contents: read
 
-# Disposable transport workflow. DO NOT MERGE.
+# Disposable transport/proof workflow. DO NOT MERGE.
 jobs:
   export:
     runs-on: ubuntu-24.04
@@ -21,6 +21,12 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Set up canonical Gen1 Python line
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+
       - name: Export exact current Tenfold source
         shell: bash
         run: |
@@ -30,6 +36,39 @@ jobs:
           git archive --format=tar.gz --output=tenfold-main-fd3645cc.tar.gz "$BASE_SHA"
           sha256sum tenfold-main-fd3645cc.tar.gz | tee tenfold-main-fd3645cc.tar.gz.sha256
           printf '%s\n' "$BASE_SHA" > tenfold-main-fd3645cc.commit
+
+      - name: G2-01 exact Gen1 reference probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_SHA=fd3645cc49126d730c697c4701e3be42eb073d42
+          CLEAN="$RUNNER_TEMP/g2-01-gen1-reference"
+          VENV="$RUNNER_TEMP/g2-01-gen1-venv"
+          OUT="$RUNNER_TEMP/g2-01-reference-evidence"
+          rm -rf "$CLEAN" "$VENV" "$OUT"
+          mkdir -p "$OUT"
+          git worktree add --detach "$CLEAN" "$BASE_SHA"
+          test "$(git -C "$CLEAN" rev-parse HEAD)" = "$BASE_SHA"
+          test -z "$(git -C "$CLEAN" status --porcelain)"
+          python -m venv "$VENV"
+          "$VENV/bin/python" -m pip install --upgrade pip
+          "$VENV/bin/python" -m pip install "$CLEAN[dev,browser]"
+          "$VENV/bin/python" -m pip install "git+https://github.com/jaydumisuni/Sergeant.git@4a277cc5950aa08a98157b950c96fb88f2178c79"
+          (
+            cd "$CLEAN"
+            PATH="$VENV/bin:$PATH" TENFOLD_REPOSITORY_ONLY_PROOF=1 TENFOLD_CANDIDATE_SHA="$BASE_SHA" "$VENV/bin/python" -m compileall -q src
+            PATH="$VENV/bin:$PATH" TENFOLD_REPOSITORY_ONLY_PROOF=1 TENFOLD_CANDIDATE_SHA="$BASE_SHA" "$VENV/bin/python" -m pytest -q | tee "$OUT/pytest-reference.txt"
+          )
+          "$VENV/bin/python" --version > "$OUT/python-version.txt" 2>&1
+          "$VENV/bin/python" -m pip --version > "$OUT/pip-version.txt"
+          "$VENV/bin/python" -m pip freeze --all | LC_ALL=C sort > "$OUT/pip-freeze.txt"
+          (
+            cd "$CLEAN"
+            find src tests docs -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+          ) > "$OUT/reference-corpus.sha256"
+          sha256sum "$OUT/python-version.txt" "$OUT/pip-version.txt" "$OUT/pip-freeze.txt" "$OUT/reference-corpus.sha256" "$OUT/pytest-reference.txt" > "$OUT/evidence-files.sha256"
+          printf '%s\n' "$BASE_SHA" > "$OUT/reference-sha.txt"
+
       - name: Upload exact source transport artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -38,5 +77,13 @@ jobs:
             tenfold-main-fd3645cc.tar.gz
             tenfold-main-fd3645cc.tar.gz.sha256
             tenfold-main-fd3645cc.commit
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload G2-01 reference evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: g2-01-gen1-reference-evidence
+          path: ${{ runner.temp }}/g2-01-reference-evidence/
           if-no-files-found: error
           retention-days: 1
