@@ -252,19 +252,24 @@ This keeps the constitutional successor separate from optimisation and learning.
 
 Gen 2.1 is the intended future layer for making the already-proven Gen-2 constitution faster and more scalable.
 
-Candidate scope reserved by G2-00 includes:
+Frozen G2-00 explicitly excludes/reserves from Gen-2.0 activation these Gen-2.1-class capabilities:
 
 ```text
-Work Cells
-Execution Forest
+Work Cells optimisation
+Execution Forest optimisation
+capability-cover optimisation
+evidence reuse
+minimal re-prove optimisation
+advanced resource optimisation
+```
+
+Additional ideas discussed during design are **NON-AUTHORITATIVE CANDIDATE CONCEPTS** unless and until a separate future authority approves them:
+
+```text
 conflict trees
 logical / physical worker multiplexing
-capability-cover formations
 incremental frontier optimisation
 targeted proof invalidation
-evidence reuse
-minimal safe re-prove
-resource optimisation
 ```
 
 Purpose:
@@ -273,7 +278,7 @@ Purpose:
 
 Gen 2.1 must not weaken G2-00 to gain speed.
 
-A separate approved authority/roadmap is required before any Gen-2.1 capability becomes active.
+A separate approved authority/roadmap is required before any Gen-2.1 capability becomes active. Candidate concepts listed here are recovery/design context only; they are not frozen scope.
 
 ---
 
@@ -281,26 +286,34 @@ A separate approved authority/roadmap is required before any Gen-2.1 capability 
 
 Gen 2.2 is the intended future layer for evidence-backed institutional learning.
 
-Candidate scope reserved by G2-00 includes:
+Frozen G2-00 explicitly excludes/reserves from Gen-2.0 activation these Gen-2.2-class capabilities:
 
 ```text
 Experience Graph
+Method Foundry
+Method Packages
+Method Registry
+learned scheduling
+adaptive placement
+organisational reflex learning
+```
+
+Additional ideas discussed during design are **NON-AUTHORITATIVE CANDIDATE CONCEPTS** unless and until a separate future authority approves them:
+
+```text
 campaign fingerprints
 method-quality observations
-Python Foundry
-Method Packages
+Python Foundry specialisation
 shadow experiments
 positive / negative controls
 holdouts
 transfer trials
 compatibility graph
 canaries
-Proven Method Registry
-adaptive placement
-organisational reflexes
+Proven Method Registry specialisation
 ```
 
-The intended loop is:
+The intended explanatory learning loop is:
 
 ```text
 CAMPAIGN EXPERIENCE
@@ -328,7 +341,9 @@ future campaigns may select it
 within project + constitutional authority
 ```
 
-Promotion requires evidence such as, depending on method class:
+This loop is design intent only until a separate Gen-2.2 authority defines and approves its exact mechanisms.
+
+Promotion would require evidence such as, depending on future method class:
 
 ```text
 less rework
@@ -341,13 +356,13 @@ better recovery behaviour
 better transfer across project classes
 ```
 
-A method is never promoted because:
+A method is never promoted merely because:
 
 ```text
 "the AI thinks this is better"
 ```
 
-The required shape is:
+The intended shape is:
 
 ```text
 we tried it
@@ -355,7 +370,7 @@ we tried it
 → challenged it
 → saw repeatable improvement
 → preserved constitutional safety
-→ then promoted it
+→ then promoted it under separately approved authority
 ```
 
 ---
@@ -385,7 +400,7 @@ The intended Gen-2 generational split remains:
                         ↺
 ```
 
-Python is the natural home for:
+Python is the natural home for future:
 
 ```text
 method discovery
@@ -474,7 +489,7 @@ higher throughput != permission to bypass assurance
 historical success != permission to guess on a new project
 ```
 
-A learned method may influence **how** already-approved work is executed.
+A learned method may influence **how** already-approved work is executed only under the separately approved authority that enables that method system.
 
 It may not decide:
 
@@ -521,7 +536,7 @@ clean repository-only qualification
 G(n+1) preferred runtime if approved
 ```
 
-If Gen 2.2 has already produced qualified execution methods, the current Tenfold may use those methods while building the successor **only within the method authority allowed by the current constitution**.
+If a future institutional-learning generation has already produced qualified execution methods, the current Tenfold may use those methods while building the successor **only within the method authority allowed by the then-current constitution**.
 
 The methods can make construction faster/better. They cannot redefine the successor architecture.
 
@@ -553,7 +568,7 @@ qualification
 future execution uses proven better method
 ```
 
-This belongs to later approved Gen-2.2 authority.
+This belongs to later separately approved institutional-learning authority such as the intended Gen-2.2 class.
 
 ### Architecture evolution
 
@@ -587,19 +602,18 @@ TF-00 — FOUNDING AUTHORITY
        │      constitutional successor
        │      Gen1 builds → hybrid → G2-27 → self-construction
        │
-       ├── GEN 2.1 — RESERVED
-       │      scale / incrementality / evidence reuse
-       │      separate authority required
+       ├── GEN 2.1 — RESERVED CLASS, NOT ACTIVE
+       │      frozen G2-00 exclusions: scale / incrementality / evidence reuse class
+       │      exact future scope requires separate authority
        │
-       ├── GEN 2.2 — RESERVED
-       │      institutional method learning
-       │      Experience Graph / Foundry / Method Registry
-       │      separate authority required
+       ├── GEN 2.2 — RESERVED CLASS, NOT ACTIVE
+       │      frozen G2-00 exclusions: institutional method-learning class
+       │      exact future scope requires separate authority
        │
        └── FUTURE GENERATION — NOT YET DEFINED
               separate Owner/external architecture authority
               current qualified Tenfold builds it
-              using only already-qualified methods
+              using only already-qualified methods permitted by current authority
 ```
 
 ---
@@ -618,7 +632,7 @@ A new chat asking about Tenfold evolution must recover this map together with:
 8. `PICKUP.md`;
 9. live repository state.
 
-Do not infer that reserved Gen 2.1/2.2 ideas are implemented or authorised.
+Do not infer that Gen-2.1/2.2 candidate concepts are implemented, authorised, or frozen merely because this explanatory map records them.
 
 Do not infer that the absence of Gen-2.1/2.2 implementation means the generational model ends at G2-30.
 
@@ -628,8 +642,8 @@ The intended long-term pattern is explicitly:
 current qualified Tenfold
 → executes
 → measures
-→ learns better execution methods under evidence
-→ uses proven improvements
+→ learns better execution methods under separately approved evidence/qualification rules
+→ uses proven improvements within current authority
 → builds the next separately approved generation
 → successor proves itself
 → successor becomes current qualified Tenfold
