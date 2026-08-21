@@ -192,7 +192,9 @@ Requirement Closure
 Classification Closure
 Constitutional Policy
 obligation existence
-falsification baseline
+FalsificationClass assignment
+constitutional baseline lowering
+proof predecessor-depth baseline
 mandatory assurance
 Proof verdict
 Root Authority
@@ -235,6 +237,7 @@ Work Cells optimisation
 Execution Forest optimisation
 capability-cover optimisation
 minimal re-prove optimisation
+advanced resource optimisation
 learned scheduling
 Experience Graph
 Method Foundry
@@ -620,17 +623,17 @@ TF-00 — FOUNDING AUTHORITY
 
 ## 14. Zero-context recovery rule
 
-A new chat asking about Tenfold evolution must recover this map together with:
+A new chat asking about Tenfold evolution must read, in this order:
 
-1. `docs/00-founding-authority.md`;
-2. `docs/07-gen2-evolution-authority.md`;
-3. `docs/08-gen2-roadmap.md`;
-4. `docs/09-gen2-review-record.md`;
-5. `docs/10-chat-workspace-execution.md`;
-6. `docs/05-operating-methods.md`;
-7. `docs/06-project-method-profiles.md`;
-8. `PICKUP.md`;
-9. live repository state.
+1. `docs/00-founding-authority.md` — superior TF-00 authority.
+2. `docs/07-gen2-evolution-authority.md` — frozen G2-00 authority.
+3. `docs/08-gen2-roadmap.md` — exact G2-01…G2-30 construction roadmap and ownership matrix.
+4. `docs/09-gen2-review-record.md` — review/freeze context and residual boundaries.
+5. `docs/02-assurance-matrix.md` — external assurance authority.
+6. `docs/10-chat-workspace-execution.md` — canonical chat-workspace execution rule.
+7. `docs/05-operating-methods.md` and `docs/06-project-method-profiles.md` — inherited execution guidance, never constitutional authority.
+8. `PICKUP.md` — repository recovery point.
+9. live repository state — current main head, open PRs, exact candidate heads, checks/proof and active milestone evidence.
 
 Do not infer that Gen-2.1/2.2 candidate concepts are implemented, authorised, or frozen merely because this explanatory map records them.
 
