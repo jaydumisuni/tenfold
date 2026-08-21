@@ -1,34 +1,38 @@
 {
   "schema": "tenfold.workspace-static-review.v1",
-  "observed_date": "2026-08-20",
+  "observed_date": "2026-08-22",
   "node_id": "STATIC_ADMIN_REVIEW",
   "repository": "jaydumisuni/TTG-Admin-Console",
   "pull_request": 17,
-  "head_sha": "97acf6ffe60ab5fb42ba81f451f374bf1b43f46c",
+  "head_sha": "efc76a5269232126911f4efd6d5ba88646458418",
   "reviewer_identity": "chatgpt-gpt-5.6-sol",
   "reviewer_method": "connector-exact-head-static-review-v1",
   "reviewed_paths": [
     "src/pete-systems-extension.js",
     "src/phase14-entry.js",
     "tests/pete-systems-phase14.test.mjs",
+    "tests/production-contract.test.mjs",
     "wrangler.toml"
   ],
   "findings_corrected_before_admission": [
-    "phase14_admin_proxy_could_forward_owner_bearer_to_non_https_configured_hunter_origin"
+    "phase14_admin_proxy_could_forward_owner_bearer_to_non_https_configured_hunter_origin",
+    "external_review_found_production_contract_still_asserted_entry_v3_after_wrangle_main_moved_to_phase14_entry"
   ],
   "remaining_actionable_blockers": [],
   "observations": [
-    "Phase 14 adds exactly one Pete region to the existing Systems shell and enhancement is idempotent",
-    "browser uses only the same-origin /api/hunter/pete resource and /api/hunter/pete/model-control action",
-    "browser never receives Pete MCP credentials or private loopback transport",
-    "runtime/provider/model/specialist/cognitive values are escaped before HTML insertion",
+    "Phase 14 adds exactly one Pete region to the existing Systems shell and enhancement remains idempotent",
+    "browser uses only same-origin /api/hunter/pete and /api/hunter/pete/model-control",
+    "browser never receives Pete MCP credentials, independent Pete admin capability or private loopback transport",
+    "runtime/provider/model/specialist/cognitive values remain escaped before HTML insertion",
     "model-specific controls fail unavailable when the Pete registry is unavailable while reset/free-only remains governed",
-    "owner bearer forwarding now fails closed unless HUNTER_SERVICE_ORIGIN is a clean HTTPS origin",
-    "existing non-Pete Admin routing remains delegated to entry-v3"
+    "owner bearer forwarding still fails closed unless HUNTER_SERVICE_ORIGIN is a clean HTTPS origin",
+    "production Wrangler main and the production contract test now agree on src/phase14-entry.js",
+    "the Phase 14 wrapper delegates every non-Pete route to entry-v3 so existing Admin continuity remains the base implementation"
   ],
   "limitations": [
-    "This is static engineering review, not corrected-head source execution or Playwright proof.",
-    "No desktop/mobile screenshot, button/reload persistence or DOM/network browser evidence is claimed."
+    "This is static engineering review of generation 7, not corrected-head source execution or Playwright proof.",
+    "No desktop/mobile screenshot, Save/Reset click, reload persistence, denial or DOM/network secret scan is claimed.",
+    "Fresh external review and model-free Sergeant reconciliation remain mandatory."
   ],
   "unresolved_review_threads": 0,
   "submitted_github_reviews": 0,
