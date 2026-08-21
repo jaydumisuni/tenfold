@@ -1,20 +1,22 @@
 name: TEMP G2-01 proof-validator patch transport
 
 on:
-  push:
+  pull_request:
     branches:
-      - temp/g2-01-proof-validator-patch
+      - main
 
 permissions:
   contents: write
 
 jobs:
   apply-reviewed-patch:
+    if: github.head_ref == 'temp/g2-01-proof-validator-patch'
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout transport branch
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          ref: temp/g2-01-proof-validator-patch
           fetch-depth: 0
           persist-credentials: true
 
