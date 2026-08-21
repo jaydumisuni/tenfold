@@ -1,0 +1,287 @@
+{
+  "authority_refs": [
+    "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:docs/00-founding-authority.md",
+    "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:docs/07-gen2-evolution-authority.md",
+    "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:docs/08-gen2-roadmap.md",
+    "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:docs/02-assurance-matrix.md"
+  ],
+  "cold_boot_proof_digest": "195d7fa805fbe28a30da158bb887f7a9bd870209b56b9f87f8fdac2d5358296a",
+  "cold_boot_result": "PASS",
+  "dependency_lock": [
+    "Pygments==2.21.0",
+    "greenlet==3.5.5",
+    "iniconfig==2.3.0",
+    "packaging==26.3",
+    "pip==26.2.1",
+    "playwright==1.57.0",
+    "pluggy==1.6.0",
+    "pyee==13.0.1",
+    "pytest==9.1.1",
+    "sergeant-reviewer @ git+https://github.com/jaydumisuni/Sergeant.git@4a277cc5950aa08a98157b950c96fb88f2178c79",
+    "setuptools==79.0.1",
+    "tenfold==0.1.0+source.fd3645cc49126d730c697c4701e3be42eb073d42",
+    "typing_extensions==4.16.0"
+  ],
+  "dependency_lock_digest": "a23cab04c5e205640292fd647f945dd037581db6ce7e5dc1425995525932d167",
+  "dispositions": [
+    {
+      "component": "Foreman",
+      "disposition": "SUPERSEDE",
+      "rationale": "Live authority migrates slice-by-slice to the Rust constitutional kernel; Gen1 Foreman remains frozen differential/reference authority.",
+      "source_refs": ["jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/foreman.py"],
+      "target": "G2 Rust kernel after G2-23/G2-27"
+    },
+    {
+      "component": "derivation assurance",
+      "disposition": "SUPERSEDE",
+      "rationale": "Gen2 closure + proof-carrying compilation + independent verifier replace live derivation authority while preserving Gen1 as a reference oracle.",
+      "source_refs": ["jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/derivation_assurance.py"],
+      "target": "Requirement/Classification/Policy closure + compiler + verifier"
+    },
+    {
+      "component": "scheduler",
+      "disposition": "WRAP",
+      "rationale": "Existing deterministic labour scheduling remains usable behind Gen2 dispatch authority; scheduling never owns constitutional authority.",
+      "source_refs": ["jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/scheduler.py"],
+      "target": "Gen2 dispatch adapter"
+    },
+    {
+      "component": "campaign state",
+      "disposition": "SUPERSEDE",
+      "rationale": "Canonical campaign state becomes Rust-owned authoritative state with Chronicle projection; Gen1 state remains differential reference.",
+      "source_refs": [
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/persistence.py",
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/foreman.py"
+      ],
+      "target": "Rust authoritative state model"
+    },
+    {
+      "component": "leases/fencing",
+      "disposition": "SUPERSEDE",
+      "rationale": "Generation, lease and fencing authority transfers to Rust under staged migration and recovery qualification.",
+      "source_refs": [
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/durability.py",
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/ownership.py"
+      ],
+      "target": "Rust identity/dispatch/fencing kernel"
+    },
+    {
+      "component": "worker/task/evidence contracts",
+      "disposition": "WRAP",
+      "rationale": "Frozen G2-00 default disposition; contracts remain inherited but are wrapped by typed bootstrap/canonical encodings.",
+      "source_refs": [
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/contracts.py",
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/workers.py"
+      ],
+      "target": "tenfold.bootstrap.v1 + typed Gen2 artifacts"
+    },
+    {
+      "component": "Assurance Matrix integration",
+      "disposition": "WRAP",
+      "rationale": "The Matrix remains external frozen policy while runtime routing moves under Gen2 proof authority.",
+      "source_refs": [
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/assurance.py",
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/assurance_adapters.py"
+      ],
+      "target": "Gen2 assurance-routing runtime"
+    },
+    {
+      "component": "Council",
+      "disposition": "KEEP",
+      "rationale": "Council is retained and later pinned as a reproducible inherited component; it is not Gen2 execution authority.",
+      "source_refs": [
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/council.py",
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/officers.py"
+      ],
+      "target": "Pinned Council at G2-23"
+    },
+    {
+      "component": "Repository Facility",
+      "disposition": "WRAP",
+      "rationale": "Existing adapter remains reference/transport and is wrapped by the qualified Gen2 Facility ABI before any real mutation.",
+      "source_refs": ["jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/repository_facility.py"],
+      "target": "Gen2 Facility ABI"
+    },
+    {
+      "component": "Oracle Facility",
+      "disposition": "WRAP",
+      "rationale": "Existing adapter remains reference/transport and is wrapped by the qualified Gen2 Facility ABI.",
+      "source_refs": ["jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/oracle_facility.py"],
+      "target": "Gen2 Facility ABI"
+    },
+    {
+      "component": "Ptah Facility",
+      "disposition": "WRAP",
+      "rationale": "Existing adapter remains reference/transport and is wrapped by the qualified Gen2 Facility ABI.",
+      "source_refs": ["jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/ptah_facility.py"],
+      "target": "Gen2 Facility ABI / bootstrap interoperability"
+    },
+    {
+      "component": "recovery",
+      "disposition": "SUPERSEDE",
+      "rationale": "Gen2 recovery/takeover becomes Rust authority only after G2-25; Gen1 remains frozen fallback/reference.",
+      "source_refs": [
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/recovery.py",
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/durability.py"
+      ],
+      "target": "Gen2 recovery/takeover"
+    },
+    {
+      "component": "Operating Methods",
+      "disposition": "KEEP",
+      "rationale": "Frozen G2-00 default disposition; methods may influence construction technique only and never proof/authority.",
+      "source_refs": ["jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:docs/05-operating-methods.md"],
+      "target": "Inherited operating method registry"
+    },
+    {
+      "component": "Project Method Profiles",
+      "disposition": "KEEP",
+      "rationale": "Frozen G2-00 default disposition; profiles remain non-authoritative execution-learning metadata.",
+      "source_refs": [
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:docs/06-project-method-profiles.md",
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/method_profiles.py"
+      ],
+      "target": "Inherited project method profile system"
+    }
+  ],
+  "intentional_divergences": [],
+  "interim_root": {
+    "allowed_actions": [
+      "supply_explicit_scoped_credentials",
+      "approve_root_amendment_under_frozen_authority",
+      "revoke_scoped_bootstrap_authority"
+    ],
+    "authority_class": "EXTERNAL_MANUAL_INTERIM_ROOT",
+    "denied_actions": [
+      "campaign_modify_root",
+      "campaign_widen_root_authority",
+      "gen2_self_mint_before_g2_17"
+    ],
+    "generation": 1,
+    "provenance": [
+      "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:docs/07-gen2-evolution-authority.md#interim-root-authority-before-g2-17",
+      "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:docs/08-gen2-roadmap.md#g2-01"
+    ],
+    "root_id": "TENFOLD-G2-INTERIM-ROOT"
+  },
+  "migration_reference_sha": "fd3645cc49126d730c697c4701e3be42eb073d42",
+  "pip_version": "pip 26.2.1",
+  "python_version": "Python 3.11.16",
+  "qualification_fixture_corpus_digest": "6f20368f7785dd0007c1645f5ed02e4993002765e0989ca73206e62251b208cf",
+  "reference_corpus_manifest_digest": "3bb2949f0c2414711e435413f2b4e26271aad1696b93a15e97183d71424965b6",
+  "reference_coverage": [
+    {
+      "classification": "WITHIN_GEN1_REFERENCE_SURFACE",
+      "rationale": "Gen1 has accepted derivation assurance and dependency-frontier semantics.",
+      "reference_refs": [
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/derivation_assurance.py",
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/foreman.py"
+      ],
+      "semantic_area": "campaign derivation/frontier"
+    },
+    {
+      "classification": "WITHIN_GEN1_REFERENCE_SURFACE",
+      "rationale": "Accepted Gen1 contract and bounded-worker semantics are inherited.",
+      "reference_refs": [
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/contracts.py",
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/workers.py"
+      ],
+      "semantic_area": "worker/task/evidence contracts"
+    },
+    {
+      "classification": "WITHIN_GEN1_REFERENCE_SURFACE",
+      "rationale": "Accepted deterministic scheduling/workforce semantics exist.",
+      "reference_refs": [
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/scheduler.py",
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/workforce.py"
+      ],
+      "semantic_area": "scheduling/resource control"
+    },
+    {
+      "classification": "WITHIN_GEN1_REFERENCE_SURFACE",
+      "rationale": "Gen1 provides the differential baseline for durable authority state.",
+      "reference_refs": [
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/persistence.py",
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/durability.py",
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/recovery.py"
+      ],
+      "semantic_area": "persistence/leases/recovery"
+    },
+    {
+      "classification": "WITHIN_GEN1_REFERENCE_SURFACE",
+      "rationale": "Repository/Oracle/Ptah adapters provide accepted baseline semantics.",
+      "reference_refs": [
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/repository_facility.py",
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/oracle_facility.py",
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/ptah_facility.py"
+      ],
+      "semantic_area": "facilities"
+    },
+    {
+      "classification": "WITHIN_GEN1_REFERENCE_SURFACE",
+      "rationale": "Founding assurance routing and Council are accepted Gen1 reference surfaces.",
+      "reference_refs": [
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/assurance.py",
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/assurance_adapters.py",
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/council.py"
+      ],
+      "semantic_area": "assurance/council"
+    },
+    {
+      "classification": "WITHIN_GEN1_REFERENCE_SURFACE",
+      "rationale": "Inherited non-authoritative method semantics are already operational.",
+      "reference_refs": [
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:docs/05-operating-methods.md",
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:docs/06-project-method-profiles.md",
+        "jaydumisuni/tenfold@fd3645cc49126d730c697c4701e3be42eb073d42:src/tenfold/method_profiles.py"
+      ],
+      "semantic_area": "operating methods/project profiles"
+    },
+    {
+      "classification": "GEN2_ONLY_SURFACE",
+      "rationale": "No Gen1 constitutional closure runtime exists.",
+      "reference_refs": [],
+      "semantic_area": "requirement/classification/policy closure"
+    },
+    {
+      "classification": "GEN2_ONLY_SURFACE",
+      "rationale": "No Gen1 typed obligation compiler/certificate exists.",
+      "reference_refs": [],
+      "semantic_area": "obligation IR/proof-carrying compilation"
+    },
+    {
+      "classification": "GEN2_ONLY_SURFACE",
+      "rationale": "Gen1 authoritative runtime is Python.",
+      "reference_refs": [],
+      "semantic_area": "Rust constitutional authority"
+    },
+    {
+      "classification": "GEN2_ONLY_SURFACE",
+      "rationale": "Gen2 requires a separately specified constitutional verifier.",
+      "reference_refs": [],
+      "semantic_area": "independent verifier"
+    },
+    {
+      "classification": "GEN2_ONLY_SURFACE",
+      "rationale": "Gen2 strengthens durability into constitutional external-effect accounting.",
+      "reference_refs": [],
+      "semantic_area": "Chronicle external anchoring/effect census"
+    },
+    {
+      "classification": "GEN2_ONLY_SURFACE",
+      "rationale": "Gen2 introduces causal Root/issuer exclusion and mintable-scope bounds.",
+      "reference_refs": [],
+      "semantic_area": "Root/issuing authority causal planes"
+    },
+    {
+      "classification": "GEN2_ONLY_SURFACE",
+      "rationale": "These activation states do not exist in Gen1.",
+      "reference_refs": [],
+      "semantic_area": "self-construction minimum/preferred runtime"
+    }
+  ],
+  "reproducible_environment_digest": "bccb84e75a6f38acf1b9c1d70ce96b35447213f823c5c70b65dcfe5b6d14bf37",
+  "schema": "tenfold.gen1_reference.v1",
+  "semantic_corpus_digest": "fb3338f1453d3c1b4797fdfeed7ecef4e7c4a6cd385d434bffac0b4ecadc0bc3",
+  "source_archive_sha256": "cf2ad262caa950ee91afd6a4908aa35dbd7e71a93de6bb2e97ed851314c43e40"
+}
