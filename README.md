@@ -49,14 +49,15 @@ For current Tenfold evolution work, read:
 4. `docs/08-gen2-roadmap.md` — frozen Gen-2.0 construction roadmap G2-01 through G2-30 and authority-ownership matrix.
 5. `docs/09-gen2-review-record.md` — Gen-2 architecture/reconciliation PASS record and zero-context pickup.
 6. `docs/10-chat-workspace-execution.md` — canonical rule for using the actual Tenfold runtime inside a chat/agent workspace.
-7. `docs/11-generational-evolution-map.md` — complete Gen1 → Gen2.0 → reserved Gen2.1/2.2 → future-generation evolution map.
-8. `docs/02-assurance-matrix.md` — deterministic external-assurance policy and amendment rules.
-9. `docs/03-sergeant-donor-map.md` — what is inherited from Sergeant and what is deliberately not copied.
-10. `docs/04-tf00-review-record.md` — hostile TF-00 review findings, dispositions, and final PASS.
-11. `docs/05-operating-methods.md` — field-tested execution methods; not architecture authority.
-12. `docs/06-project-method-profiles.md` — project-specific execution-learning profiles; not architecture authority.
-13. `AGENTS.md` — zero-context operating rules for AI/automation.
-14. `PICKUP.md` — current repository completion/recovery state.
+7. `docs/11-generational-evolution-map.md` — complete Gen1 → Gen2.0 → reserved Gen2.1/2.2 → future-generation evolution mechanism map.
+8. `docs/12-master-build-horizon.md` — master core-build finish line: G2-30 ends Gen-2.0, not the complete Tenfold core vision.
+9. `docs/02-assurance-matrix.md` — deterministic external-assurance policy and amendment rules.
+10. `docs/03-sergeant-donor-map.md` — what is inherited from Sergeant and what is deliberately not copied.
+11. `docs/04-tf00-review-record.md` — hostile TF-00 review findings, dispositions, and final PASS.
+12. `docs/05-operating-methods.md` — field-tested execution methods; not architecture authority.
+13. `docs/06-project-method-profiles.md` — project-specific execution-learning profiles; not architecture authority.
+14. `AGENTS.md` — zero-context operating rules for AI/automation.
+15. `PICKUP.md` — current repository completion/recovery state.
 
 ## Current state
 
@@ -91,6 +92,36 @@ Gen-2.0 architecture review and post-PASS reconciliation are complete.
 - Construction runtime at roadmap start: **qualified Tenfold Gen 1**.
 
 The Gen-2 bootstrap is explicit: Gen 1 builds Gen 2 under TF-00 + G2-00 until G2-27 independently proves the Self-Construction Minimum. Only then may Gen 2 execute the remaining already-approved roadmap itself. Gen 1 remains afterward as frozen reference/differential oracle/fallback unless later authority explicitly retires it.
+
+### Current roadmap end vs Tenfold core-build end
+
+These are deliberately different questions.
+
+The current **approved/frozen Gen-2.0 roadmap** ends at:
+
+```text
+G2-30 — Preferred Runtime Gate
+```
+
+That means Gen 2.0 is complete. It does **not** mean the original Tenfold core vision is fundamentally complete.
+
+The master build horizon is:
+
+```text
+Gen 1
+  ↓
+Gen 2.0 — constitutional/self-hosting successor
+  ↓
+separately approved Gen-2.1-class scale/incrementality generation
+  ↓
+separately approved Gen-2.2-class institutional-learning generation
+  ↓
+TENFOLD CORE VISION COMPLETE
+```
+
+The exact Gen-2.1/2.2 authorities and milestone numbers do not exist yet and must not be invented. Each requires separate approval, hostile review, freeze, roadmap, construction and qualification.
+
+See `docs/12-master-build-horizon.md` for the canonical finish-line distinction.
 
 ### Complete generational evolution model
 
@@ -140,7 +171,7 @@ Standing rule:
 learned method != project authority
 ```
 
-See `docs/11-generational-evolution-map.md` for the complete recursive build → operate → measure → improve → build-next-generation map.
+See `docs/11-generational-evolution-map.md` for the recursive build → operate → measure → improve → build-next-generation mechanism map, and `docs/12-master-build-horizon.md` for where the original core build is considered complete.
 
 Gen 2.0 deliberately does **not** activate evidence reuse, Work Cells/Execution Forest optimisation, learned scheduling, Method Registry, Experience Graph or institutional self-learning. Those are reserved for later approved generations.
 
