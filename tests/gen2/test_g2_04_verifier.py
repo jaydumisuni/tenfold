@@ -144,6 +144,19 @@ def test_g2_04_independent_verifier_detects_duplicate_requirement_id() -> None:
     assert any("duplicate requirement_id" in d for d in defects)
 
 
+def test_g2_04_independent_verifier_detects_entry_bound_to_wrong_requirement() -> None:
+    # The exact escalation named by review: an entry inside REQ-1's ledger
+    # that itself claims requirement_id=REQ-2 must not count toward REQ-1's
+    # accepted_or_merged check — evidence for one requirement must not be
+    # presented as closure evidence for another.
+    manifest = _valid_manifest()
+    raw = copy.deepcopy(manifest.to_dict())
+    raw["candidate_ledgers"][0]["entries"][0]["requirement_id"] = "REQ-2"
+    defects = independent_verify_requirement_closure_manifest(raw)
+    assert any("binds a different requirement_id" in d for d in defects)
+    assert any("no ACCEPTED/MERGED entry" in d for d in defects)
+
+
 # ============================================================================
 # Component lineage (G2-00 SS12.2)
 # ============================================================================
@@ -216,6 +229,23 @@ def test_g2_04_disagreement_record_valid_roundtrip() -> None:
 def test_g2_04_disagreement_record_identical_outputs_rejected() -> None:
     record = _disagreement(verifier_output_digest="k" * 64)
     with pytest.raises(VerifierError, match="not a disagreement"):
+        record.validate()
+
+
+@pytest.mark.parametrize("field,value", [("kernel_generation", 0), ("kernel_generation", -1), ("verifier_generation", 0)])
+def test_g2_04_disagreement_record_rejects_non_positive_generation(field: str, value: int) -> None:
+    # The exact escalation named by review: a zero/negative generation must
+    # not enter the permanent disagreement ledger, since it cannot bind an
+    # exact kernel/verifier generation for adjudication or regression replay.
+    record = _disagreement(**{field: value})
+    with pytest.raises(VerifierError, match=f"{field} must be a positive integer"):
+        record.validate()
+
+
+@pytest.mark.parametrize("field", ["exact_input_digest", "kernel_output_digest", "verifier_output_digest"])
+def test_g2_04_disagreement_record_rejects_empty_digest(field: str) -> None:
+    record = _disagreement(**{field: ""})
+    with pytest.raises(VerifierError, match=f"{field} must be non-empty"):
         record.validate()
 
 
@@ -365,30 +395,55 @@ def test_g2_04_scan_flags_partial_declaration() -> None:
 # ============================================================================
 
 
-def test_g2_04_independent_reconciliation_matches() -> None:
-    result = independent_reconcile_external_assurance(
+def _reconciliation_kwargs(**overrides) -> dict:
+    defaults = dict(
         assurance_type="independent_authority_review",
+        expected_campaign_generation=1,
+        expected_milestone_id="g2-04",
+        expected_obligation_ids=("OB-1",),
         supplied_request_digest="r" * 64, supplied_response_digest="s" * 64,
         supplied_authority_identity="ExtAuth", supplied_authority_generation=1,
+        supplied_campaign_generation=1, supplied_milestone_id="g2-04", supplied_obligation_ids=("OB-1",),
         retained_request_digest="r" * 64, retained_response_digest="s" * 64,
         retained_authority_identity="ExtAuth", retained_authority_generation=1,
     )
+    defaults.update(overrides)
+    return defaults
+
+
+def test_g2_04_independent_reconciliation_matches() -> None:
+    result = independent_reconcile_external_assurance(**_reconciliation_kwargs())
     result.validate()
     assert result.reconciled is True
     assert result.mismatch_reason is None
 
 
 def test_g2_04_independent_reconciliation_detects_mismatch() -> None:
-    result = independent_reconcile_external_assurance(
-        assurance_type="independent_authority_review",
-        supplied_request_digest="r" * 64, supplied_response_digest="s" * 64,
-        supplied_authority_identity="ExtAuth", supplied_authority_generation=1,
-        retained_request_digest="r" * 64, retained_response_digest="x" * 64,
-        retained_authority_identity="ExtAuth", retained_authority_generation=1,
-    )
+    result = independent_reconcile_external_assurance(**_reconciliation_kwargs(retained_response_digest="x" * 64))
     result.validate()
     assert result.reconciled is False
     assert "response_digest" in result.mismatch_reason
+
+
+def test_g2_04_independent_reconciliation_detects_wrong_campaign_generation() -> None:
+    # The exact escalation named by review: matching copies replayed against
+    # a different campaign generation than the one actually being verified
+    # must not reconcile.
+    result = independent_reconcile_external_assurance(**_reconciliation_kwargs(supplied_campaign_generation=2))
+    assert result.reconciled is False
+    assert "campaign_generation" in result.mismatch_reason
+
+
+def test_g2_04_independent_reconciliation_detects_wrong_milestone() -> None:
+    result = independent_reconcile_external_assurance(**_reconciliation_kwargs(supplied_milestone_id="g2-03"))
+    assert result.reconciled is False
+    assert "milestone_id" in result.mismatch_reason
+
+
+def test_g2_04_independent_reconciliation_detects_wrong_obligation_binding() -> None:
+    result = independent_reconcile_external_assurance(**_reconciliation_kwargs(supplied_obligation_ids=("OB-2",)))
+    assert result.reconciled is False
+    assert "obligation_ids" in result.mismatch_reason
 
 
 def test_g2_04_reconciliation_result_reconciled_must_not_carry_mismatch_reason() -> None:

@@ -222,6 +222,16 @@ class DisagreementRecord:
     def validate(self) -> None:
         if not self.disagreement_id or not self.disagreement_id.strip():
             raise VerifierError("DisagreementRecord: disagreement_id must be non-empty")
+        if not self.exact_input_digest or not self.exact_input_digest.strip():
+            raise VerifierError(f"DisagreementRecord {self.disagreement_id}: exact_input_digest must be non-empty")
+        if not isinstance(self.kernel_generation, int) or isinstance(self.kernel_generation, bool) or self.kernel_generation < 1:
+            raise VerifierError(f"DisagreementRecord {self.disagreement_id}: kernel_generation must be a positive integer")
+        if not isinstance(self.verifier_generation, int) or isinstance(self.verifier_generation, bool) or self.verifier_generation < 1:
+            raise VerifierError(f"DisagreementRecord {self.disagreement_id}: verifier_generation must be a positive integer")
+        if not self.kernel_output_digest or not self.kernel_output_digest.strip():
+            raise VerifierError(f"DisagreementRecord {self.disagreement_id}: kernel_output_digest must be non-empty")
+        if not self.verifier_output_digest or not self.verifier_output_digest.strip():
+            raise VerifierError(f"DisagreementRecord {self.disagreement_id}: verifier_output_digest must be non-empty")
         if self.kernel_output_digest == self.verifier_output_digest:
             raise VerifierError(f"DisagreementRecord {self.disagreement_id}: kernel and verifier outputs are identical, not a disagreement")
         if not self.disagreement_description or not self.disagreement_description.strip():
@@ -668,6 +678,17 @@ def independent_verify_requirement_closure_manifest(raw: Any) -> list[str]:
             if entry_defects:
                 defects.extend(f"candidate_ledger {ledger['requirement_id']} entry: {d}" for d in entry_defects)
                 continue
+            if entry["requirement_id"] != ledger["requirement_id"]:
+                # An entry bound to a different requirement_id than its
+                # enclosing ledger is candidate evidence/lineage for the
+                # WRONG requirement; it must not count toward this ledger's
+                # accepted_or_merged check, or evidence for one requirement
+                # could be presented as closure evidence for another.
+                defects.append(
+                    f"candidate_ledger {ledger['requirement_id']}: entry {entry.get('candidate_id', '?')} "
+                    f"binds a different requirement_id ({entry['requirement_id']!r})"
+                )
+                continue
             if entry["disposition"] not in _INDEPENDENT_ACCEPTED_DISPOSITIONS | {"REJECTED", "SUPERSEDED"}:
                 defects.append(f"candidate_ledger {ledger['requirement_id']}: unknown disposition {entry['disposition']!r}")
             if entry["disposition"] in _INDEPENDENT_ACCEPTED_DISPOSITIONS:
@@ -691,10 +712,16 @@ def independent_verify_requirement_closure_manifest(raw: Any) -> list[str]:
 def independent_reconcile_external_assurance(
     *,
     assurance_type: str,
+    expected_campaign_generation: int,
+    expected_milestone_id: str,
+    expected_obligation_ids: tuple[str, ...],
     supplied_request_digest: str,
     supplied_response_digest: str,
     supplied_authority_identity: str,
     supplied_authority_generation: int,
+    supplied_campaign_generation: int,
+    supplied_milestone_id: str,
+    supplied_obligation_ids: tuple[str, ...],
     retained_request_digest: str,
     retained_response_digest: str,
     retained_authority_identity: str,
@@ -702,7 +729,18 @@ def independent_reconcile_external_assurance(
 ) -> ExternalAssuranceReconciliationResult:
     """Independent reimplementation of the copy-A/copy-B reconciliation
     tenfold.gen2.constitutional.ExternalAssuranceBinding.validate() performs,
-    operating on raw scalar fields rather than importing that class."""
+    operating on raw scalar fields rather than importing that class.
+
+    G2-00 SS11.2: "Verifier reconciles request/response digests, external
+    authority identity/generation, campaign generation and obligation/
+    milestone binding." A binding whose two copies agree with each other but
+    were replayed against a different campaign generation, milestone, or
+    obligation set from what this verification is actually qualifying an
+    otherwise-irrelevant or stale external PASS would still satisfy
+    qualification — checking only the four copy-internal fields is not
+    reconciliation against the request being verified, only internal
+    self-consistency of the replayed copies.
+    """
     mismatches = []
     if supplied_request_digest != retained_request_digest:
         mismatches.append("request_digest")
@@ -712,9 +750,15 @@ def independent_reconcile_external_assurance(
         mismatches.append("authority_identity")
     if supplied_authority_generation != retained_authority_generation:
         mismatches.append("authority_generation")
+    if supplied_campaign_generation != expected_campaign_generation:
+        mismatches.append("campaign_generation (does not match expected campaign generation)")
+    if supplied_milestone_id != expected_milestone_id:
+        mismatches.append("milestone_id (does not match expected milestone)")
+    if set(supplied_obligation_ids) != set(expected_obligation_ids):
+        mismatches.append("obligation_ids (does not match expected obligation binding)")
     if mismatches:
         return ExternalAssuranceReconciliationResult(
             assurance_type=assurance_type, reconciled=False,
-            mismatch_reason=f"supplied/retained mismatch on: {', '.join(mismatches)}",
+            mismatch_reason=f"supplied/retained or expected-binding mismatch on: {', '.join(mismatches)}",
         )
     return ExternalAssuranceReconciliationResult(assurance_type=assurance_type, reconciled=True, mismatch_reason=None)
