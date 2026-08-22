@@ -46,8 +46,18 @@ class ConstitutionalError(ValueError):
     pass
 
 
+def _reject_constant(token: str) -> Any:
+    # Python's json.loads accepts NaN/Infinity/-Infinity as a non-standard
+    # extension (via parse_constant) even though they are not valid JSON
+    # per RFC 8259. Left at its default, canonical encoding would silently
+    # admit a non-canonical token, which is exactly the lossy decoding
+    # G2-00 SS7.1 requires closed schemas to reject.
+    raise ConstitutionalError(f"non-canonical JSON constant in encoding: {token!r}")
+
+
 def _load_canonical_json(text: str) -> Any:
-    """Decode JSON, rejecting ambiguous duplicate object keys.
+    """Decode JSON, rejecting ambiguous duplicate object keys and the
+    non-standard NaN/Infinity/-Infinity constant extension.
 
     Plain `json.loads` silently keeps the last of two duplicate keys in an
     object, which is exactly the "ambiguous duplicates" lossy-decoding
@@ -63,7 +73,7 @@ def _load_canonical_json(text: str) -> Any:
             seen[key] = value
         return seen
 
-    return json.loads(text, object_pairs_hook=_reject_duplicates)
+    return json.loads(text, object_pairs_hook=_reject_duplicates, parse_constant=_reject_constant)
 
 
 def _reject_unknown_keys(raw: Mapping[str, Any], expected: frozenset[str], schema_name: str) -> None:

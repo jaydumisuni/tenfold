@@ -188,6 +188,16 @@ def test_g2_02_canonical_json_rejects_duplicate_keys() -> None:
         _load_canonical_json('{"a": 1, "a": 2}')
 
 
+@pytest.mark.parametrize("token", ["NaN", "Infinity", "-Infinity"])
+def test_g2_02_canonical_json_rejects_non_standard_numeric_constants(token: str) -> None:
+    # json.loads accepts NaN/Infinity/-Infinity as a non-standard Python
+    # extension even though none are valid JSON per RFC 8259; left at its
+    # default this would silently admit a non-canonical token into what is
+    # documented as strict canonical encoding.
+    with pytest.raises(ConstitutionalError, match="non-canonical JSON constant"):
+        _load_canonical_json('{"a": %s}' % token)
+
+
 def test_g2_02_invalid_enum_value_raises_constitutional_error_not_bare_value_error() -> None:
     # Every from_dict here documents itself as failing closed with
     # ConstitutionalError for malformed encodings. Python's own Enum(value)
