@@ -24,8 +24,8 @@ This file records the repository recovery point. Always recover live GitHub stat
 - Complete generational evolution map: `docs/11-generational-evolution-map.md`.
 - Gen-2 implementation: **IN PROGRESS** (G2-01 PROVEN).
 - Gen-2 qualification: **IN PROGRESS**.
-- G2-01 — Gen-1 Reference and Inheritance Freeze: **PROVEN**. Proven candidate `8ef9e7bd4a66ce1f315252183b2fca417658bc4f`. Canonical review/proof record: `docs/gen2/G2-01-review-record.md`.
-- Current next Gen-2 milestone: **G2-02 — Constitutional Schema and Policy Foundation**.
+- G2-01 — Gen-1 Reference and Inheritance Freeze: **PROVEN**. Proven candidate `8e33f7a4240e18141ae44d6733043660f64c1640` (round 9: candidate content digest rescoped to this milestone's own frozen artifacts). Canonical review/proof record: `docs/gen2/G2-01-review-record.md`.
+- Current next Gen-2 milestone: **G2-02 — Constitutional Schema and Policy Foundation** (PR #38, blocked only on rebasing onto this fix).
 - Construction runtime: **qualified Tenfold Gen 1** (authoritative through G2-23 per the frozen roadmap).
 
 Do not restart Gen-2 architecture design from chat memory. Recover G2-00, the Gen-2 roadmap, workspace rule and generational evolution map first. Reopen G2-00 only if implementation/evidence demonstrates a real frozen-authority violation or the Owner explicitly authorises an architecture change.

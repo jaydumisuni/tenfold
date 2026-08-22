@@ -84,6 +84,25 @@ CLOSURE_RECORD_PATHS = {
     "docs/gen2/G2-01-review-record.md", "README.md", "PICKUP.md",
 }
 
+# Independently re-derived from G2-01-review-record.md "Frozen artifacts"
+# (minus CLOSURE_RECORD_PATHS), not imported from
+# tenfold.gen2.reference.CANDIDATE_CONTENT_SCOPE. An unscoped whole-repository
+# tree walk would make this reviewer's digest reproduction fail on any PR
+# that touches any tracked file anywhere in the repository, including
+# entirely unrelated future milestones' own files, not just when G2-01's own
+# candidate content genuinely changed.
+INDEPENDENT_CANDIDATE_CONTENT_SCOPE = (
+    "docs/gen2/G2-01-cold-boot-procedure.md",
+    "docs/gen2/g2-01-pip-freeze.txt",
+    "docs/gen2/g2-01-qualification-fixture-corpus.sha256",
+    "docs/gen2/g2-01-reference-corpus.sha256",
+    "docs/gen2/g2-01-semantic-corpus.sha256",
+    "src/tenfold/gen2/reference.py",
+    "tests/gen2/test_g2_01_reference.py",
+    "scripts/g2_01_independent_authority_review.py",
+    ".github/workflows/g2-01-reference-proof.yml",
+)
+
 # Independently re-derived (measured directly from the same passing CI run
 # used as the trust anchor, not imported from
 # tenfold.gen2.reference.TRUSTED_COLD_BOOT_SUBSTRATE).
@@ -223,7 +242,7 @@ def independent_compute_candidate_content_digest(repo: str, candidate: str, raw:
     # prior review round, so the PASS-only comparison branch that calls
     # this function never actually executed.
     result = subprocess.run(
-        ["git", "-C", repo, "ls-tree", "-r", candidate],
+        ["git", "-C", repo, "ls-tree", "-r", candidate, "--", *INDEPENDENT_CANDIDATE_CONTENT_SCOPE],
         capture_output=True,
         text=True,
     )

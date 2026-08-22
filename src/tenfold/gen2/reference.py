@@ -159,6 +159,39 @@ CORPUS_SCOPES: dict[str, tuple[str, ...]] = {
     "qualification_fixture_corpus": ("tests",),
 }
 
+# The exact set of files this milestone's own candidate content digest is
+# computed over (G2-01-review-record.md "Frozen artifacts", minus the
+# CLOSURE_RECORD_PATHS members already excluded separately above).
+#
+# `compute_candidate_content_digest` originally hashed the *entire*
+# git-tracked repository tree. That is a real scope bug, not a stricter
+# check: a milestone that has already reached canonical PROVEN is a
+# candidate identity binding for *its own* artifacts, not a permanent
+# whole-repository immutability gate. Left unscoped, any later PR that adds
+# or edits *any* tracked file anywhere in the repository — including
+# entirely unrelated future milestones' own files — silently invalidates
+# this milestone's proven_candidate_content_digest and fails its proof
+# lane's PR/scheduled re-run forever, which would make the repository
+# permanently unable to accept further Gen-2 construction. Scoping the
+# digest to exactly the files G2-01 itself vouches for restores the
+# intended "did *this milestone's* candidate content change" check without
+# weakening it: any edit to reference.py, its permanent negative fixtures,
+# the independent reviewer, the corpus manifests, the cold-boot procedure
+# doc, or the proof workflow itself still correctly invalidates the digest
+# and requires a fresh proof, exactly as already exercised by the round
+# 7/8 correction cycle.
+CANDIDATE_CONTENT_SCOPE: tuple[str, ...] = (
+    "docs/gen2/G2-01-cold-boot-procedure.md",
+    "docs/gen2/g2-01-pip-freeze.txt",
+    "docs/gen2/g2-01-qualification-fixture-corpus.sha256",
+    "docs/gen2/g2-01-reference-corpus.sha256",
+    "docs/gen2/g2-01-semantic-corpus.sha256",
+    "src/tenfold/gen2/reference.py",
+    "tests/gen2/test_g2_01_reference.py",
+    "scripts/g2_01_independent_authority_review.py",
+    ".github/workflows/g2-01-reference-proof.yml",
+)
+
 
 _PROOF_HEADER_KEYS = (
     "status",
@@ -284,6 +317,13 @@ def compute_candidate_content_digest(candidate_root: str | Path) -> str:
     create untracked __pycache__ files, and a raw filesystem walk would
     make the digest depend on incidental prior process state rather than
     the candidate's actual tracked content.
+
+    The tree walk is further restricted to `CANDIDATE_CONTENT_SCOPE` — the
+    exact files this milestone's own candidate identity is bound to — not
+    the whole repository. This is itself a candidate-identity binding for
+    G2-01's own artifacts, not a permanent whole-repository immutability
+    gate: unrelated future milestones' files must not silently invalidate
+    this digest.
     """
     root = Path(candidate_root).resolve()
     bundle_path = root / BUNDLE_ARTIFACT_PATH
@@ -296,7 +336,7 @@ def compute_candidate_content_digest(candidate_root: str | Path) -> str:
 
     entries = [
         f"{mode} {blob_sha}  {rel}"
-        for mode, blob_sha, rel in _git_ls_files_with_blobs(root)
+        for mode, blob_sha, rel in _git_ls_files_with_blobs(root, CANDIDATE_CONTENT_SCOPE)
         if rel not in CLOSURE_RECORD_PATHS
     ]
     tree_digest = _digest(sorted(entries))

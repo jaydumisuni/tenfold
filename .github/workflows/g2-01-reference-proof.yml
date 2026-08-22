@@ -1,7 +1,29 @@
 name: G2-01 exact Gen1 reference proof
 
 on:
+  # Scoped to exactly what this milestone's proof lane can meaningfully
+  # revalidate: its own frozen artifacts and this workflow. An unscoped
+  # `pull_request:` trigger combined with a whole-repository candidate
+  # content digest would re-run and fail on every future PR regardless of
+  # what changed (see CANDIDATE_CONTENT_SCOPE below and in
+  # tenfold.gen2.reference for the underlying digest-scope fix); the
+  # monthly schedule below remains unscoped so real drift in the frozen
+  # cold-boot substrate/environment is still caught even when no G2-01 file
+  # changed.
   pull_request:
+    paths:
+      - 'docs/gen2/G2-01-cold-boot-procedure.md'
+      - 'docs/gen2/G2-01-review-record.md'
+      - 'docs/gen2/g2-01-gen1-reference-bundle.json'
+      - 'docs/gen2/g2-01-cold-boot-proof.txt'
+      - 'docs/gen2/g2-01-pip-freeze.txt'
+      - 'docs/gen2/g2-01-qualification-fixture-corpus.sha256'
+      - 'docs/gen2/g2-01-reference-corpus.sha256'
+      - 'docs/gen2/g2-01-semantic-corpus.sha256'
+      - 'src/tenfold/gen2/reference.py'
+      - 'tests/gen2/test_g2_01_reference.py'
+      - 'scripts/g2_01_independent_authority_review.py'
+      - '.github/workflows/g2-01-reference-proof.yml'
   workflow_dispatch:
   schedule:
     - cron: '17 3 1 * *'
@@ -143,6 +165,25 @@ jobs:
               BUNDLE_ARTIFACT_PATH, PROOF_ARTIFACT_PATH,
               "docs/gen2/G2-01-review-record.md", "README.md", "PICKUP.md",
           }
+          # The exact files this milestone's own candidate content digest is
+          # bound to (G2-01-review-record.md "Frozen artifacts", minus
+          # CLOSURE_RECORD_PATHS). An unscoped whole-repository walk would
+          # make any later PR touching *any* tracked file anywhere in the
+          # repository — including unrelated future milestones' own files —
+          # silently invalidate this proof lane forever; see
+          # tenfold.gen2.reference.CANDIDATE_CONTENT_SCOPE for the full
+          # rationale, which this constant mirrors exactly.
+          CANDIDATE_CONTENT_SCOPE = (
+              "docs/gen2/G2-01-cold-boot-procedure.md",
+              "docs/gen2/g2-01-pip-freeze.txt",
+              "docs/gen2/g2-01-qualification-fixture-corpus.sha256",
+              "docs/gen2/g2-01-reference-corpus.sha256",
+              "docs/gen2/g2-01-semantic-corpus.sha256",
+              "src/tenfold/gen2/reference.py",
+              "tests/gen2/test_g2_01_reference.py",
+              "scripts/g2_01_independent_authority_review.py",
+              ".github/workflows/g2-01-reference-proof.yml",
+          )
 
           REQUIRED_COMPONENT_ROSTER = {
               "Foreman", "derivation assurance", "scheduler", "campaign state",
@@ -224,7 +265,7 @@ jobs:
               bundle_digest = canonical_digest(normalized)
               entries = [
                   f"{mode} {blob_sha}  {rel}"
-                  for mode, blob_sha, rel in git_ls_files_with_blobs(candidate_root)
+                  for mode, blob_sha, rel in git_ls_files_with_blobs(candidate_root, CANDIDATE_CONTENT_SCOPE)
                   if rel not in CLOSURE_RECORD_PATHS
               ]
               tree_digest = canonical_digest(sorted(entries))
@@ -583,6 +624,21 @@ jobs:
               BUNDLE_ARTIFACT_PATH, PROOF_ARTIFACT_PATH,
               "docs/gen2/G2-01-review-record.md", "README.md", "PICKUP.md",
           }
+          # Mirrors tenfold.gen2.reference.CANDIDATE_CONTENT_SCOPE exactly:
+          # the digest binds this milestone's own candidate artifacts, not
+          # the whole repository tree, so unrelated future milestones'
+          # files never silently invalidate this proof lane.
+          CANDIDATE_CONTENT_SCOPE = (
+              "docs/gen2/G2-01-cold-boot-procedure.md",
+              "docs/gen2/g2-01-pip-freeze.txt",
+              "docs/gen2/g2-01-qualification-fixture-corpus.sha256",
+              "docs/gen2/g2-01-reference-corpus.sha256",
+              "docs/gen2/g2-01-semantic-corpus.sha256",
+              "src/tenfold/gen2/reference.py",
+              "tests/gen2/test_g2_01_reference.py",
+              "scripts/g2_01_independent_authority_review.py",
+              ".github/workflows/g2-01-reference-proof.yml",
+          )
           def canonical_digest(value):
               raw = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
               return hashlib.sha256(raw).hexdigest()
@@ -592,7 +648,10 @@ jobs:
           normalized["cold_boot_proof"] = None
           normalized["proven_candidate_content_digest"] = None
           bundle_digest = canonical_digest(normalized)
-          result = subprocess.run(["git", "-C", "candidate", "ls-files", "-s"], capture_output=True, text=True, check=True)
+          result = subprocess.run(
+              ["git", "-C", "candidate", "ls-files", "-s", "--", *CANDIDATE_CONTENT_SCOPE],
+              capture_output=True, text=True, check=True,
+          )
           entries = []
           for line in result.stdout.splitlines():
               if not line:

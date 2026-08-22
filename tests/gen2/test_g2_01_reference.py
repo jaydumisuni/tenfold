@@ -413,6 +413,48 @@ def test_g2_01_content_digest_is_stable_across_finalization_delta(tmp_path: Path
     assert passed_bundle.proven_candidate_content_digest == pending_digest
 
 
+def test_g2_01_content_digest_ignores_files_outside_candidate_scope(tmp_path: Path) -> None:
+    # The digest bug named by round 9: an unscoped whole-repository walk
+    # would make this digest change (and this milestone's proof lane fail)
+    # whenever *any* tracked file anywhere in the repository changes,
+    # including entirely unrelated future milestones' own files. A file
+    # outside CANDIDATE_CONTENT_SCOPE must never affect the digest.
+    bundle = load_bundle()
+    _copy_bound_manifests(tmp_path)
+    _write_full_bundle_json(tmp_path, bundle)
+    _git_init_and_commit(tmp_path)
+    before = compute_candidate_content_digest(tmp_path)
+
+    unrelated = tmp_path / "src/tenfold/gen2/some_future_milestone.py"
+    unrelated.parent.mkdir(parents=True, exist_ok=True)
+    unrelated.write_text("# an entirely unrelated future milestone's file\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-q", "-m", "unrelated future file"], cwd=tmp_path, check=True, capture_output=True)
+    after = compute_candidate_content_digest(tmp_path)
+
+    assert after == before
+
+
+def test_g2_01_content_digest_still_detects_in_scope_change(tmp_path: Path) -> None:
+    # Contrast case for the scope fix: a change to a file the scope *does*
+    # cover must still be detected, so the narrowing above is a correction,
+    # not a weakening of the underlying identity check.
+    bundle = load_bundle()
+    _copy_bound_manifests(tmp_path)
+    _write_full_bundle_json(tmp_path, bundle)
+    _git_init_and_commit(tmp_path)
+    before = compute_candidate_content_digest(tmp_path)
+
+    in_scope = tmp_path / "docs/gen2/g2-01-pip-freeze.txt"
+    in_scope.parent.mkdir(parents=True, exist_ok=True)
+    in_scope.write_text("tampered==1.0.0\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-q", "-m", "in-scope change"], cwd=tmp_path, check=True, capture_output=True)
+    after = compute_candidate_content_digest(tmp_path)
+
+    assert after != before
+
+
 def test_g2_01_proof_with_forged_substrate_field_fails_closed(tmp_path: Path) -> None:
     bundle = _bind_pass_bundle(tmp_path, chromium_sha256="9" * 64)
     with pytest.raises(ReferenceError, match="chromium_sha256 does not match trusted substrate"):

@@ -4,8 +4,8 @@
 **Authority:** TF-00 + frozen G2-00 §§3, 3.1, 3.2 + G2-01
 **Frozen Gen-1 migration reference:** `05aa384a34a650e677970904079a985ec8b26d90`
 **Frozen Gen-1 migration tree:** `c7c130b573180e74438d70b6e11c17dd9bade648`
-**Proven candidate:** `8ef9e7bd4a66ce1f315252183b2fca417658bc4f`
-**Proven candidate content digest:** `7317b0e6e3f16c07e8ce76820710bf9687c3dd7828bec8e851dc61c0bd194125`
+**Proven candidate:** `8e33f7a4240e18141ae44d6733043660f64c1640`
+**Proven candidate content digest:** `7845a3459e837105a8ad09c87d4f6de51ac893817397ea273f9be0c8ced25791`
 
 ## Construction authority
 
@@ -20,12 +20,15 @@ The campaign binds:
 
 ## Construction and review history
 
-PR #36 (`Gen2 G2-01 — exact canonical Gen1 reference v5`) went through eleven
-substantive review/fix rounds — nine against real, independently-obtained
-adversarial findings (chatgpt-codex-connector), and two against real CI
-failures surfaced only after the candidate first reached PASS — each
-addressed with genuine code changes, re-verified locally, and re-proven on
-real GitHub Actions CI before the next round:
+PR #36 (`Gen2 G2-01 — exact canonical Gen1 reference v5`) and PR #39
+(`Gen2 G2-01 round 9 — scope candidate content digest`) together went
+through twelve substantive review/fix rounds — nine against real,
+independently-obtained adversarial findings (chatgpt-codex-connector) on
+PR #36, two against real CI failures surfaced only after the candidate
+first reached PASS, and one (this one) against both a self-discovered
+production scope bug and a further chatgpt-codex-connector finding on the
+fix itself — each addressed with genuine code changes, re-verified locally,
+and re-proven on real GitHub Actions CI before the next round:
 
 1. PASS-lifecycle acceptance + first candidate-isolation attempt.
 2. Real job-level isolation (`candidate-check` / `cold-boot` split) +
@@ -63,8 +66,44 @@ real GitHub Actions CI before the next round:
    `compute_candidate_content_digest(ROOT)`, so the assertion checks
    self-consistency instead of a value that goes stale on its own edit.
    Reverted the bundle to `PENDING` once more and bound a second fresh
-   cold-boot proof to this final candidate (digest `7317b0e6...`), which
-   required no further content changes.
+   cold-boot proof to this final candidate (digest `7317b0e6...`).
+9. `compute_candidate_content_digest` (and its mirrors in the workflow's two
+   inline digest computations and the independent reviewer) hashed the
+   *entire* git-tracked repository tree, not just this milestone's own
+   candidate artifacts. That is a genuine scope bug, not a stricter check: it
+   meant any future PR touching *any* tracked file anywhere in the
+   repository — including entirely unrelated future milestones such as
+   G2-02 — would silently invalidate `proven_candidate_content_digest` and
+   fail this proof lane's PR-triggered and monthly-scheduled re-runs
+   forever, permanently blocking further Gen-2 construction. Discovered when
+   G2-02's own PR (#38, unrelated to G2-01) failed `candidate-check`/`verify`
+   with "candidate content digest does not match bundle
+   proven_candidate_content_digest". Fixed by introducing
+   `CANDIDATE_CONTENT_SCOPE` — the exact file set from this record's own
+   "Frozen artifacts" section, minus `CLOSURE_RECORD_PATHS` — and restricting
+   the `git ls-files -s` / `git ls-tree -r` walk to it in all three
+   implementations (`reference.py`, the workflow, the independent reviewer),
+   plus scoping the workflow's `pull_request:` trigger with `paths:` to the
+   same file set (the monthly `schedule:` trigger stays unscoped, since its
+   job — catching real drift in the frozen cold-boot substrate/environment —
+   is legitimately unconditional). Two new permanent regression fixtures
+   prove the fix in both directions: an unrelated file outside the scope
+   must not change the digest, and a file inside the scope still must.
+   Reverted the bundle to `PENDING`, then bound a third fresh cold-boot
+   proof under the corrected, properly-scoped algorithm once real CI
+   (`candidate-check`, `cold-boot`, `verify`) produced it — the PENDING
+   revert and the PASS binding landed as two separate, sequential commits
+   (`d5275a4` then `8e33f7a`) so each step's claims match its own commit's
+   actual bundle state exactly.
+   - A real chatgpt-codex-connector finding on the intermediate `d5275a4`
+     commit correctly flagged that this record's round-9 history bullet used
+     past tense ("bound a third fresh cold-boot proof") while that same
+     commit still had `cold_boot_proof: null` and `cold_boot_status:
+     PENDING` — the proof did not exist yet at that point in history. This
+     final version of the record is written only after the proof was
+     genuinely generated and bound in `8e33f7a`, so every claim above and in
+     the sections below now matches an actual bound, verified proof rather
+     than describing work still in flight.
 
 ## Frozen artifacts
 
@@ -75,26 +114,27 @@ real GitHub Actions CI before the next round:
 - `g2-01-qualification-fixture-corpus.sha256` — pre-G2 `tests` corpus (16 entries);
 - `g2-01-pip-freeze.txt` — exact dependency lock;
 - `G2-01-cold-boot-procedure.md` — exact periodic proof procedure;
-- `src/tenfold/gen2/reference.py` — fail-closed frozen-reference and differential harness;
-- `tests/gen2/test_g2_01_reference.py` — 56 permanent G2-01 negative fixtures;
-- `.github/workflows/g2-01-reference-proof.yml` — two-job (candidate-check / cold-boot), content-addressed, exact-reference proof lane;
+- `src/tenfold/gen2/reference.py` — fail-closed frozen-reference and differential harness, including `CANDIDATE_CONTENT_SCOPE`;
+- `tests/gen2/test_g2_01_reference.py` — 48 permanent G2-01 negative fixtures;
+- `.github/workflows/g2-01-reference-proof.yml` — two-job (candidate-check / cold-boot), content-addressed, exact-reference proof lane, `pull_request:` scoped by `paths:` to this file set;
 - `scripts/g2_01_independent_authority_review.py` — separately-implemented, stdlib-only independent reviewer.
 
 ## Proof evidence
 
-Real GitHub Actions CI on the exact proven candidate `8ef9e7b`:
+Real GitHub Actions CI on the exact proven candidate `8e33f7a`:
 
 - `candidate-check` job (independent-implementation inline validator, isolated runner): **success**;
-- `cold-boot` job (frozen Gen1 repository-only suite): **success** — `158 passed in 3.83s`, zero skipped;
-- run: <https://github.com/jaydumisuni/tenfold/actions/runs/32584088775>;
-- `verify` (Tenfold CI): **success** — run: <https://github.com/jaydumisuni/tenfold/actions/runs/32584088744>.
+- `cold-boot` job (frozen Gen1 repository-only suite): **success** — `158 passed in 4.08s`, zero skipped;
+- run: <https://github.com/jaydumisuni/tenfold/actions/runs/32590920800>;
+- `verify` (Tenfold CI): **success** — run: <https://github.com/jaydumisuni/tenfold/actions/runs/32590920805>.
 
 ## Independent authority review
 
 `scripts/g2_01_independent_authority_review.py` (separate implementation,
 no import of `tenfold.gen2.reference`, no third-party dependency) run
-against the exact proven candidate `8ef9e7b`: **PASS**, 30 independently-verified
-checks, 0 failures. Report digest `d021dfcdb741e53d33e867357357573d17743de4cc5fb611e5dacaf6ea396e06`.
+against the exact proven candidate `8e33f7a`: **PASS**, 30
+independently-verified checks, 0 failures. Report digest
+`505ff9e4b4297da7b20603034f93ba1a6e867ead215333f85ec4d2497bda1694`.
 
 ## Milestone Council
 
@@ -109,8 +149,9 @@ against `tenfold.assurance.FOUNDING_MATRIX.required_for(("authority",))`:
 - unresolved_assurance: none;
 - **accepted_for_rebrief: `true`**.
 
-All PR #36 review threads (25 threads across all eleven rounds) are resolved
-on the final head.
+All PR #36 review threads (25 threads across nine adversarial rounds) and
+the PR #39 review thread (the round-9 documentation-accuracy finding
+addressed above) are resolved on the final head.
 
 ## Acceptance reconciliation
 
@@ -118,11 +159,12 @@ on the final head.
 - semantic/fixture corpora reproduce accepted Gen1 results: **PASS** (158 passed, 0 skipped);
 - every inherited component has exactly one disposition: **PASS** (14/14, closed-enum verified independently);
 - no unregistered initial divergence: **PASS** (0 divergences registered);
-- interim Root provenance is exact: **PASS** (identity/class/generation/provenance/allowed-actions pinned exactly).
+- interim Root provenance is exact: **PASS** (identity/class/generation/provenance/allowed-actions pinned exactly);
+- candidate content digest is scoped to this milestone's own artifacts, not the whole repository: **PASS** (round-9 fix, independently re-verified).
 
 ## Does not enable
 
 - Gen-2 authoritative execution;
 - authority migration;
 - Gen-2 self-construction;
-- G2-02 execution before this milestone reached canonical `PROVEN` (now satisfied — G2-02 is the next authorized milestone).
+- G2-02 execution before this milestone reached canonical `PROVEN` (now satisfied — G2-02's PR #38 may proceed once rebased on this fix).
