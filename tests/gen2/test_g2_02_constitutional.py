@@ -41,6 +41,7 @@ from tenfold.gen2.constitutional import (
     Requirement,
     RequirementClass,
     RequirementClosureManifest,
+    RuntimeObligation,
     STABILIZATION_EVIDENCE_CATEGORIES,
 )
 from tenfold.gen2.constitutional import _load_canonical_json
@@ -354,10 +355,37 @@ def test_g2_02_policy_closure_mismatched_generation_fails_closed() -> None:
 
 def test_g2_02_policy_closure_duplicate_change_id_fails_closed() -> None:
     policy = _total_policy()
-    change = CandidatePolicyLedgerEntry("CH-1", "field", PolicyMutationOperator.MEMBER_REMOVAL, "rationale", "reviewer")
+    real_field = sorted(ConstitutionalPolicySet.REQUIRED_POLICY_FIELD_ROSTER)[0]
+    change = CandidatePolicyLedgerEntry("CH-1", real_field, PolicyMutationOperator.MEMBER_REMOVAL, "rationale", "reviewer")
     pcm = PolicyClosureManifest(1, policy, (change, change))
     with pytest.raises(ConstitutionalError, match="duplicate change_id"):
         pcm.validate()
+
+
+def test_g2_02_policy_closure_bogus_field_identity_fails_closed() -> None:
+    policy = _total_policy()
+    change = CandidatePolicyLedgerEntry("CH-1", "not_a_real_field", PolicyMutationOperator.MEMBER_REMOVAL, "rationale", "reviewer")
+    pcm = PolicyClosureManifest(1, policy, (change,))
+    with pytest.raises(ConstitutionalError, match="is not a real policy field"):
+        pcm.validate()
+
+
+def test_g2_02_policy_set_non_dict_mapping_field_fails_closed() -> None:
+    # A malformed encoding (a string where a mapping is required) must fail
+    # closed with a typed ConstitutionalError, not crash the caller with an
+    # unrelated AttributeError from a bare .items() call.
+    policy = _total_policy()
+    raw = dict(policy.to_dict())
+    raw["requirement_class_to_obligation_classes"] = "not-a-dict"
+    with pytest.raises(ConstitutionalError, match="must be a JSON object"):
+        ConstitutionalPolicySet.from_dict(raw)
+
+
+def test_g2_02_policy_set_bogus_exemption_field_identity_fails_closed() -> None:
+    exemption = PolicyMutationExemption("not_a_real_field", 1, "reason", "attester", "reviewer", ("ev",))
+    policy = _total_policy(exemptions=(exemption,))
+    with pytest.raises(ConstitutionalError, match="is not a real policy field"):
+        policy.validate()
 
 
 # ============================================================================
@@ -592,6 +620,31 @@ def test_g2_02_authority_transfer_abort_reachable_before_commit_boundary() -> No
 def test_g2_02_authority_transfer_stabilization_policy_requires_all_eight_categories() -> None:
     with pytest.raises(ConstitutionalError, match="required_chronicle_events: must be non-empty"):
         AuthorityTransferStabilizationPolicy(1, ("op",), (), ("f",), ("r",), ("c",), ("o",), ("a",), ("i",)).validate()
+
+
+# ============================================================================
+# Runtime Obligation
+# ============================================================================
+
+
+def test_g2_02_runtime_obligation_valid_roundtrip() -> None:
+    ro = RuntimeObligation("RT-1", "OB-1", "campaign-1", "g2-02", ProofState.UNSATISFIED)
+    ro.validate()
+    assert RuntimeObligation.from_dict(ro.to_dict()) == ro
+
+
+def test_g2_02_runtime_obligation_unknown_field_rejected() -> None:
+    ro = RuntimeObligation("RT-1", "OB-1", "campaign-1", "g2-02", ProofState.UNSATISFIED)
+    bad = dict(ro.to_dict())
+    bad["extra"] = 1
+    with pytest.raises(ConstitutionalError, match="unknown field"):
+        RuntimeObligation.from_dict(bad)
+
+
+def test_g2_02_runtime_obligation_empty_id_fails_closed() -> None:
+    ro = RuntimeObligation("", "OB-1", "campaign-1", "g2-02", ProofState.UNSATISFIED)
+    with pytest.raises(ConstitutionalError, match="must be a non-empty string"):
+        ro.validate()
 
 
 # ============================================================================

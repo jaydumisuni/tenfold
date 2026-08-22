@@ -109,6 +109,16 @@ def _expect_list_of_str(value: Any, field: str, schema_name: str) -> tuple[str, 
     return tuple(items)
 
 
+def _expect_dict(value: Any, field: str, schema_name: str) -> dict:
+    """Reject anything that is not a genuine JSON object before `.items()`
+    is called on it — a malformed encoding (a string, a list, `null`) must
+    fail closed with a typed ConstitutionalError, not crash the caller with
+    an unrelated AttributeError/TypeError."""
+    if not isinstance(value, dict):
+        raise ConstitutionalError(f"{schema_name}.{field}: must be a JSON object")
+    return value
+
+
 # ============================================================================
 # Foundational closed enums (G2-00 SS6, SS7, SS11)
 # ============================================================================
@@ -927,6 +937,17 @@ class ConstitutionalPolicySet:
         seen_fields: set[str] = set()
         for exemption in self.non_weakenable_exemptions:
             exemption.validate()
+            # An exemption for a field_identity that names no real policy
+            # field is not a benign extra record: it cannot actually exempt
+            # anything (PolicyClosureManifest's coverage check only
+            # recognizes REQUIRED_POLICY_FIELD_ROSTER members), so a typo'd
+            # or fabricated name would silently exist in the frozen policy
+            # without ever doing what it claims to do.
+            if exemption.field_identity not in self.REQUIRED_POLICY_FIELD_ROSTER:
+                raise ConstitutionalError(
+                    f"ConstitutionalPolicySet: non_weakenable_exemptions field_identity "
+                    f"{exemption.field_identity!r} is not a real policy field"
+                )
             if exemption.field_identity in seen_fields:
                 raise ConstitutionalError(
                     f"ConstitutionalPolicySet: duplicate non_weakenable_exemptions field_identity {exemption.field_identity}"
@@ -982,22 +1003,23 @@ class ConstitutionalPolicySet:
             policy_generation=raw["policy_generation"],
             requirement_class_to_obligation_classes={
                 RequirementClass(k): tuple(ObligationClass(v) for v in _expect_list(vs, k, "ConstitutionalPolicySet.requirement_class_to_obligation_classes"))
-                for k, vs in raw["requirement_class_to_obligation_classes"].items()
+                for k, vs in _expect_dict(raw["requirement_class_to_obligation_classes"], "requirement_class_to_obligation_classes", "ConstitutionalPolicySet").items()
             },
             obligation_class_to_proof_event_predicates={
                 ObligationClass(k): _expect_list_of_str(vs, k, "ConstitutionalPolicySet.obligation_class_to_proof_event_predicates")
-                for k, vs in raw["obligation_class_to_proof_event_predicates"].items()
+                for k, vs in _expect_dict(raw["obligation_class_to_proof_event_predicates"], "obligation_class_to_proof_event_predicates", "ConstitutionalPolicySet").items()
             },
             obligation_class_to_falsification_class={
-                ObligationClass(k): FalsificationClass(v) for k, v in raw["obligation_class_to_falsification_class"].items()
+                ObligationClass(k): FalsificationClass(v)
+                for k, v in _expect_dict(raw["obligation_class_to_falsification_class"], "obligation_class_to_falsification_class", "ConstitutionalPolicySet").items()
             },
             obligation_class_to_assurance_routing={
                 ObligationClass(k): _expect_list_of_str(vs, k, "ConstitutionalPolicySet.obligation_class_to_assurance_routing")
-                for k, vs in raw["obligation_class_to_assurance_routing"].items()
+                for k, vs in _expect_dict(raw["obligation_class_to_assurance_routing"], "obligation_class_to_assurance_routing", "ConstitutionalPolicySet").items()
             },
             requirement_classification_to_ambiguity_impact_domains={
                 RequirementClass(k): tuple(AmbiguityImpactDomain(v) for v in _expect_list(vs, k, "ConstitutionalPolicySet.requirement_classification_to_ambiguity_impact_domains"))
-                for k, vs in raw["requirement_classification_to_ambiguity_impact_domains"].items()
+                for k, vs in _expect_dict(raw["requirement_classification_to_ambiguity_impact_domains"], "requirement_classification_to_ambiguity_impact_domains", "ConstitutionalPolicySet").items()
             },
             assurance_matrix_generation=raw["assurance_matrix_generation"],
             assurance_matrix_digest=raw["assurance_matrix_digest"],
@@ -1072,6 +1094,15 @@ class PolicyClosureManifest:
             if entry.change_id in change_ids:
                 raise ConstitutionalError(f"PolicyClosureManifest: duplicate change_id {entry.change_id}")
             change_ids.add(entry.change_id)
+            # A ledger entry naming a field_identity that is not a real
+            # policy field cannot demonstrate coverage of anything real —
+            # it would otherwise silently exist as a no-op record for a
+            # typo'd or fabricated field name.
+            if entry.field_identity not in ConstitutionalPolicySet.REQUIRED_POLICY_FIELD_ROSTER:
+                raise ConstitutionalError(
+                    f"PolicyClosureManifest: candidate_policy_ledger entry {entry.change_id} field_identity "
+                    f"{entry.field_identity!r} is not a real policy field"
+                )
             # G2-02 acceptance: "policy operator coverage is total or
             # explicitly qualified by reviewed exemption."
             if not self.policy.is_weakenable(entry.field_identity) and entry.operator != PolicyMutationOperator.APPLICABILITY_NARROWING:
