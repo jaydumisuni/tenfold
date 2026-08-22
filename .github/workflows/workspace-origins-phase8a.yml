@@ -1,0 +1,96 @@
+name: Workspace Origins Phase 8A Tenfold
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "workspace/origins_phase8a_campaign.py"
+      - ".github/workflows/workspace-origins-phase8a.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  origins-phase8a:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      TENFOLD_HEAD: ${{ github.event.pull_request.head.sha }}
+      ORIGINS_HEAD: 720f4ade3daa170d61b42fcf0d7059f21494b422
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Check out exact Tenfold workspace head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Assert exact Tenfold workspace head
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$TENFOLD_HEAD"
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Install exact Tenfold workspace runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install .
+
+      - name: Recover exact Origins Phase 8A candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          ORIGINS="$RUNNER_TEMP/origins-phase8a"
+          rm -rf "$ORIGINS"
+          git init "$ORIGINS"
+          git -C "$ORIGINS" fetch --no-tags --depth=1 https://github.com/jaydumisuni/origins-factory.git "$ORIGINS_HEAD"
+          git -C "$ORIGINS" checkout --detach FETCH_HEAD
+          test "$(git -C "$ORIGINS" rev-parse HEAD)" = "$ORIGINS_HEAD"
+          test -z "$(git -C "$ORIGINS" status --porcelain)"
+          printf '%s\n' "$ORIGINS" > "$RUNNER_TEMP/origins-root"
+
+      - name: Execute real Tenfold campaign and consult Hunter
+        shell: bash
+        run: |
+          set -euo pipefail
+          ORIGINS="$(cat "$RUNNER_TEMP/origins-root")"
+          OUT="$RUNNER_TEMP/origins-phase8a-tenfold.json"
+          python - "$ORIGINS" "$OUT" <<'PY' | tee "$RUNNER_TEMP/origins-phase8a-tenfold.log"
+          import sys
+          import workspace.origins_phase8a_campaign as campaign
+          campaign.HUNTER_URL = "https://hunter-api-worker.thetechguy712.workers.dev/v1/chat/completions"
+          sys.argv = [
+              "origins_phase8a_campaign.py",
+              "--origins-root", sys.argv[1],
+              "--output", sys.argv[2],
+          ]
+          raise SystemExit(campaign.main())
+          PY
+          grep -q 'TENFOLD_ORIGINS_PHASE8A_CAMPAIGN_OK' "$RUNNER_TEMP/origins-phase8a-tenfold.log"
+          python - "$OUT" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert data['derivation_passed'] is True
+          assert data['deterministic_worker_failures'] == 0
+          assert data['council_accepted_for_rebrief'] is True
+          assert data['helper_classified_as_construction_only'] is True
+          assert 'REMOVE_HELPER' in data['final_frontier']['ready']
+          assert 'ORACLE_CONTROL_PLANE' in data['final_frontier']['ready']
+          assert 'KRATOS_PROOF' in data['final_frontier']['blocked']
+          print(json.dumps(data, indent=2, sort_keys=True))
+          PY
+
+      - name: Prove Tenfold tracked workspace remained clean
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TENFOLD_HEAD"
+          git diff --quiet
+          git diff --cached --quiet
+          test -z "$(git status --porcelain --untracked-files=no)"
