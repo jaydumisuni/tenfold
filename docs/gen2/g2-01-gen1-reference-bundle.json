@@ -189,6 +189,7 @@
   },
   "migration_reference_sha": "05aa384a34a650e677970904079a985ec8b26d90",
   "migration_reference_tree_sha": "c7c130b573180e74438d70b6e11c17dd9bade648",
+  "proven_candidate_sha": null,
   "qualification_fixture_corpus": {
     "path": "docs/gen2/g2-01-qualification-fixture-corpus.sha256",
     "sha256": "6f20368f7785dd0007c1645f5ed02e4993002765e0989ca73206e62251b208cf"

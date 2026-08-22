@@ -62,6 +62,31 @@ REQUIRED_COMPONENT_ROSTER: frozenset[str] = frozenset(
 )
 
 
+# Independent Expected-Set / Independent Roster Principle (G2-00 SSSS5.1, 5.2),
+# mirroring REQUIRED_COMPONENT_ROSTER: derived from the G2-00 architecture
+# sections themselves (SS3 inherited-system surfaces; SSSS7-11, 12 Gen2-only
+# constitutional machinery), not from whatever the bundle producer happened
+# to classify.
+REQUIRED_REFERENCE_COVERAGE_AREAS: frozenset[str] = frozenset(
+    {
+        "campaign derivation/frontier",
+        "worker/task/evidence contracts",
+        "scheduling/resource control",
+        "persistence/leases/recovery",
+        "facilities",
+        "assurance/council",
+        "operating methods/project profiles",
+        "requirement/classification/policy closure",
+        "obligation IR/proof-carrying compilation",
+        "Rust constitutional authority",
+        "independent verifier",
+        "Chronicle external anchoring/effect census",
+        "Root/issuing authority causal planes",
+        "self-construction minimum/preferred runtime",
+    }
+)
+
+
 _PROOF_HEADER_KEYS = (
     "status",
     "migration_reference_sha",
@@ -272,6 +297,7 @@ class Gen1ReferenceBundle:
     qualification_fixture_corpus: ArtifactBinding
     cold_boot_status: str
     cold_boot_proof: ArtifactBinding | None
+    proven_candidate_sha: str | None
     dispositions: tuple[ComponentDisposition, ...]
     intentional_divergence_register_generation: int
     intentional_divergences: tuple[IntentionalDivergence, ...]
@@ -301,6 +327,7 @@ class Gen1ReferenceBundle:
             qualification_fixture_corpus=ArtifactBinding(**raw["qualification_fixture_corpus"]),
             cold_boot_status=str(raw["cold_boot_status"]),
             cold_boot_proof=(None if raw.get("cold_boot_proof") is None else ArtifactBinding(**raw["cold_boot_proof"])),
+            proven_candidate_sha=(None if raw.get("proven_candidate_sha") is None else str(raw["proven_candidate_sha"])),
             dispositions=tuple(
                 ComponentDisposition(
                     item["component"], Disposition(item["disposition"]), tuple(item["source_refs"]),
@@ -329,7 +356,13 @@ class Gen1ReferenceBundle:
     def load(cls, path: str | Path) -> "Gen1ReferenceBundle":
         return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
 
-    def validate(self, artifact_root: str | Path, *, require_proven: bool = True) -> None:
+    def validate(
+        self,
+        artifact_root: str | Path,
+        *,
+        require_proven: bool = True,
+        expected_candidate_sha: str | None = None,
+    ) -> None:
         if self.schema != "tenfold.gen1_reference.v2":
             raise ReferenceError("unsupported Gen1 reference bundle schema")
         if not _SHA1.fullmatch(self.migration_reference_sha):
@@ -352,10 +385,16 @@ class Gen1ReferenceBundle:
         if self.cold_boot_status == "PASS":
             if self.cold_boot_proof is None:
                 raise ReferenceError("PASS cold boot lacks bound proof artifact")
+            if self.proven_candidate_sha is None:
+                raise ReferenceError("PASS cold boot lacks a bound proven_candidate_sha")
+            if not _SHA1.fullmatch(self.proven_candidate_sha):
+                raise ReferenceError("proven_candidate_sha must be an exact lowercase SHA-1")
             self.cold_boot_proof.validate(artifact_root)
-            self.validate_cold_boot_proof_content(artifact_root)
+            self.validate_cold_boot_proof_content(artifact_root, expected_candidate_sha=expected_candidate_sha)
         elif self.cold_boot_proof is not None:
             raise ReferenceError("PENDING cold boot must not carry a proof artifact")
+        elif self.proven_candidate_sha is not None:
+            raise ReferenceError("PENDING cold boot must not carry a proven_candidate_sha")
         if require_proven and self.cold_boot_status != "PASS":
             raise ReferenceError("exact Gen1 reference environment is not proven")
         names = [item.component for item in self.dispositions]
@@ -383,13 +422,20 @@ class Gen1ReferenceBundle:
         areas = [item.semantic_area for item in self.reference_coverage]
         if len(areas) != len(set(areas)):
             raise ReferenceError("reference coverage semantic areas must be unique")
+        missing_areas = REQUIRED_REFERENCE_COVERAGE_AREAS - set(areas)
+        if missing_areas:
+            raise ReferenceError(
+                f"reference coverage roster missing required semantic area(s): {sorted(missing_areas)}"
+            )
         for item in self.reference_coverage:
             item.validate()
         self.interim_root.validate()
         if not self.authority_refs:
             raise ReferenceError("reference bundle lacks frozen authority bindings")
 
-    def validate_cold_boot_proof_content(self, artifact_root: str | Path) -> None:
+    def validate_cold_boot_proof_content(
+        self, artifact_root: str | Path, *, expected_candidate_sha: str | None = None
+    ) -> None:
         """Independently verify the bound `cold_boot_proof` artifact is
         actually a cold-boot proof for *this* bundle, not merely a file whose
         path/sha256 happens to be bound. `ArtifactBinding.validate` alone
@@ -410,6 +456,18 @@ class Gen1ReferenceBundle:
                 raise ReferenceError(f"cold-boot proof artifact environment.{field_name} mismatch")
         if not _SHA1.fullmatch(fields["candidate_sha"]):
             raise ReferenceError("cold-boot proof artifact candidate_sha missing/malformed")
+        # Bind the proof to the exact candidate it was produced for: the
+        # proof file's own claimed candidate_sha must match the bundle's
+        # trusted proven_candidate_sha field (internal consistency, so the
+        # bundle cannot silently rebind a proof produced for a different
+        # commit), and when a live caller supplies the actual SHA under test
+        # (only known to the CI job itself), that must match too (external
+        # liveness, so a stale/replayed proof+bundle pair from an earlier
+        # commit cannot be re-bound to a new closing commit).
+        if self.proven_candidate_sha is not None and fields["candidate_sha"] != self.proven_candidate_sha:
+            raise ReferenceError("cold-boot proof artifact candidate_sha does not match bundle proven_candidate_sha")
+        if expected_candidate_sha is not None and fields["candidate_sha"] != expected_candidate_sha:
+            raise ReferenceError("cold-boot proof artifact candidate_sha does not match the live candidate under test")
         remainder = fields["_remainder"]
         # Checked in this order so a tampered/forged summary line that
         # combines both ("N passed, M skipped in ...") is rejected for the

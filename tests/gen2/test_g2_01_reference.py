@@ -39,6 +39,7 @@ def test_g2_01_bundle_binds_exact_current_pre_gen2_reference() -> None:
     assert bundle.environment.pip_version == "pip 26.2.1"
     assert bundle.cold_boot_status == "PENDING"
     assert bundle.cold_boot_proof is None
+    assert bundle.proven_candidate_sha is None
 
 
 def test_g2_01_reference_manifest_contains_master_build_horizon() -> None:
@@ -193,7 +194,7 @@ def _write_cold_boot_proof(path: Path, bundle: Gen1ReferenceBundle, **overrides:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _bind_pass_bundle(tmp_path: Path, **proof_overrides: str) -> Gen1ReferenceBundle:
+def _bind_pass_bundle(tmp_path: Path, *, proven_candidate_sha: str | None = "a" * 40, **proof_overrides: str) -> Gen1ReferenceBundle:
     bundle = load_bundle()
     _copy_bound_manifests(tmp_path)
     proof_path = tmp_path / "docs/gen2/g2-01-cold-boot-proof.txt"
@@ -202,7 +203,7 @@ def _bind_pass_bundle(tmp_path: Path, **proof_overrides: str) -> Gen1ReferenceBu
         path="docs/gen2/g2-01-cold-boot-proof.txt",
         sha256=sha256(proof_path.read_bytes()).hexdigest(),
     )
-    return replace(bundle, cold_boot_status="PASS", cold_boot_proof=binding)
+    return replace(bundle, cold_boot_status="PASS", cold_boot_proof=binding, proven_candidate_sha=proven_candidate_sha)
 
 
 def test_g2_01_genuine_pass_proof_content_is_accepted(tmp_path: Path) -> None:
@@ -219,7 +220,7 @@ def test_g2_01_unrelated_file_bound_as_proof_fails_closed(tmp_path: Path) -> Non
     unrelated.parent.mkdir(parents=True, exist_ok=True)
     unrelated.write_text("# Not a cold-boot proof\n", encoding="utf-8")
     binding = ArtifactBinding(path="docs/gen2/g2-01-cold-boot-proof.txt", sha256=sha256(unrelated.read_bytes()).hexdigest())
-    passed = replace(bundle, cold_boot_status="PASS", cold_boot_proof=binding)
+    passed = replace(bundle, cold_boot_status="PASS", cold_boot_proof=binding, proven_candidate_sha="a" * 40)
     with pytest.raises(ReferenceError, match="wrong header"):
         passed.validate(tmp_path, require_proven=False)
 
@@ -273,3 +274,66 @@ def test_g2_01_proof_recording_a_skip_fails_closed(tmp_path: Path) -> None:
     bundle = replace(bundle, cold_boot_status="PASS", cold_boot_proof=binding)
     with pytest.raises(ReferenceError, match="disallowed skipped test"):
         bundle.validate_cold_boot_proof_content(tmp_path)
+
+
+def test_g2_01_pass_without_proven_candidate_sha_fails_closed(tmp_path: Path) -> None:
+    bundle = _bind_pass_bundle(tmp_path, proven_candidate_sha=None)
+    with pytest.raises(ReferenceError, match="lacks a bound proven_candidate_sha"):
+        bundle.validate(tmp_path, require_proven=False)
+
+
+def test_g2_01_malformed_proven_candidate_sha_fails_closed(tmp_path: Path) -> None:
+    bundle = _bind_pass_bundle(tmp_path, proven_candidate_sha="not-a-sha")
+    with pytest.raises(ReferenceError, match="exact lowercase SHA-1"):
+        bundle.validate(tmp_path, require_proven=False)
+
+
+def test_g2_01_pending_with_proven_candidate_sha_fails_closed() -> None:
+    bundle = load_bundle()
+    broken = replace(bundle, proven_candidate_sha="a" * 40)
+    with pytest.raises(ReferenceError, match="must not carry a proven_candidate_sha"):
+        broken.validate(ROOT, require_proven=False)
+
+
+def test_g2_01_proven_candidate_sha_not_matching_proof_content_fails_closed(tmp_path: Path) -> None:
+    # The exact replay named by review: the proof file itself claims one
+    # candidate but the bundle's trusted proven_candidate_sha claims another.
+    bundle = _bind_pass_bundle(tmp_path, proven_candidate_sha="b" * 40)
+    with pytest.raises(ReferenceError, match="does not match bundle proven_candidate_sha"):
+        bundle.validate_cold_boot_proof_content(tmp_path)
+
+
+def test_g2_01_proven_candidate_sha_not_matching_live_candidate_fails_closed(tmp_path: Path) -> None:
+    # Even when the bundle is internally self-consistent, a live CI job
+    # checking out a *different* actual candidate SHA than the one the
+    # bundle/proof claim must still reject it.
+    bundle = _bind_pass_bundle(tmp_path)
+    with pytest.raises(ReferenceError, match="does not match the live candidate under test"):
+        bundle.validate_cold_boot_proof_content(tmp_path, expected_candidate_sha="c" * 40)
+
+
+def test_g2_01_proven_candidate_sha_matching_live_candidate_is_accepted(tmp_path: Path) -> None:
+    bundle = _bind_pass_bundle(tmp_path)
+    bundle.validate_cold_boot_proof_content(tmp_path, expected_candidate_sha="a" * 40)
+
+
+def test_g2_01_current_bundle_satisfies_the_reference_coverage_roster() -> None:
+    areas = {item.semantic_area for item in load_bundle().reference_coverage}
+    from tenfold.gen2.reference import REQUIRED_REFERENCE_COVERAGE_AREAS
+
+    assert REQUIRED_REFERENCE_COVERAGE_AREAS <= areas
+
+
+def test_g2_01_missing_reference_coverage_area_fails_closed() -> None:
+    bundle = load_bundle()
+    thinned = tuple(item for item in bundle.reference_coverage if item.semantic_area != "independent verifier")
+    broken = replace(bundle, reference_coverage=thinned)
+    with pytest.raises(ReferenceError, match="missing required semantic area"):
+        broken.validate(ROOT, require_proven=False)
+
+
+def test_g2_01_empty_reference_coverage_fails_closed() -> None:
+    bundle = load_bundle()
+    broken = replace(bundle, reference_coverage=())
+    with pytest.raises(ReferenceError, match="missing required semantic area"):
+        broken.validate(ROOT, require_proven=False)
