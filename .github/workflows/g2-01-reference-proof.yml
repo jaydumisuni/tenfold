@@ -98,6 +98,7 @@ jobs:
           import json
           import os
           import re
+          import subprocess
           from pathlib import Path, PurePosixPath
 
           SHA1 = re.compile(r"^[0-9a-f]{40}$")
@@ -135,8 +136,9 @@ jobs:
               "status", "migration_reference_sha", "migration_reference_tree_sha", "platform",
               "container_image", "checkout_action", "setup_python_action", "python_version", "pip_version",
               "python_shared_library_sha256", "python_shared_library_loader_path", "chromium_executable",
-              "chromium_sha256", "chromium_version", "sergeant_sha", "candidate_sha",
+              "chromium_sha256", "chromium_version", "sergeant_sha", "candidate_sha", "candidate_content_digest",
           )
+          VALID_DISPOSITIONS = {"KEEP", "WRAP", "EVOLVE", "PORT", "SUPERSEDE"}
 
           def fail(msg):
               raise SystemExit(f"CANDIDATE VALIDATION FAILED: {msg}")
@@ -161,6 +163,24 @@ jobs:
                   fail(f"path escapes root: {value!r}")
               return p
 
+          def git_ls_files_with_blobs(root, subpaths=()):
+              # Tracked entries only (mode + blob SHA via `git ls-files -s`),
+              # not a raw filesystem walk: importing a module can create
+              # untracked __pycache__ files, which would otherwise make the
+              # digest depend on incidental prior process state.
+              result = subprocess.run(
+                  ["git", "-C", str(root), "ls-files", "-s", "--", *subpaths],
+                  capture_output=True, text=True, check=True,
+              )
+              entries = []
+              for line in result.stdout.splitlines():
+                  if not line:
+                      continue
+                  meta, _, rel = line.partition("\t")
+                  mode, blob_sha, _stage = meta.split()
+                  entries.append((mode, blob_sha, rel))
+              return entries
+
           def compute_candidate_content_digest(candidate_root):
               bundle_path = candidate_root / BUNDLE_ARTIFACT_PATH
               raw = json.loads(bundle_path.read_text(encoding="utf-8"))
@@ -170,17 +190,12 @@ jobs:
               normalized["proven_candidate_content_digest"] = None
               bundle_digest = canonical_digest(normalized)
               excluded = {BUNDLE_ARTIFACT_PATH, PROOF_ARTIFACT_PATH}
-              entries = []
-              for path in sorted(candidate_root.rglob("*")):
-                  if path.is_dir():
-                      continue
-                  rel = path.relative_to(candidate_root).as_posix()
-                  if rel == ".git" or rel.startswith(".git/"):
-                      continue
-                  if rel in excluded:
-                      continue
-                  entries.append(f"{file_digest(path)}  {rel}")
-              tree_digest = canonical_digest(entries)
+              entries = [
+                  f"{mode} {blob_sha}  {rel}"
+                  for mode, blob_sha, rel in git_ls_files_with_blobs(candidate_root)
+                  if rel not in excluded
+              ]
+              tree_digest = canonical_digest(sorted(entries))
               return canonical_digest({"bundle": bundle_digest, "tree": tree_digest})
 
           def parse_proof(text):
@@ -253,7 +268,13 @@ jobs:
           semantic_corpus_path = check_binding("semantic_corpus")
           fixture_corpus_path = check_binding("qualification_fixture_corpus")
 
-          def check_manifest(manifest_path):
+          CORPUS_SCOPES = {
+              "reference_corpus": ("src", "tests", "docs"),
+              "semantic_corpus": ("src",),
+              "qualification_fixture_corpus": ("tests",),
+          }
+
+          def check_manifest(manifest_path, corpus_name):
               text = manifest_path.read_text(encoding="utf-8")
               seen = set()
               count = 0
@@ -278,10 +299,21 @@ jobs:
                       fail(f"frozen reference artifact digest mismatch: {rel}")
               if count == 0:
                   fail(f"{manifest_path.name} is empty")
+              # A manifest that only ever needs to CONTAIN correct entries can
+              # be thinned to a single genuine file and still pass every check
+              # above. Independently enumerate what the frozen reference tree
+              # actually contains under this corpus's scope and require the
+              # manifest to be complete against it.
+              expected = {rel for _mode, _blob, rel in git_ls_files_with_blobs(reference, CORPUS_SCOPES[corpus_name])}
+              missing = expected - seen
+              if missing:
+                  preview = sorted(missing)[:5]
+                  suffix = "..." if len(missing) > 5 else ""
+                  fail(f"{corpus_name} manifest omits required frozen reference file(s): {preview}{suffix}")
 
-          check_manifest(reference_corpus_path)
-          check_manifest(semantic_corpus_path)
-          check_manifest(fixture_corpus_path)
+          check_manifest(reference_corpus_path, "reference_corpus")
+          check_manifest(semantic_corpus_path, "semantic_corpus")
+          check_manifest(fixture_corpus_path, "qualification_fixture_corpus")
 
           status = raw.get("cold_boot_status")
           proof = raw.get("cold_boot_proof")
@@ -312,6 +344,16 @@ jobs:
               actual_content_digest = compute_candidate_content_digest(candidate)
               if actual_content_digest != proven_digest:
                   fail("candidate content digest does not match bundle proven_candidate_content_digest")
+              # The proof text itself must record the candidate content
+              # digest it was generated for, not merely a syntactically
+              # valid but never-compared commit SHA; otherwise a previously
+              # generated PASS proof could be copied onto a changed
+              # candidate with unchanged manifests and accepted after
+              # recomputing the bundle digest.
+              if not SHA256.fullmatch(fields["candidate_content_digest"]):
+                  fail("proof candidate_content_digest missing/malformed")
+              if fields["candidate_content_digest"] != proven_digest:
+                  fail("proof candidate_content_digest does not match bundle proven_candidate_content_digest")
               remainder = fields["_remainder"]
               if re.search(r"[0-9]+ skipped", remainder):
                   fail("proof records a disallowed skipped test")
@@ -338,6 +380,8 @@ jobs:
           for d in raw["dispositions"]:
               if not (d.get("component") and d.get("disposition") and d.get("source_refs") and d.get("rationale") and d.get("target")):
                   fail(f"incomplete disposition: {d.get('component')}")
+              if d.get("disposition") not in VALID_DISPOSITIONS:
+                  fail(f"disposition {d.get('disposition')!r} for {d.get('component')} is not a valid disposition value")
           missing = REQUIRED_COMPONENT_ROSTER - set(names)
           if missing:
               fail(f"dispositions roster missing: {sorted(missing)}")
@@ -444,6 +488,49 @@ jobs:
           test "$(git -C gen1-reference write-tree)" = "c7c130b573180e74438d70b6e11c17dd9bade648"
           test -z "$(git -C gen1-reference status --porcelain)"
 
+      - name: Compute candidate content digest
+        id: content_digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Same algorithm as candidate-check's inline validator and
+          # tenfold.gen2.reference.compute_candidate_content_digest: a
+          # content digest over Git-tracked candidate entries (mode + blob
+          # SHA), excluding the bundle JSON's own self-referential fields
+          # and the not-yet-existing proof artifact path, so it is stable
+          # whether computed before or after the finalization commit that
+          # adds this very proof. Recorded here so the proof text itself
+          # attests the candidate identity it was produced for.
+          digest="$(python3 - <<'PY'
+          import hashlib, json, subprocess
+          BUNDLE_ARTIFACT_PATH = "docs/gen2/g2-01-gen1-reference-bundle.json"
+          PROOF_ARTIFACT_PATH = "docs/gen2/g2-01-cold-boot-proof.txt"
+          def canonical_digest(value):
+              raw = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+              return hashlib.sha256(raw).hexdigest()
+          raw = json.loads(open(f"candidate/{BUNDLE_ARTIFACT_PATH}").read())
+          normalized = dict(raw)
+          normalized["cold_boot_status"] = "PENDING"
+          normalized["cold_boot_proof"] = None
+          normalized["proven_candidate_content_digest"] = None
+          bundle_digest = canonical_digest(normalized)
+          result = subprocess.run(["git", "-C", "candidate", "ls-files", "-s"], capture_output=True, text=True, check=True)
+          excluded = {BUNDLE_ARTIFACT_PATH, PROOF_ARTIFACT_PATH}
+          entries = []
+          for line in result.stdout.splitlines():
+              if not line:
+                  continue
+              meta, _, rel = line.partition("\t")
+              mode, blob_sha, _stage = meta.split()
+              if rel in excluded:
+                  continue
+              entries.append(f"{mode} {blob_sha}  {rel}")
+          tree_digest = canonical_digest(sorted(entries))
+          print(canonical_digest({"bundle": bundle_digest, "tree": tree_digest}))
+          PY
+          )"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
       - name: Bind exact Python shared runtime for sanitized Gen1 workers
         shell: bash
         run: |
@@ -518,6 +605,7 @@ jobs:
             echo "chromium_version=$(chromium --version)"
             echo 'sergeant_sha=4a277cc5950aa08a98157b950c96fb88f2178c79'
             echo "candidate_sha=${{ github.event.pull_request.head.sha || github.sha }}"
+            echo "candidate_content_digest=${{ steps.content_digest.outputs.digest }}"
             sha256sum candidate/docs/gen2/g2-01-pip-freeze.txt
             sha256sum candidate/docs/gen2/g2-01-reference-corpus.sha256
             sha256sum candidate/docs/gen2/g2-01-semantic-corpus.sha256

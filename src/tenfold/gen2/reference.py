@@ -6,6 +6,7 @@ from hashlib import sha256
 import json
 from pathlib import Path, PurePosixPath
 import re
+import subprocess
 from typing import Any, Callable, Iterable, Mapping
 
 
@@ -107,6 +108,15 @@ TRUSTED_COLD_BOOT_SUBSTRATE: dict[str, str] = {
 BUNDLE_ARTIFACT_PATH = "docs/gen2/g2-01-gen1-reference-bundle.json"
 PROOF_ARTIFACT_PATH = "docs/gen2/g2-01-cold-boot-proof.txt"
 
+# Independently-scoped subpaths each corpus manifest is required to cover
+# completely, measured against the frozen reference's own tracked Git tree
+# rather than trusting the manifest to declare its own scope.
+CORPUS_SCOPES: dict[str, tuple[str, ...]] = {
+    "reference_corpus": ("src", "tests", "docs"),
+    "semantic_corpus": ("src",),
+    "qualification_fixture_corpus": ("tests",),
+}
+
 
 _PROOF_HEADER_KEYS = (
     "status",
@@ -125,6 +135,7 @@ _PROOF_HEADER_KEYS = (
     "chromium_version",
     "sergeant_sha",
     "candidate_sha",
+    "candidate_content_digest",
 )
 
 
@@ -180,6 +191,32 @@ def _relative_path(root: Path, value: str) -> Path:
     return candidate
 
 
+def _git_ls_files_with_blobs(root: Path, subpaths: tuple[str, ...] = ()) -> list[tuple[str, str, str]]:
+    """Return (mode, blob_sha, path) for every Git-tracked file under root
+    (optionally restricted to subpaths), via `git ls-files -s`. Using the
+    tracked blob identity rather than a raw filesystem walk means build
+    byproducts that are not tracked (`__pycache__`, `*.pyc`, egg-info,
+    editor/OS files) never affect the result, regardless of what a prior
+    step in the same process happened to generate on disk."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-s", "--", *subpaths],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        raise ReferenceError(f"could not enumerate git-tracked files under {root}") from exc
+    entries: list[tuple[str, str, str]] = []
+    for line in result.stdout.splitlines():
+        if not line:
+            continue
+        meta, _, rel = line.partition("\t")
+        mode, blob_sha, _stage = meta.split()
+        entries.append((mode, blob_sha, rel))
+    return entries
+
+
 def compute_candidate_content_digest(candidate_root: str | Path) -> str:
     """Compute a stable identity digest for a candidate tree.
 
@@ -195,10 +232,16 @@ def compute_candidate_content_digest(candidate_root: str | Path) -> str:
     is hashed with its own cold_boot_status/cold_boot_proof/identity fields
     normalized back to their pre-finalization (PENDING) values before
     hashing, and the not-yet-existing proof artifact file is excluded from
-    the tree walk by its fixed, known path. Both the pre-finalization
-    candidate and the post-finalization closing commit therefore produce
-    the identical digest, so a live CI job can always recompute and compare
-    it regardless of which side of finalization it runs on.
+    the walk by its fixed, known path. Both the pre-finalization candidate
+    and the post-finalization closing commit therefore produce the
+    identical digest, so a live CI job can always recompute and compare it
+    regardless of which side of finalization it runs on.
+
+    Only Git-tracked entries (mode + blob SHA, from `git ls-files -s`) are
+    hashed, not every file present on disk: importing this very module can
+    create untracked __pycache__ files, and a raw filesystem walk would
+    make the digest depend on incidental prior process state rather than
+    the candidate's actual tracked content.
     """
     root = Path(candidate_root).resolve()
     bundle_path = root / BUNDLE_ARTIFACT_PATH
@@ -210,17 +253,12 @@ def compute_candidate_content_digest(candidate_root: str | Path) -> str:
     bundle_digest = _digest(normalized)
 
     excluded = {BUNDLE_ARTIFACT_PATH, PROOF_ARTIFACT_PATH}
-    entries: list[str] = []
-    for path in sorted(root.rglob("*")):
-        if path.is_dir():
-            continue
-        rel = path.relative_to(root).as_posix()
-        if rel == ".git" or rel.startswith(".git/"):
-            continue
-        if rel in excluded:
-            continue
-        entries.append(f"{_file_digest(path)}  {rel}")
-    tree_digest = _digest(entries)
+    entries = [
+        f"{mode} {blob_sha}  {rel}"
+        for mode, blob_sha, rel in _git_ls_files_with_blobs(root)
+        if rel not in excluded
+    ]
+    tree_digest = _digest(sorted(entries))
 
     return _digest({"bundle": bundle_digest, "tree": tree_digest})
 
@@ -552,6 +590,17 @@ class Gen1ReferenceBundle:
                 raise ReferenceError("candidate content digest does not match bundle proven_candidate_content_digest")
         if expected_candidate_content_digest is not None and expected_candidate_content_digest != self.proven_candidate_content_digest:
             raise ReferenceError("proven_candidate_content_digest does not match the live candidate content under test")
+        # The proof file itself must record the candidate content digest it
+        # was generated for, not merely a syntactically-valid commit SHA
+        # that is never actually compared to anything. Without this, a
+        # previously generated PASS proof could be copied onto a changed
+        # candidate with unchanged manifests, rebound by its own SHA-256,
+        # and accepted after recomputing the bundle digest - the proof text
+        # itself would never have identified which candidate it was for.
+        if not _SHA256.fullmatch(fields["candidate_content_digest"]):
+            raise ReferenceError("cold-boot proof artifact candidate_content_digest missing/malformed")
+        if fields["candidate_content_digest"] != self.proven_candidate_content_digest:
+            raise ReferenceError("cold-boot proof artifact candidate_content_digest does not match bundle proven_candidate_content_digest")
         remainder = fields["_remainder"]
         # Checked in this order so a tampered/forged summary line that
         # combines both ("N passed, M skipped in ...") is rejected for the
@@ -581,7 +630,9 @@ class Gen1ReferenceBundle:
                 raise ReferenceError(f"cold-boot proof artifact manifest-digest line for {artifact_name} does not match bundle binding")
 
     @staticmethod
-    def _validate_manifest_against_reference(manifest: Path, reference_root: Path) -> None:
+    def _validate_manifest_against_reference(
+        manifest: Path, reference_root: Path, expected_subpaths: tuple[str, ...]
+    ) -> None:
         seen: set[str] = set()
         for line_number, line in enumerate(manifest.read_text(encoding="utf-8").splitlines(), start=1):
             if not line:
@@ -600,13 +651,28 @@ class Gen1ReferenceBundle:
                 raise ReferenceError(f"frozen reference artifact missing: {rel}")
             if _file_digest(path) != digest:
                 raise ReferenceError(f"frozen reference artifact digest mismatch: {rel}")
+        # A manifest that only ever needs to CONTAIN correct entries can be
+        # thinned to a single genuine file and still pass every check above.
+        # Independently enumerate what the frozen reference tree actually
+        # contains under this corpus's scope and require the manifest to be
+        # complete against it, not merely internally consistent.
+        expected = {rel for _mode, _blob, rel in _git_ls_files_with_blobs(reference_root, expected_subpaths)}
+        missing = expected - seen
+        if missing:
+            preview = sorted(missing)[:5]
+            suffix = "..." if len(missing) > 5 else ""
+            raise ReferenceError(f"manifest omits required frozen reference file(s): {preview}{suffix}")
 
     def validate_reference_tree(self, artifact_root: str | Path, reference_root: str | Path) -> None:
         artifact_root_path = Path(artifact_root).resolve()
         reference_root_path = Path(reference_root).resolve()
-        for binding in (self.reference_corpus, self.semantic_corpus, self.qualification_fixture_corpus):
+        for field_name, binding in (
+            ("reference_corpus", self.reference_corpus),
+            ("semantic_corpus", self.semantic_corpus),
+            ("qualification_fixture_corpus", self.qualification_fixture_corpus),
+        ):
             manifest = binding.validate(artifact_root_path)
-            self._validate_manifest_against_reference(manifest, reference_root_path)
+            self._validate_manifest_against_reference(manifest, reference_root_path, CORPUS_SCOPES[field_name])
 
 
 @dataclass(frozen=True)
