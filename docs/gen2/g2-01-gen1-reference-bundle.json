@@ -5,11 +5,8 @@
     "jaydumisuni/tenfold@05aa384a34a650e677970904079a985ec8b26d90:docs/08-gen2-roadmap.md",
     "jaydumisuni/tenfold@05aa384a34a650e677970904079a985ec8b26d90:docs/02-assurance-matrix.md"
   ],
-  "cold_boot_proof": {
-    "path": "docs/gen2/g2-01-cold-boot-proof.txt",
-    "sha256": "667b13ba2dfac14a5080b484b6c70e0a72d7b56082b51f3924f6634568497457"
-  },
-  "cold_boot_status": "PASS",
+  "cold_boot_proof": null,
+  "cold_boot_status": "PENDING",
   "dependency_lock": [
     "Pygments==2.21.0",
     "greenlet==3.5.5",
@@ -192,7 +189,7 @@
   },
   "migration_reference_sha": "05aa384a34a650e677970904079a985ec8b26d90",
   "migration_reference_tree_sha": "c7c130b573180e74438d70b6e11c17dd9bade648",
-  "proven_candidate_content_digest": "7317b0e6e3f16c07e8ce76820710bf9687c3dd7828bec8e851dc61c0bd194125",
+  "proven_candidate_content_digest": null,
   "qualification_fixture_corpus": {
     "path": "docs/gen2/g2-01-qualification-fixture-corpus.sha256",
     "sha256": "6f20368f7785dd0007c1645f5ed02e4993002765e0989ca73206e62251b208cf"

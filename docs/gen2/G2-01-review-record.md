@@ -1,11 +1,11 @@
 # G2-01 — Gen-1 Reference and Inheritance Freeze — Review / Proof Record
 
-**Status:** PROVEN
+**Status:** PROVING (round 9 — candidate content digest rescoped to this milestone's own frozen artifacts; fresh cold-boot proof pending)
 **Authority:** TF-00 + frozen G2-00 §§3, 3.1, 3.2 + G2-01
 **Frozen Gen-1 migration reference:** `05aa384a34a650e677970904079a985ec8b26d90`
 **Frozen Gen-1 migration tree:** `c7c130b573180e74438d70b6e11c17dd9bade648`
-**Proven candidate:** `8ef9e7bd4a66ce1f315252183b2fca417658bc4f`
-**Proven candidate content digest:** `7317b0e6e3f16c07e8ce76820710bf9687c3dd7828bec8e851dc61c0bd194125`
+**Proven candidate:** pending (bundle reverted to PENDING for the round-9 digest-scope fix)
+**Proven candidate content digest:** pending
 
 ## Construction authority
 
@@ -65,10 +65,32 @@ real GitHub Actions CI before the next round:
    Reverted the bundle to `PENDING` once more and bound a second fresh
    cold-boot proof to this final candidate (digest `7317b0e6...`), which
    required no further content changes.
+9. `compute_candidate_content_digest` (and its mirrors in the workflow's two
+   inline digest computations and the independent reviewer) hashed the
+   *entire* git-tracked repository tree, not just this milestone's own
+   candidate artifacts. That is a genuine scope bug, not a stricter check: it
+   meant any future PR touching *any* tracked file anywhere in the
+   repository — including entirely unrelated future milestones such as
+   G2-02 — would silently invalidate `proven_candidate_content_digest` and
+   fail this proof lane's PR-triggered and monthly-scheduled re-runs
+   forever, permanently blocking further Gen-2 construction. Discovered when
+   G2-02's own PR (unrelated to G2-01) failed `candidate-check`/`verify` with
+   "candidate content digest does not match bundle
+   proven_candidate_content_digest". Fixed by introducing
+   `CANDIDATE_CONTENT_SCOPE` — the exact file set from this record's own
+   "Frozen artifacts" section, minus `CLOSURE_RECORD_PATHS` — and restricting
+   the `git ls-files -s` / `git ls-tree -r` walk to it in all three
+   implementations (`reference.py`, the workflow, the independent reviewer),
+   plus scoping the workflow's `pull_request:` trigger with `paths:` to the
+   same file set (the monthly `schedule:` trigger stays unscoped, since its
+   job — catching real drift in the frozen cold-boot substrate/environment —
+   is legitimately unconditional). Reverted the bundle to `PENDING` once
+   more and bound a third fresh cold-boot proof under the corrected,
+   properly-scoped algorithm.
 
 ## Frozen artifacts
 
-- `g2-01-gen1-reference-bundle.json` — schema `tenfold.gen1_reference.v2`, `cold_boot_status = PASS`;
+- `g2-01-gen1-reference-bundle.json` — schema `tenfold.gen1_reference.v2`, `cold_boot_status = PENDING` (round 9, awaiting fresh proof);
 - `g2-01-cold-boot-proof.txt` — the exact bound cold-boot proof artifact;
 - `g2-01-reference-corpus.sha256` — complete pre-G2 `src + tests + docs` corpus (66 entries);
 - `g2-01-semantic-corpus.sha256` — pre-G2 `src` corpus (33 entries);
@@ -82,47 +104,49 @@ real GitHub Actions CI before the next round:
 
 ## Proof evidence
 
-Real GitHub Actions CI on the exact proven candidate `8ef9e7b`:
+Round-8 real GitHub Actions CI on candidate `8ef9e7b` (superseded by round 9,
+above, which changes only `reference.py`/the workflow — the digest-scope
+fix — not the frozen Gen1 corpora or qualification suite): `candidate-check`/
+`cold-boot` success, `158 passed in 3.83s`, zero skipped — run:
+<https://github.com/jaydumisuni/tenfold/actions/runs/32584088775>; `verify`
+success — run: <https://github.com/jaydumisuni/tenfold/actions/runs/32584088744>.
 
-- `candidate-check` job (independent-implementation inline validator, isolated runner): **success**;
-- `cold-boot` job (frozen Gen1 repository-only suite): **success** — `158 passed in 3.83s`, zero skipped;
-- run: <https://github.com/jaydumisuni/tenfold/actions/runs/32584088775>;
-- `verify` (Tenfold CI): **success** — run: <https://github.com/jaydumisuni/tenfold/actions/runs/32584088744>.
+Round 9 (rescoped candidate content digest): fresh proof pending — to be
+re-run and re-recorded here once the cold-boot proof binds to the
+rescoped content digest.
 
 ## Independent authority review
 
-`scripts/g2_01_independent_authority_review.py` (separate implementation,
-no import of `tenfold.gen2.reference`, no third-party dependency) run
-against the exact proven candidate `8ef9e7b`: **PASS**, 30 independently-verified
-checks, 0 failures. Report digest `d021dfcdb741e53d33e867357357573d17743de4cc5fb611e5dacaf6ea396e06`.
+Round-8 result against candidate `8ef9e7b` (superseded by round 9): **PASS**,
+30 independently-verified checks, 0 failures. Report digest
+`d021dfcdb741e53d33e867357357573d17743de4cc5fb611e5dacaf6ea396e06`. To be
+re-run against the round-9 candidate before closure.
 
 ## Milestone Council
 
-Real `tenfold.council.reconcile()` invocation (5 evidence packets from
-verification/evidence/challenge Officer reports binding the CI runs above,
-the independent review verdict, and PR review-thread resolution status)
-against `tenfold.assurance.FOUNDING_MATRIX.required_for(("authority",))`:
+Round-8 real `tenfold.council.reconcile()` invocation returned
+`accepted_for_rebrief: true` against candidate `8ef9e7b` (superseded by
+round 9). To be re-reconciled against the round-9 candidate and its fresh
+proof evidence before closure.
 
-- required assurance: `independent_authority_review`, `tenfold_council`;
-- satisfied assurance: both;
-- material_disagreement: `false`;
-- unresolved_assurance: none;
-- **accepted_for_rebrief: `true`**.
-
-All PR #36 review threads (25 threads across all eleven rounds) are resolved
-on the final head.
+All PR review threads through round 8 (25 threads across eleven rounds) are
+resolved; round 9 has no adversarial review threads yet (self-discovered via
+a real, independent PR — G2-02's — hitting the bug, not an adversarial
+reviewer finding).
 
 ## Acceptance reconciliation
 
-- exact reference environment cold-boots: **PASS**;
-- semantic/fixture corpora reproduce accepted Gen1 results: **PASS** (158 passed, 0 skipped);
-- every inherited component has exactly one disposition: **PASS** (14/14, closed-enum verified independently);
-- no unregistered initial divergence: **PASS** (0 divergences registered);
-- interim Root provenance is exact: **PASS** (identity/class/generation/provenance/allowed-actions pinned exactly).
+Pending re-verification on the round-9 candidate's fresh cold-boot proof.
+The underlying frozen Gen1 corpora, qualification suite and cold-boot
+substrate are unchanged from round 8 — only the candidate-identity digest's
+own scope changed — so no regression is expected, but this is not asserted
+without a fresh real proof run per standing discipline.
 
 ## Does not enable
 
 - Gen-2 authoritative execution;
 - authority migration;
 - Gen-2 self-construction;
-- G2-02 execution before this milestone reached canonical `PROVEN` (now satisfied — G2-02 is the next authorized milestone).
+- G2-02 execution before this milestone reaches canonical `PROVEN` (not yet
+  satisfied on this round — see round 9 above; G2-02's own PR is blocked on
+  this fix landing first).
