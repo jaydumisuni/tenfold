@@ -9,6 +9,38 @@ permissions:
   contents: read
 
 jobs:
+  rust-verify:
+    # G2-00 SS4.1 / G2-03: the Executable Rust Trust Table is the first
+    # Rust code in this repository. Uses the toolchain ubuntu-latest
+    # already provides (GitHub-maintained, same trust tier as the runner
+    # OS itself) rather than pinning a third-party toolchain action; the
+    # exact rustc/cargo version is recorded below for transparency, not
+    # left implicit.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify exact candidate head
+        run: test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+
+      - name: Record Rust toolchain identity
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: Build Rust workspace
+        working-directory: rust
+        run: cargo build --workspace --locked
+
+      - name: Run Rust workspace tests
+        working-directory: rust
+        run: cargo test --workspace --locked
+
   verify:
     runs-on: ubuntu-latest
     steps:

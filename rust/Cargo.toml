@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["trust_table"]
+
+# Tenfold Gen 2.0's Rust workspace. G2-00 SS4: "Rust ultimately owns:
+# canonical campaign state, generation authority, Campaign Program
+# admission, certificate validation, independent final-program coverage,
+# dispatch authority, leases/fencing, Chronicle authority, effect
+# authority, evidence admission, Proof Graph, assurance-routing
+# execution, recovery/takeover." Each of those becomes its own crate as
+# the milestones that own them are built; `trust_table` (G2-03, G2-00
+# SS4.1) is the first, since every later authority-bearing crate must
+# itself have a Trust Table row before Rust may admit its artifacts.
