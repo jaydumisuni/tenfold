@@ -11,6 +11,7 @@ import subprocess
 import pytest
 
 from tenfold.gen2.reference import (
+    CORPUS_SCOPES,
     REQUIRED_COMPONENT_ROSTER,
     TRUSTED_COLD_BOOT_SUBSTRATE,
     ArtifactBinding,
@@ -513,3 +514,66 @@ def test_g2_01_empty_reference_coverage_fails_closed() -> None:
     broken = replace(bundle, reference_coverage=())
     with pytest.raises(ReferenceError, match="missing required semantic area"):
         broken.validate(ROOT, require_proven=False)
+
+
+def test_g2_01_interim_root_widened_allowed_actions_fails_closed() -> None:
+    # The exact escalation named by review: keep the required denials but
+    # widen allowed_actions with an unbounded credential-mint capability.
+    bundle = load_bundle()
+    widened = replace(
+        bundle.interim_root,
+        allowed_actions=bundle.interim_root.allowed_actions + ("unbounded_credential_mint",),
+    )
+    broken = replace(bundle, interim_root=widened)
+    with pytest.raises(ReferenceError, match="allowed_actions does not match the trusted closed set"):
+        broken.validate(ROOT, require_proven=False)
+
+
+def test_g2_01_interim_root_wrong_root_id_fails_closed() -> None:
+    bundle = load_bundle()
+    broken = replace(bundle, interim_root=replace(bundle.interim_root, root_id="ATTACKER-ROOT"))
+    with pytest.raises(ReferenceError, match="root_id does not match the trusted bound identity"):
+        broken.validate(ROOT, require_proven=False)
+
+
+def test_g2_01_interim_root_wrong_authority_class_fails_closed() -> None:
+    bundle = load_bundle()
+    broken = replace(bundle, interim_root=replace(bundle.interim_root, authority_class="SELF_MINTED"))
+    with pytest.raises(ReferenceError, match="authority_class does not match the trusted bound value"):
+        broken.validate(ROOT, require_proven=False)
+
+
+def test_g2_01_manifest_with_out_of_scope_entry_fails_closed(tmp_path: Path) -> None:
+    # The exact broadening named by review: a manifest that covers every
+    # required file AND an unrelated extra file must still fail, not just
+    # a thinned/incomplete one. Uses a purpose-built synthetic reference
+    # tree containing exactly the semantic_corpus's own declared file set
+    # (not the live ROOT, whose src/tenfold/gen2/* this very milestone adds
+    # would otherwise make "expected" and "current working tree" diverge).
+    reference_root = tmp_path / "reference"
+    reference_root.mkdir()
+    manifest_lines = (ROOT / "docs/gen2/g2-01-semantic-corpus.sha256").read_text(encoding="utf-8").splitlines()
+    for line in manifest_lines:
+        digest, rel = line.split("  ", 1)
+        dest = reference_root / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / rel, dest)
+    # Also present in the reference tree (just outside this corpus's src/
+    # scope) so the per-line existence/digest check passes and the
+    # out-of-scope rejection - not a spurious "missing" error - is what
+    # actually fires.
+    extra_dest = reference_root / "docs/00-founding-authority.md"
+    extra_dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(ROOT / "docs/00-founding-authority.md", extra_dest)
+    _git_init_and_commit(reference_root)
+
+    candidate_root = tmp_path / "candidate"
+    candidate_root.mkdir()
+    manifest_dest = candidate_root / "docs/gen2/g2-01-semantic-corpus.sha256"
+    manifest_dest.parent.mkdir(parents=True, exist_ok=True)
+    extra_file_digest = sha256((ROOT / "docs/00-founding-authority.md").read_bytes()).hexdigest()
+    extra_line = f"{extra_file_digest}  docs/00-founding-authority.md\n"
+    manifest_dest.write_text("\n".join(manifest_lines) + "\n" + extra_line, encoding="utf-8")
+
+    with pytest.raises(ReferenceError, match="manifest contains out-of-scope file"):
+        Gen1ReferenceBundle._validate_manifest_against_reference(manifest_dest, reference_root, CORPUS_SCOPES["semantic_corpus"])

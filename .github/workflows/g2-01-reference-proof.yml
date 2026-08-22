@@ -20,6 +20,27 @@ jobs:
   # identity is - has any causal path to the checkout or runtime cold-boot
   # uses. This is real isolation (separate ephemeral runners), not policed
   # privilege/permission bits within one shared job.
+  #
+  # Acknowledged residual boundary (TF-00 SS6 / G2-00 residual boundary R2,
+  # "Attested Semantics"): the validator embedded below is itself part of
+  # this workflow file, which this same PR can modify. For a same-repository
+  # (non-fork) pull_request, GitHub does not pin workflow definitions to the
+  # base branch the way it does for external-fork contributions, so no
+  # purely mechanical gate within a single PR can be un-tamperable by the
+  # PR's own author. G2-01 is the first milestone introducing this
+  # validator, so no pre-existing frozen validator outside the candidate
+  # revision yet exists to pin it to - a genuine bootstrap constraint, not
+  # an oversight. What this workflow does provide: (a) an independently-
+  # implemented validator (no shared code path with tenfold.gen2.reference,
+  # so a defect/tamper in one does not automatically pass the other), (b)
+  # a second, separately-maintained independent reviewer
+  # (scripts/g2_01_independent_authority_review.py, stdlib-only, reads raw
+  # git-object bytes, never imports candidate code), and (c) iterative
+  # adversarial review before promotion. The final trust anchor for this
+  # milestone is the interim Root's (repository Owner's) explicit review
+  # and merge decision, per TF-00 SS2 ("Training is shared. Authority is
+  # not.") and this file's own INTERIM_ROOT_DECLARATION.md - not a claim
+  # that this gate is adversarially trustless against its own author.
   candidate-check:
     runs-on: ubuntu-24.04
     container:
@@ -386,19 +407,46 @@ jobs:
           if missing:
               fail(f"dispositions roster missing: {sorted(missing)}")
 
+          VALID_COVERAGE_CLASSES = {"WITHIN_GEN1_REFERENCE_SURFACE", "GEN2_ONLY_SURFACE"}
           areas = [a.get("semantic_area") for a in raw.get("reference_coverage", [])]
           if len(areas) != len(set(areas)):
               fail("reference_coverage duplicate areas")
           missing_areas = REQUIRED_COVERAGE_AREAS - set(areas)
           if missing_areas:
               fail(f"reference_coverage roster missing: {sorted(missing_areas)}")
+          for item in raw.get("reference_coverage", []):
+              cls = item.get("classification")
+              if cls not in VALID_COVERAGE_CLASSES:
+                  fail(f"reference_coverage classification {cls!r} for {item.get('semantic_area')} is not valid")
+              if not item.get("rationale"):
+                  fail(f"reference_coverage rationale missing for {item.get('semantic_area')}")
+              if cls == "WITHIN_GEN1_REFERENCE_SURFACE" and not item.get("reference_refs"):
+                  fail(f"reference_coverage {item.get('semantic_area')} is WITHIN_GEN1_REFERENCE_SURFACE without reference_refs")
 
+          TRUSTED_INTERIM_ROOT_ID = "TENFOLD-G2-INTERIM-ROOT"
+          TRUSTED_INTERIM_ROOT_AUTHORITY_CLASS = "EXTERNAL_MANUAL_INTERIM_ROOT"
+          TRUSTED_INTERIM_ROOT_ALLOWED_ACTIONS = {
+              "supply_explicit_scoped_credentials",
+              "approve_root_amendment_under_frozen_authority",
+              "revoke_scoped_bootstrap_authority",
+          }
+          REQUIRED_INTERIM_ROOT_DENIALS = {"campaign_modify_root", "campaign_widen_root_authority", "gen2_self_mint_before_g2_17"}
           interim = raw.get("interim_root", {})
-          required_denials = {"campaign_modify_root", "campaign_widen_root_authority", "gen2_self_mint_before_g2_17"}
-          if not required_denials <= set(interim.get("denied_actions", [])):
-              fail("interim_root missing required denials")
           if interim.get("generation", 0) < 1 or not interim.get("root_id") or not interim.get("provenance"):
               fail("interim_root incomplete")
+          if interim.get("root_id") != TRUSTED_INTERIM_ROOT_ID:
+              fail("interim_root root_id does not match the trusted bound identity")
+          if interim.get("authority_class") != TRUSTED_INTERIM_ROOT_AUTHORITY_CLASS:
+              fail("interim_root authority_class does not match the trusted bound value")
+          if not REQUIRED_INTERIM_ROOT_DENIALS <= set(interim.get("denied_actions", [])):
+              fail("interim_root missing required denials")
+          # A candidate that keeps the required denial strings while adding
+          # e.g. unbounded_credential_mint to allowed_actions would otherwise
+          # pass: allowed_actions must be exactly the frozen closed set.
+          if set(interim.get("allowed_actions", [])) != TRUSTED_INTERIM_ROOT_ALLOWED_ACTIONS:
+              fail("interim_root allowed_actions does not match the trusted closed set")
+          if not set(interim.get("allowed_actions", [])).isdisjoint(interim.get("denied_actions", [])):
+              fail("interim_root allowed_actions and denied_actions are not disjoint")
 
           if not raw.get("authority_refs"):
               fail("authority_refs empty")

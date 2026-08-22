@@ -95,6 +95,29 @@ REQUIRED_REFERENCE_COVERAGE_AREAS: frozenset[str] = frozenset(
 # image digest in EnvironmentBinding.container_image; because that image is
 # content-addressed, these values are themselves reproducible from it and
 # are not free-form fields a forged proof may fill with arbitrary content.
+REQUIRED_INTERIM_ROOT_DENIALS: frozenset[str] = frozenset(
+    {
+        "campaign_modify_root",
+        "campaign_widen_root_authority",
+        "gen2_self_mint_before_g2_17",
+    }
+)
+
+# Trusted exact identity/scope for the interim Root declared at G2-01
+# (reference-bundle/INTERIM_ROOT_DECLARATION.md). A candidate that kept the
+# required denial strings while widening allowed_actions or changing the
+# root identity/authority class would otherwise silently pass.
+TRUSTED_INTERIM_ROOT_ID = "TENFOLD-G2-INTERIM-ROOT"
+TRUSTED_INTERIM_ROOT_AUTHORITY_CLASS = "EXTERNAL_MANUAL_INTERIM_ROOT"
+TRUSTED_INTERIM_ROOT_ALLOWED_ACTIONS: frozenset[str] = frozenset(
+    {
+        "supply_explicit_scoped_credentials",
+        "approve_root_amendment_under_frozen_authority",
+        "revoke_scoped_bootstrap_authority",
+    }
+)
+
+
 TRUSTED_COLD_BOOT_SUBSTRATE: dict[str, str] = {
     "sergeant_sha": "4a277cc5950aa08a98157b950c96fb88f2178c79",
     "python_shared_library_sha256": "ba4450817186fbe1e3c477f6aefeee7c353cba3593cc9950382ad9d1f5e62896",
@@ -349,13 +372,21 @@ class InterimRootBinding:
     def validate(self) -> None:
         if self.generation < 1 or not self.root_id or not self.provenance:
             raise ReferenceError("interim Root identity/provenance incomplete")
-        required_denials = {
-            "campaign_modify_root",
-            "campaign_widen_root_authority",
-            "gen2_self_mint_before_g2_17",
-        }
-        if not required_denials <= set(self.denied_actions):
+        if self.root_id != TRUSTED_INTERIM_ROOT_ID:
+            raise ReferenceError("interim Root root_id does not match the trusted bound identity")
+        if self.authority_class != TRUSTED_INTERIM_ROOT_AUTHORITY_CLASS:
+            raise ReferenceError("interim Root authority_class does not match the trusted bound value")
+        if not REQUIRED_INTERIM_ROOT_DENIALS <= set(self.denied_actions):
             raise ReferenceError("interim Root does not fail closed on frozen bootstrap denials")
+        # A candidate that keeps the required denial strings while widening
+        # allowed_actions to something like unbounded_credential_mint (or
+        # even campaign_modify_root) would otherwise pass: allowed_actions
+        # must be exactly the frozen closed set, not merely a superset that
+        # happens to still contain the required denials elsewhere.
+        if set(self.allowed_actions) != TRUSTED_INTERIM_ROOT_ALLOWED_ACTIONS:
+            raise ReferenceError("interim Root allowed_actions does not match the trusted closed set")
+        if not set(self.allowed_actions).isdisjoint(self.denied_actions):
+            raise ReferenceError("interim Root allowed_actions and denied_actions are not disjoint")
 
 
 @dataclass(frozen=True)
@@ -662,6 +693,11 @@ class Gen1ReferenceBundle:
             preview = sorted(missing)[:5]
             suffix = "..." if len(missing) > 5 else ""
             raise ReferenceError(f"manifest omits required frozen reference file(s): {preview}{suffix}")
+        extra = seen - expected
+        if extra:
+            preview = sorted(extra)[:5]
+            suffix = "..." if len(extra) > 5 else ""
+            raise ReferenceError(f"manifest contains out-of-scope file(s): {preview}{suffix}")
 
     def validate_reference_tree(self, artifact_root: str | Path, reference_root: str | Path) -> None:
         artifact_root_path = Path(artifact_root).resolve()
