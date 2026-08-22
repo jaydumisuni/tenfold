@@ -32,6 +32,82 @@ class ReferenceCoverageClass(str, Enum):
     GEN2_ONLY_SURFACE = "GEN2_ONLY_SURFACE"
 
 
+# Independent Expected-Set / Independent Roster Principle (G2-00 SSSS5.1, 5.2):
+# this roster is derived from the frozen G2-01 deliverable text in
+# docs/08-gen2-roadmap.md ("explicit dispositions for Foreman, derivation
+# assurance, scheduler, campaign state, leases/fencing, worker/task/evidence
+# contracts, Assurance Matrix integration, Council, Repository/Oracle/Ptah
+# Facilities, recovery, Operating Methods and Project Method Profiles"), not
+# from whatever the bundle producer happened to include. A bundle whose
+# dispositions are merely internally unique (no duplicates) can still satisfy
+# uniqueness while silently omitting a required component; this roster makes
+# omission independently detectable.
+REQUIRED_COMPONENT_ROSTER: frozenset[str] = frozenset(
+    {
+        "Foreman",
+        "derivation assurance",
+        "scheduler",
+        "campaign state",
+        "leases/fencing",
+        "worker/task/evidence contracts",
+        "Assurance Matrix integration",
+        "Council",
+        "Repository Facility",
+        "Oracle Facility",
+        "Ptah Facility",
+        "recovery",
+        "Operating Methods",
+        "Project Method Profiles",
+    }
+)
+
+
+_PROOF_HEADER_KEYS = (
+    "status",
+    "migration_reference_sha",
+    "migration_reference_tree_sha",
+    "platform",
+    "container_image",
+    "checkout_action",
+    "setup_python_action",
+    "python_version",
+    "pip_version",
+    "python_shared_library_sha256",
+    "python_shared_library_loader_path",
+    "chromium_executable",
+    "chromium_sha256",
+    "chromium_version",
+    "sergeant_sha",
+    "candidate_sha",
+)
+
+
+def _parse_cold_boot_proof(text: str) -> dict[str, str]:
+    """Parse the closed `TENFOLD_G2_01_COLD_BOOT_PROOF_V1` proof format.
+
+    A bound `cold_boot_proof` artifact is otherwise only checked for
+    existence and digest match against whatever path/sha256 the bundle
+    declares; binding an unrelated file (e.g. README.md) would satisfy that
+    check alone. This parser lets the caller cross-check the proof's own
+    claimed content against the bundle it is bound to.
+    """
+    lines = text.splitlines()
+    if not lines or lines[0] != "TENFOLD_G2_01_COLD_BOOT_PROOF_V1":
+        raise ReferenceError("cold-boot proof artifact has wrong header")
+    if len(lines) < 1 + len(_PROOF_HEADER_KEYS):
+        raise ReferenceError("cold-boot proof artifact is missing required header fields")
+    fields: dict[str, str] = {}
+    for line in lines[1 : 1 + len(_PROOF_HEADER_KEYS)]:
+        key, sep, value = line.partition("=")
+        if not sep or key not in _PROOF_HEADER_KEYS or key in fields:
+            raise ReferenceError(f"cold-boot proof artifact malformed at expected header field: {key!r}")
+        fields[key] = value
+    if set(fields) != set(_PROOF_HEADER_KEYS):
+        raise ReferenceError("cold-boot proof artifact is missing required header fields")
+    fields["_remainder"] = "\n".join(lines[1 + len(_PROOF_HEADER_KEYS) :])
+    return fields
+
+
 def _canonical(value: Any) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
@@ -277,6 +353,7 @@ class Gen1ReferenceBundle:
             if self.cold_boot_proof is None:
                 raise ReferenceError("PASS cold boot lacks bound proof artifact")
             self.cold_boot_proof.validate(artifact_root)
+            self.validate_cold_boot_proof_content(artifact_root)
         elif self.cold_boot_proof is not None:
             raise ReferenceError("PENDING cold boot must not carry a proof artifact")
         if require_proven and self.cold_boot_status != "PASS":
@@ -284,6 +361,11 @@ class Gen1ReferenceBundle:
         names = [item.component for item in self.dispositions]
         if len(names) != len(set(names)):
             raise ReferenceError("every inherited component must have exactly one disposition")
+        missing_components = REQUIRED_COMPONENT_ROSTER - set(names)
+        if missing_components:
+            raise ReferenceError(
+                f"inherited component roster missing required disposition(s): {sorted(missing_components)}"
+            )
         for item in self.dispositions:
             item.validate()
         if self.intentional_divergence_register_generation < 1:
@@ -306,6 +388,39 @@ class Gen1ReferenceBundle:
         self.interim_root.validate()
         if not self.authority_refs:
             raise ReferenceError("reference bundle lacks frozen authority bindings")
+
+    def validate_cold_boot_proof_content(self, artifact_root: str | Path) -> None:
+        """Independently verify the bound `cold_boot_proof` artifact is
+        actually a cold-boot proof for *this* bundle, not merely a file whose
+        path/sha256 happens to be bound. `ArtifactBinding.validate` alone
+        only proves existence and digest match; it cannot detect an
+        unrelated file being bound as the proof."""
+        if self.cold_boot_status != "PASS" or self.cold_boot_proof is None:
+            raise ReferenceError("cold-boot proof content check requires a PASS-bound proof artifact")
+        path = self.cold_boot_proof.validate(artifact_root)
+        fields = _parse_cold_boot_proof(path.read_text(encoding="utf-8"))
+        if fields["status"] != "PASS":
+            raise ReferenceError("cold-boot proof artifact does not declare status=PASS")
+        if fields["migration_reference_sha"] != self.migration_reference_sha:
+            raise ReferenceError("cold-boot proof artifact migration_reference_sha mismatch")
+        if fields["migration_reference_tree_sha"] != self.migration_reference_tree_sha:
+            raise ReferenceError("cold-boot proof artifact migration_reference_tree_sha mismatch")
+        for field_name in ("platform", "container_image", "checkout_action", "setup_python_action", "python_version", "pip_version"):
+            if fields[field_name] != getattr(self.environment, field_name):
+                raise ReferenceError(f"cold-boot proof artifact environment.{field_name} mismatch")
+        if not _SHA1.fullmatch(fields["candidate_sha"]):
+            raise ReferenceError("cold-boot proof artifact candidate_sha missing/malformed")
+        remainder = fields["_remainder"]
+        # Checked in this order so a tampered/forged summary line that
+        # combines both ("N passed, M skipped in ...") is rejected for the
+        # specific, correct reason rather than a generic missing-result
+        # message; a genuine proof can never contain a skip because the
+        # workflow's own suite step aborts before this artifact is built if
+        # any test is skipped.
+        if re.search(r"[0-9]+ skipped", remainder):
+            raise ReferenceError("cold-boot proof artifact records a disallowed skipped test")
+        if not re.search(r"(?m)^[0-9]+ passed in ", remainder):
+            raise ReferenceError("cold-boot proof artifact lacks a passing repository-only suite result line")
 
     @staticmethod
     def _validate_manifest_against_reference(manifest: Path, reference_root: Path) -> None:

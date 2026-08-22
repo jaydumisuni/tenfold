@@ -48,6 +48,24 @@ jobs:
           test "$(git -C gen1-reference write-tree)" = "c7c130b573180e74438d70b6e11c17dd9bade648"
           test -z "$(git -C gen1-reference status --porcelain)"
 
+      - name: Create isolated copy of frozen reference for candidate-controlled validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          # PR-controlled code (tenfold.gen2.reference, imported from the
+          # candidate tree below) must never share mutable filesystem state
+          # with the checkout the authoritative suite later runs against.
+          # Permission bits (chmod) are not a real boundary here because the
+          # job runs with privileged container identity and can reacquire
+          # write access or plant files (e.g. an untracked conftest.py that
+          # pytest would auto-load) that a tracked-files-only reverification
+          # would not catch. A disposable, independently-verified byte copy,
+          # made only after "Verify frozen environment identity" proved the
+          # source is exact and clean, removes the shared-state attack
+          # surface structurally instead of policing it after the fact. The
+          # authoritative suite step below never reads this copy.
+          cp -r gen1-reference gen1-reference-candidate-check
+
       - name: Bind exact Python shared runtime for sanitized Gen1 workers
         shell: bash
         run: |
@@ -87,54 +105,83 @@ jobs:
           LC_ALL=C sort -f candidate/docs/gen2/g2-01-pip-freeze.txt > /tmp/g2-01-candidate-lock.txt
           diff -u /tmp/g2-01-candidate-lock.txt /tmp/g2-01-installed-lock.txt
 
-      - name: Lock frozen reference read-only before candidate-controlled validation
+      - name: Verify candidate bindings against exact reference tree and live substrate
         shell: bash
+        env:
+          LIVE_PLATFORM: linux/amd64
+          LIVE_CONTAINER_IMAGE: mcr.microsoft.com/playwright/python:v1.57.0-amd64@sha256:8331696befd3ee8b5baefca428446345f548e415a2408fe1d3d1224e9d919682
+          LIVE_CHECKOUT_ACTION: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+          LIVE_SETUP_PYTHON_ACTION: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         run: |
           set -euo pipefail
-          chmod -R a-w gen1-reference
-
-      - name: Verify candidate bindings against exact reference tree
-        shell: bash
-        run: |
-          set -euo pipefail
+          LIVE_PYTHON_VERSION="$(python --version)"
+          LIVE_PIP_VERSION="$(python -m pip --version | awk '{print $1" "$2}')"
+          export LIVE_PYTHON_VERSION LIVE_PIP_VERSION
+          # Candidate-controlled code below reads only the disposable
+          # gen1-reference-candidate-check copy created earlier; it never
+          # touches gen1-reference, which the authoritative suite uses.
           PYTHONPATH=candidate/src python - <<'PY'
+          import os
           from pathlib import Path
           from tenfold.gen2.reference import Gen1ReferenceBundle
           root = Path('candidate')
           bundle = Gen1ReferenceBundle.load(root / 'docs/gen2/g2-01-gen1-reference-bundle.json')
           bundle.validate(root, require_proven=False)
-          bundle.validate_reference_tree(root, Path('gen1-reference'))
+          bundle.validate_reference_tree(root, Path('gen1-reference-candidate-check'))
           assert bundle.migration_reference_sha == '05aa384a34a650e677970904079a985ec8b26d90'
           assert bundle.migration_reference_tree_sha == 'c7c130b573180e74438d70b6e11c17dd9bade648'
-          assert bundle.environment.python_version == 'Python 3.11.16'
+
+          # Cross-check every recorded environment identity against what is
+          # actually running/pinned in this job, not merely the bundle's own
+          # internal self-consistency (which a candidate could tamper with
+          # coherently while never booting the environment it claims).
+          live = {
+              'platform': os.environ['LIVE_PLATFORM'],
+              'container_image': os.environ['LIVE_CONTAINER_IMAGE'],
+              'checkout_action': os.environ['LIVE_CHECKOUT_ACTION'],
+              'setup_python_action': os.environ['LIVE_SETUP_PYTHON_ACTION'],
+              'python_version': os.environ['LIVE_PYTHON_VERSION'],
+              'pip_version': os.environ['LIVE_PIP_VERSION'],
+          }
+          for field, value in live.items():
+              declared = getattr(bundle.environment, field)
+              assert declared == value, f"bundle.environment.{field} {declared!r} != live {value!r}"
+
+          # Cross-check bundle.dependency_lock against the environment that
+          # was actually installed and proven (not the static pip-freeze.txt
+          # file alone, which a candidate could leave stale while editing the
+          # JSON's own dependency_lock array and recomputing its digests).
+          installed_lock = sorted(
+              (line.strip() for line in Path('/tmp/g2-01-installed-lock.txt').read_text().splitlines() if line.strip()),
+              key=str.casefold,
+          )
+          declared_lock = sorted(bundle.dependency_lock, key=str.casefold)
+          assert installed_lock == declared_lock, "bundle.dependency_lock does not match the actually installed environment"
+
           # The finalized bundle legitimately transitions PENDING -> PASS once a
           # bound proof artifact is committed; Gen1ReferenceBundle.validate()
-          # above already enforces the proof-artifact binding/self-consistency
-          # for PASS and the absence of a proof binding for PENDING. This proof
-          # lane must therefore accept and re-prove either lifecycle state
-          # rather than only ever admitting the pre-proof PENDING state.
+          # above already enforces the proof-artifact binding, proof-content
+          # cross-check and required-component-roster completeness for PASS,
+          # and the absence of a proof binding for PENDING. This proof lane
+          # must therefore accept and re-prove either lifecycle state rather
+          # than only ever admitting the pre-proof PENDING state.
           assert bundle.cold_boot_status in ('PENDING', 'PASS')
           PY
 
-      - name: Reverify frozen reference untouched by candidate-controlled validation
+      - name: Reverify frozen reference before the authoritative suite
         shell: bash
         run: |
           set -euo pipefail
-          # The previous step executes PR-controlled code (tenfold.gen2.reference
-          # imported from the candidate tree). That code must not be able to
-          # forge the proof substrate by mutating the frozen Gen1 checkout it was
-          # only supposed to read. Re-run the exact identity/cleanliness check
-          # performed before the candidate ran, while the checkout is still
-          # locked read-only, then restore write access for the authoritative
-          # suite (compileall/pytest need to write __pycache__/.pyc). Untracked
-          # files are intentionally excluded here because the earlier "Install
-          # exact frozen dependency environment" step legitimately leaves
-          # untracked build metadata (e.g. egg-info) in gen1-reference; only a
-          # change to a tracked frozen source file is a proof-integrity failure.
+          # Defense in depth: the candidate-controlled step above never reads
+          # gen1-reference (only its disposable copy), so this only guards
+          # against an anomaly in an earlier trusted step. Untracked files
+          # are excluded because "Install exact frozen dependency
+          # environment" legitimately leaves untracked build metadata
+          # (build/, src/tenfold.egg-info/) in gen1-reference; only a change
+          # to a tracked frozen source file is a proof-integrity failure.
           test "$(git -C gen1-reference rev-parse HEAD)" = "05aa384a34a650e677970904079a985ec8b26d90"
           test "$(git -C gen1-reference write-tree)" = "c7c130b573180e74438d70b6e11c17dd9bade648"
           test -z "$(git -C gen1-reference status --porcelain --untracked-files=no)"
-          chmod -R u+w gen1-reference
 
       - name: Run exact Gen1 repository-only cold boot
         shell: bash

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from hashlib import sha256
 from pathlib import Path
 import json
 import shutil
@@ -8,6 +9,7 @@ import shutil
 import pytest
 
 from tenfold.gen2.reference import (
+    REQUIRED_COMPONENT_ROSTER,
     ArtifactBinding,
     Gen1DifferentialHarness,
     Gen1ReferenceBundle,
@@ -150,3 +152,124 @@ def test_g2_01_bundle_has_no_initial_divergence_or_gen2_authority_activation() -
     # field that could silently migrate live execution into Gen2.
     forbidden = {"gen2_execution_authority", "self_construction_enabled", "authority_owner"}
     assert forbidden.isdisjoint(raw)
+
+
+def test_g2_01_current_bundle_satisfies_the_required_component_roster() -> None:
+    names = {item.component for item in load_bundle().dispositions}
+    assert REQUIRED_COMPONENT_ROSTER <= names
+
+
+def test_g2_01_missing_required_component_fails_closed() -> None:
+    bundle = load_bundle()
+    thinned = tuple(item for item in bundle.dispositions if item.component != "Foreman")
+    broken = replace(bundle, dispositions=thinned)
+    with pytest.raises(ReferenceError, match="missing required disposition"):
+        broken.validate(ROOT, require_proven=False)
+
+
+def _write_cold_boot_proof(path: Path, bundle: Gen1ReferenceBundle, **overrides: str) -> None:
+    fields = {
+        "status": "PASS",
+        "migration_reference_sha": bundle.migration_reference_sha,
+        "migration_reference_tree_sha": bundle.migration_reference_tree_sha,
+        "platform": bundle.environment.platform,
+        "container_image": bundle.environment.container_image,
+        "checkout_action": bundle.environment.checkout_action,
+        "setup_python_action": bundle.environment.setup_python_action,
+        "python_version": bundle.environment.python_version,
+        "pip_version": bundle.environment.pip_version,
+        "python_shared_library_sha256": "0" * 64,
+        "python_shared_library_loader_path": "/usr/local/lib/libpython3.11.so.1.0",
+        "chromium_executable": "/usr/local/bin/chromium",
+        "chromium_sha256": "1" * 64,
+        "chromium_version": "Chromium 130.0.0.0",
+        "sergeant_sha": "4a277cc5950aa08a98157b950c96fb88f2178c79",
+        "candidate_sha": "a" * 40,
+    }
+    fields.update(overrides)
+    lines = ["TENFOLD_G2_01_COLD_BOOT_PROOF_V1"]
+    lines.extend(f"{key}={value}" for key, value in fields.items())
+    lines.append("158 passed in 4.83s")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _bind_pass_bundle(tmp_path: Path, **proof_overrides: str) -> Gen1ReferenceBundle:
+    bundle = load_bundle()
+    _copy_bound_manifests(tmp_path)
+    proof_path = tmp_path / "docs/gen2/g2-01-cold-boot-proof.txt"
+    _write_cold_boot_proof(proof_path, bundle, **proof_overrides)
+    binding = ArtifactBinding(
+        path="docs/gen2/g2-01-cold-boot-proof.txt",
+        sha256=sha256(proof_path.read_bytes()).hexdigest(),
+    )
+    return replace(bundle, cold_boot_status="PASS", cold_boot_proof=binding)
+
+
+def test_g2_01_genuine_pass_proof_content_is_accepted(tmp_path: Path) -> None:
+    bundle = _bind_pass_bundle(tmp_path)
+    bundle.validate_cold_boot_proof_content(tmp_path)
+
+
+def test_g2_01_unrelated_file_bound_as_proof_fails_closed(tmp_path: Path) -> None:
+    # The exact attack named by review: bind an unrelated file (e.g. a
+    # README) whose digest matches, without it being a real proof.
+    bundle = load_bundle()
+    _copy_bound_manifests(tmp_path)
+    unrelated = tmp_path / "docs/gen2/g2-01-cold-boot-proof.txt"
+    unrelated.parent.mkdir(parents=True, exist_ok=True)
+    unrelated.write_text("# Not a cold-boot proof\n", encoding="utf-8")
+    binding = ArtifactBinding(path="docs/gen2/g2-01-cold-boot-proof.txt", sha256=sha256(unrelated.read_bytes()).hexdigest())
+    passed = replace(bundle, cold_boot_status="PASS", cold_boot_proof=binding)
+    with pytest.raises(ReferenceError, match="wrong header"):
+        passed.validate(tmp_path, require_proven=False)
+
+
+def test_g2_01_proof_declaring_non_pass_status_fails_closed(tmp_path: Path) -> None:
+    bundle = _bind_pass_bundle(tmp_path, status="FAIL")
+    with pytest.raises(ReferenceError, match="does not declare status=PASS"):
+        bundle.validate_cold_boot_proof_content(tmp_path)
+
+
+def test_g2_01_proof_with_mismatched_reference_sha_fails_closed(tmp_path: Path) -> None:
+    bundle = _bind_pass_bundle(tmp_path, migration_reference_sha="f" * 40)
+    with pytest.raises(ReferenceError, match="migration_reference_sha mismatch"):
+        bundle.validate_cold_boot_proof_content(tmp_path)
+
+
+def test_g2_01_proof_with_mismatched_environment_fails_closed(tmp_path: Path) -> None:
+    bundle = _bind_pass_bundle(tmp_path, python_version="Python 3.9.0")
+    with pytest.raises(ReferenceError, match="environment.python_version mismatch"):
+        bundle.validate_cold_boot_proof_content(tmp_path)
+
+
+def test_g2_01_proof_without_passing_suite_result_fails_closed(tmp_path: Path) -> None:
+    bundle = load_bundle()
+    _copy_bound_manifests(tmp_path)
+    proof_path = tmp_path / "docs/gen2/g2-01-cold-boot-proof.txt"
+    _write_cold_boot_proof(proof_path, bundle)
+    # Overwrite with a variant that never records a passing suite line.
+    text = proof_path.read_text(encoding="utf-8").replace("158 passed in 4.83s", "no tests ran")
+    proof_path.write_text(text, encoding="utf-8")
+    binding = ArtifactBinding(
+        path="docs/gen2/g2-01-cold-boot-proof.txt",
+        sha256=sha256(proof_path.read_bytes()).hexdigest(),
+    )
+    bundle = replace(bundle, cold_boot_status="PASS", cold_boot_proof=binding)
+    with pytest.raises(ReferenceError, match="lacks a passing repository-only suite result"):
+        bundle.validate_cold_boot_proof_content(tmp_path)
+
+
+def test_g2_01_proof_recording_a_skip_fails_closed(tmp_path: Path) -> None:
+    bundle = load_bundle()
+    _copy_bound_manifests(tmp_path)
+    proof_path = tmp_path / "docs/gen2/g2-01-cold-boot-proof.txt"
+    _write_cold_boot_proof(proof_path, bundle)
+    text = proof_path.read_text(encoding="utf-8").replace("158 passed in 4.83s", "157 passed, 1 skipped in 4.83s")
+    proof_path.write_text(text, encoding="utf-8")
+    binding = ArtifactBinding(
+        path="docs/gen2/g2-01-cold-boot-proof.txt",
+        sha256=sha256(proof_path.read_bytes()).hexdigest(),
+    )
+    bundle = replace(bundle, cold_boot_status="PASS", cold_boot_proof=binding)
+    with pytest.raises(ReferenceError, match="disallowed skipped test"):
+        bundle.validate_cold_boot_proof_content(tmp_path)
