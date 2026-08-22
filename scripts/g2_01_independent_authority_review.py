@@ -600,8 +600,11 @@ def review_proof_lane_isolation(repo: str, candidate: str, findings: Findings) -
     else:
         findings.ok("proof-lane no job puts candidate/src on PYTHONPATH")
 
-    if "tenfold.gen2.reference" in cold_boot_step_text:
-        findings.fail("proof-lane isolation", "cold-boot job still references candidate-controlled reference module")
+    # Match actual import statements only, not comment text that merely
+    # mentions the module name (e.g. explaining that an algorithm matches
+    # it) - the same false-positive class fixed above for candidate-check.
+    if import_pattern.search(cold_boot_step_text):
+        findings.fail("proof-lane isolation", "cold-boot job still imports candidate-controlled reference module")
     else:
         findings.ok("proof-lane cold-boot job never imports or executes candidate-controlled code")
 
