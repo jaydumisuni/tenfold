@@ -86,11 +86,11 @@ Gen-2.0 architecture review and post-PASS reconciliation are complete.
 - G2-01 through G2-30 roadmap: **FROZEN ROADMAP**.
 - Architecture review: **PASS — 0 blockers / 0 majors**.
 - Post-PASS reconciliation: **PASS / READY_FOR_FREEZE**.
-- Gen-2 implementation: **IN PROGRESS** (G2-01 PROVEN; G2-02 PROVING).
+- Gen-2 implementation: **IN PROGRESS** (G2-01 PROVEN; G2-02 PROVEN).
 - Gen-2 qualification: **IN PROGRESS**.
 - G2-01 — Gen-1 Reference and Inheritance Freeze: **PROVEN**. Canonical review/proof record: `docs/gen2/G2-01-review-record.md`.
-- G2-02 — Constitutional Schema and Policy Foundation: **PROVING** (real hostile review pending). Review/proof record: `docs/gen2/G2-02-review-record.md`.
-- Current next Gen-2 milestone: **G2-02** (in review; G2-03/G2-04 follow once G2-02 reaches canonical PROVEN).
+- G2-02 — Constitutional Schema and Policy Foundation: **PROVEN**. Review/proof record: `docs/gen2/G2-02-review-record.md`.
+- Current next Gen-2 milestones: **G2-03 — Constitutional Mutation Suite** and **G2-04 — Independent Verifier Specification and Core** (both depend only on G2-02, now satisfied).
 - Construction runtime: **qualified Tenfold Gen 1** (authoritative through G2-23 per the frozen roadmap).
 
 The Gen-2 bootstrap is explicit: Gen 1 builds Gen 2 under TF-00 + G2-00 until G2-27 independently proves the Self-Construction Minimum. Only then may Gen 2 execute the remaining already-approved roadmap itself. Gen 1 remains afterward as frozen reference/differential oracle/fallback unless later authority explicitly retires it.
