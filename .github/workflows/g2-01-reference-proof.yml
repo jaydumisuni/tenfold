@@ -33,10 +33,12 @@ jobs:
   # an oversight. What this workflow does provide: (a) an independently-
   # implemented validator (no shared code path with tenfold.gen2.reference,
   # so a defect/tamper in one does not automatically pass the other), (b)
-  # a second, separately-maintained independent reviewer
-  # (scripts/g2_01_independent_authority_review.py, stdlib-only, reads raw
-  # git-object bytes, never imports candidate code), and (c) iterative
-  # adversarial review before promotion. The final trust anchor for this
+  # a second, separately-maintained, tracked-in-repository independent
+  # reviewer (scripts/g2_01_independent_authority_review.py, stdlib-only,
+  # reads raw git-object bytes, never imports candidate code; run manually
+  # against each candidate head during this milestone's construction, not
+  # yet wired as an automated CI gate), and (c) iterative adversarial
+  # review before promotion. The final trust anchor for this
   # milestone is the interim Root's (repository Owner's) explicit review
   # and merge decision, per TF-00 SS2 ("Training is shared. Authority is
   # not.") and this file's own INTERIM_ROOT_DECLARATION.md - not a claim
@@ -131,6 +133,16 @@ jobs:
           MIGRATION_TREE = "c7c130b573180e74438d70b6e11c17dd9bade648"
           BUNDLE_ARTIFACT_PATH = "docs/gen2/g2-01-gen1-reference-bundle.json"
           PROOF_ARTIFACT_PATH = "docs/gen2/g2-01-cold-boot-proof.txt"
+          # Every path the documented G2-01 closure process requires to
+          # advance atomically with the final proof record; all of them
+          # change purely because this milestone completed, not because the
+          # underlying candidate content changed, so all must be excluded
+          # from the stable identity or the closing commit's own required
+          # recovery-surface updates would break digest stability.
+          CLOSURE_RECORD_PATHS = {
+              BUNDLE_ARTIFACT_PATH, PROOF_ARTIFACT_PATH,
+              "docs/gen2/G2-01-review-record.md", "README.md", "PICKUP.md",
+          }
 
           REQUIRED_COMPONENT_ROSTER = {
               "Foreman", "derivation assurance", "scheduler", "campaign state",
@@ -210,11 +222,10 @@ jobs:
               normalized["cold_boot_proof"] = None
               normalized["proven_candidate_content_digest"] = None
               bundle_digest = canonical_digest(normalized)
-              excluded = {BUNDLE_ARTIFACT_PATH, PROOF_ARTIFACT_PATH}
               entries = [
                   f"{mode} {blob_sha}  {rel}"
                   for mode, blob_sha, rel in git_ls_files_with_blobs(candidate_root)
-                  if rel not in excluded
+                  if rel not in CLOSURE_RECORD_PATHS
               ]
               tree_digest = canonical_digest(sorted(entries))
               return canonical_digest({"bundle": bundle_digest, "tree": tree_digest})
@@ -331,6 +342,11 @@ jobs:
                   preview = sorted(missing)[:5]
                   suffix = "..." if len(missing) > 5 else ""
                   fail(f"{corpus_name} manifest omits required frozen reference file(s): {preview}{suffix}")
+              extra = seen - expected
+              if extra:
+                  preview = sorted(extra)[:5]
+                  suffix = "..." if len(extra) > 5 else ""
+                  fail(f"{corpus_name} manifest contains out-of-scope file(s): {preview}{suffix}")
 
           check_manifest(reference_corpus_path, "reference_corpus")
           check_manifest(semantic_corpus_path, "semantic_corpus")
@@ -458,6 +474,10 @@ jobs:
               fail("intentional_divergence_register_generation invalid")
           ids, cases = set(), set()
           for item in raw.get("intentional_divergences", []):
+              if not (item.get("divergence_id") and item.get("case_id") and item.get("authority_ref") and item.get("rationale")):
+                  fail(f"divergence record incomplete: {item.get('divergence_id')}")
+              if not SHA256.fullmatch(item.get("reference_digest") or "") or not SHA256.fullmatch(item.get("candidate_digest") or ""):
+                  fail(f"divergence must bind exact SHA-256 outputs: {item.get('divergence_id')}")
               if item.get("register_generation") != gen:
                   fail(f"divergence generation mismatch: {item.get('divergence_id')}")
               if item.get("divergence_id") in ids or item.get("case_id") in cases:
@@ -553,6 +573,16 @@ jobs:
           import hashlib, json, subprocess
           BUNDLE_ARTIFACT_PATH = "docs/gen2/g2-01-gen1-reference-bundle.json"
           PROOF_ARTIFACT_PATH = "docs/gen2/g2-01-cold-boot-proof.txt"
+          # Every path the documented G2-01 closure process requires to
+          # advance atomically with the final proof record; all of them
+          # change purely because this milestone completed, not because the
+          # underlying candidate content changed, so all must be excluded
+          # from the stable identity or the closing commit's own required
+          # recovery-surface updates would break digest stability.
+          CLOSURE_RECORD_PATHS = {
+              BUNDLE_ARTIFACT_PATH, PROOF_ARTIFACT_PATH,
+              "docs/gen2/G2-01-review-record.md", "README.md", "PICKUP.md",
+          }
           def canonical_digest(value):
               raw = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
               return hashlib.sha256(raw).hexdigest()
@@ -563,14 +593,13 @@ jobs:
           normalized["proven_candidate_content_digest"] = None
           bundle_digest = canonical_digest(normalized)
           result = subprocess.run(["git", "-C", "candidate", "ls-files", "-s"], capture_output=True, text=True, check=True)
-          excluded = {BUNDLE_ARTIFACT_PATH, PROOF_ARTIFACT_PATH}
           entries = []
           for line in result.stdout.splitlines():
               if not line:
                   continue
               meta, _, rel = line.partition("\t")
               mode, blob_sha, _stage = meta.split()
-              if rel in excluded:
+              if rel in CLOSURE_RECORD_PATHS:
                   continue
               entries.append(f"{mode} {blob_sha}  {rel}")
           tree_digest = canonical_digest(sorted(entries))

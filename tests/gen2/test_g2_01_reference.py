@@ -577,3 +577,43 @@ def test_g2_01_manifest_with_out_of_scope_entry_fails_closed(tmp_path: Path) -> 
 
     with pytest.raises(ReferenceError, match="manifest contains out-of-scope file"):
         Gen1ReferenceBundle._validate_manifest_against_reference(manifest_dest, reference_root, CORPUS_SCOPES["semantic_corpus"])
+
+
+def test_g2_01_interim_root_arbitrary_provenance_fails_closed() -> None:
+    # The exact escalation named by review: keep generation/provenance
+    # nonempty (satisfying the old "incomplete" check) but replace them
+    # with attacker-controlled values.
+    bundle = load_bundle()
+    broken = replace(bundle, interim_root=replace(bundle.interim_root, generation=999, provenance=("attacker",)))
+    with pytest.raises(ReferenceError, match="generation does not match the trusted bound value"):
+        broken.validate(ROOT, require_proven=False)
+
+
+def test_g2_01_interim_root_wrong_provenance_content_fails_closed() -> None:
+    bundle = load_bundle()
+    broken = replace(bundle, interim_root=replace(bundle.interim_root, provenance=bundle.interim_root.provenance[:1]))
+    with pytest.raises(ReferenceError, match="provenance does not match the trusted bound value"):
+        broken.validate(ROOT, require_proven=False)
+
+
+def test_g2_01_closure_record_paths_excluded_from_content_digest(tmp_path: Path) -> None:
+    # README.md/PICKUP.md/G2-01-review-record.md are required to advance
+    # atomically with the closing commit per the documented closure
+    # process; the identity digest must be stable whether or not they are
+    # present/changed, exactly like the bundle/proof pair.
+    _copy_bound_manifests(tmp_path)
+    bundle = load_bundle()
+    _write_full_bundle_json(tmp_path, bundle)
+    _git_init_and_commit(tmp_path)
+    digest_before = compute_candidate_content_digest(tmp_path)
+
+    (tmp_path / "README.md").write_text("changed by closure\n", encoding="utf-8")
+    (tmp_path / "PICKUP.md").write_text("changed by closure\n", encoding="utf-8")
+    review_record = tmp_path / "docs/gen2/G2-01-review-record.md"
+    review_record.parent.mkdir(parents=True, exist_ok=True)
+    review_record.write_text("changed by closure\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-q", "-m", "closure"], cwd=tmp_path, check=True, capture_output=True)
+    digest_after = compute_candidate_content_digest(tmp_path)
+
+    assert digest_before == digest_after

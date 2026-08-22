@@ -109,6 +109,11 @@ REQUIRED_INTERIM_ROOT_DENIALS: frozenset[str] = frozenset(
 # root identity/authority class would otherwise silently pass.
 TRUSTED_INTERIM_ROOT_ID = "TENFOLD-G2-INTERIM-ROOT"
 TRUSTED_INTERIM_ROOT_AUTHORITY_CLASS = "EXTERNAL_MANUAL_INTERIM_ROOT"
+TRUSTED_INTERIM_ROOT_GENERATION = 1
+TRUSTED_INTERIM_ROOT_PROVENANCE: tuple[str, ...] = (
+    "jaydumisuni/tenfold@05aa384a34a650e677970904079a985ec8b26d90:docs/07-gen2-evolution-authority.md#interim-root-authority-before-g2-17",
+    "jaydumisuni/tenfold@05aa384a34a650e677970904079a985ec8b26d90:docs/08-gen2-roadmap.md#g2-01",
+)
 TRUSTED_INTERIM_ROOT_ALLOWED_ACTIONS: frozenset[str] = frozenset(
     {
         "supply_explicit_scoped_credentials",
@@ -130,6 +135,20 @@ TRUSTED_COLD_BOOT_SUBSTRATE: dict[str, str] = {
 
 BUNDLE_ARTIFACT_PATH = "docs/gen2/g2-01-gen1-reference-bundle.json"
 PROOF_ARTIFACT_PATH = "docs/gen2/g2-01-cold-boot-proof.txt"
+REVIEW_RECORD_ARTIFACT_PATH = "docs/gen2/G2-01-review-record.md"
+README_ARTIFACT_PATH = "README.md"
+PICKUP_ARTIFACT_PATH = "PICKUP.md"
+
+# Every path the documented G2-01 closure process (G2-01-review-record.md
+# "Acceptance reconciliation" / PICKUP.md) requires to advance atomically
+# with the final proof record. All of them are expected to change purely
+# because this milestone completed, not because the underlying candidate
+# content changed, so all must be excluded from the stable identity - not
+# just the bundle/proof pair - or the closing commit's own required
+# recovery-surface updates would themselves break digest stability.
+CLOSURE_RECORD_PATHS: frozenset[str] = frozenset(
+    {BUNDLE_ARTIFACT_PATH, PROOF_ARTIFACT_PATH, REVIEW_RECORD_ARTIFACT_PATH, README_ARTIFACT_PATH, PICKUP_ARTIFACT_PATH}
+)
 
 # Independently-scoped subpaths each corpus manifest is required to cover
 # completely, measured against the frozen reference's own tracked Git tree
@@ -275,11 +294,10 @@ def compute_candidate_content_digest(candidate_root: str | Path) -> str:
     normalized["proven_candidate_content_digest"] = None
     bundle_digest = _digest(normalized)
 
-    excluded = {BUNDLE_ARTIFACT_PATH, PROOF_ARTIFACT_PATH}
     entries = [
         f"{mode} {blob_sha}  {rel}"
         for mode, blob_sha, rel in _git_ls_files_with_blobs(root)
-        if rel not in excluded
+        if rel not in CLOSURE_RECORD_PATHS
     ]
     tree_digest = _digest(sorted(entries))
 
@@ -376,6 +394,10 @@ class InterimRootBinding:
             raise ReferenceError("interim Root root_id does not match the trusted bound identity")
         if self.authority_class != TRUSTED_INTERIM_ROOT_AUTHORITY_CLASS:
             raise ReferenceError("interim Root authority_class does not match the trusted bound value")
+        if self.generation != TRUSTED_INTERIM_ROOT_GENERATION:
+            raise ReferenceError("interim Root generation does not match the trusted bound value")
+        if tuple(self.provenance) != TRUSTED_INTERIM_ROOT_PROVENANCE:
+            raise ReferenceError("interim Root provenance does not match the trusted bound value")
         if not REQUIRED_INTERIM_ROOT_DENIALS <= set(self.denied_actions):
             raise ReferenceError("interim Root does not fail closed on frozen bootstrap denials")
         # A candidate that keeps the required denial strings while widening
