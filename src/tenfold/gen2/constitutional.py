@@ -91,6 +91,24 @@ def _positive_int(value: Any, field: str, schema_name: str) -> int:
     return value
 
 
+def _expect_list(value: Any, field: str, schema_name: str) -> list:
+    """Reject anything that is not a genuine JSON array before it is
+    iterated. A bare Python `tuple(value)` on a *string* silently succeeds
+    by iterating characters (`tuple("T-1")` -> `('T', '-', '1')`) instead of
+    rejecting the malformed encoding, which is exactly the lossy-decoding
+    G2-00 SS7.1 requires closed schemas to reject."""
+    if not isinstance(value, list):
+        raise ConstitutionalError(f"{schema_name}.{field}: must be a JSON array")
+    return value
+
+
+def _expect_list_of_str(value: Any, field: str, schema_name: str) -> tuple[str, ...]:
+    items = _expect_list(value, field, schema_name)
+    if not all(isinstance(v, str) for v in items):
+        raise ConstitutionalError(f"{schema_name}.{field}: every element must be a string")
+    return tuple(items)
+
+
 # ============================================================================
 # Foundational closed enums (G2-00 SS6, SS7, SS11)
 # ============================================================================
@@ -268,7 +286,7 @@ class Requirement:
             requirement_id=raw["requirement_id"],
             text=raw["text"],
             source_authority=raw["source_authority"],
-            classes=tuple(RequirementClass(c) for c in raw["classes"]),
+            classes=tuple(RequirementClass(c) for c in _expect_list(raw["classes"], "classes", "Requirement")),
             generation=raw["generation"],
         )
 
@@ -473,7 +491,7 @@ class RequirementClosureManifest:
             requirements=tuple(Requirement.from_dict(r) for r in raw["requirements"]),
             candidate_ledgers=tuple(CandidateLedger.from_dict(c) for c in raw["candidate_ledgers"]),
             reconciliation_method=raw["reconciliation_method"],
-            reviewers=tuple(raw["reviewers"]),
+            reviewers=_expect_list_of_str(raw["reviewers"], "reviewers", "RequirementClosureManifest"),
         )
 
     @classmethod
@@ -544,8 +562,8 @@ class ClassificationEntry:
         return cls(
             requirement_id=raw["requirement_id"],
             classifier=raw["classifier"],
-            classes=tuple(RequirementClass(c) for c in raw["classes"]),
-            structural_floor_classes=tuple(RequirementClass(c) for c in raw["structural_floor_classes"]),
+            classes=tuple(RequirementClass(c) for c in _expect_list(raw["classes"], "classes", "ClassificationEntry")),
+            structural_floor_classes=tuple(RequirementClass(c) for c in _expect_list(raw["structural_floor_classes"], "structural_floor_classes", "ClassificationEntry")),
             downgrade_authority_ref=raw["downgrade_authority_ref"],
         )
 
@@ -566,6 +584,15 @@ class ClassificationClosure:
             raise ConstitutionalError("ClassificationClosure: entries must be non-empty")
         for entry in self.entries:
             entry.validate()
+        if not self.lineage_preserved:
+            # G2-00 SS6.2: "Classification evidence survives requirement
+            # merge/deduplication." A closure that reports lineage was NOT
+            # preserved is reporting a loss of that required evidence, not a
+            # benign metadata flag — it must reject, not merely record the
+            # loss as validated data.
+            raise ConstitutionalError(
+                "ClassificationClosure: lineage_preserved must be true (classification evidence must survive merge/deduplication)"
+            )
         if known_requirement_ids is not None:
             entry_ids = {e.requirement_id for e in self.entries}
             missing = known_requirement_ids - entry_ids
@@ -714,12 +741,12 @@ class AmbiguityRecord:
         return cls(
             ambiguity_id=raw["ambiguity_id"],
             state=AmbiguityState(raw["state"]),
-            affected_requirement_ids=tuple(raw["affected_requirement_ids"]),
-            affected_classes=tuple(RequirementClass(c) for c in raw["affected_classes"]),
+            affected_requirement_ids=_expect_list_of_str(raw["affected_requirement_ids"], "affected_requirement_ids", "AmbiguityRecord"),
+            affected_classes=tuple(RequirementClass(c) for c in _expect_list(raw["affected_classes"], "affected_classes", "AmbiguityRecord")),
             source_authority_ref=raw["source_authority_ref"],
             generation=raw["generation"],
             disposition_authority_ref=raw["disposition_authority_ref"],
-            evidence_refs=tuple(raw["evidence_refs"]),
+            evidence_refs=_expect_list_of_str(raw["evidence_refs"], "evidence_refs", "AmbiguityRecord"),
         )
 
 
@@ -787,7 +814,7 @@ class PolicyMutationExemption:
             reason=raw["reason"],
             attester=raw["attester"],
             independent_reviewer=raw["independent_reviewer"],
-            evidence_refs=tuple(raw["evidence_refs"]),
+            evidence_refs=_expect_list_of_str(raw["evidence_refs"], "evidence_refs", "PolicyMutationExemption"),
         )
 
 
@@ -804,7 +831,9 @@ class ConstitutionalPolicySet:
 
     policy_generation: int
     requirement_class_to_obligation_classes: dict[RequirementClass, tuple[ObligationClass, ...]]
+    obligation_class_to_proof_event_predicates: dict[ObligationClass, tuple[str, ...]]
     obligation_class_to_falsification_class: dict[ObligationClass, FalsificationClass]
+    obligation_class_to_assurance_routing: dict[ObligationClass, tuple[str, ...]]
     requirement_classification_to_ambiguity_impact_domains: dict[RequirementClass, tuple[AmbiguityImpactDomain, ...]]
     assurance_matrix_generation: int
     assurance_matrix_digest: str
@@ -814,11 +843,26 @@ class ConstitutionalPolicySet:
         {
             "policy_generation",
             "requirement_class_to_obligation_classes",
+            "obligation_class_to_proof_event_predicates",
             "obligation_class_to_falsification_class",
+            "obligation_class_to_assurance_routing",
             "requirement_classification_to_ambiguity_impact_domains",
             "assurance_matrix_generation",
             "assurance_matrix_digest",
             "non_weakenable_exemptions",
+        }
+    )
+
+    # The five explicit families G2-00 SS6.5 and G2-02 require, keyed by
+    # this dataclass's own field names — the roster PolicyClosureManifest
+    # checks for operator-coverage-or-exemption totality.
+    REQUIRED_POLICY_FIELD_ROSTER = frozenset(
+        {
+            "requirement_class_to_obligation_classes",
+            "obligation_class_to_proof_event_predicates",
+            "obligation_class_to_falsification_class",
+            "obligation_class_to_assurance_routing",
+            "requirement_classification_to_ambiguity_impact_domains",
         }
     )
 
@@ -839,11 +883,27 @@ class ConstitutionalPolicySet:
                 f"ConstitutionalPolicySet: requirement_class_to_obligation_classes missing/empty row(s) "
                 f"{sorted(c.value for c in missing_obligation_rows)}"
             )
+        missing_predicate_rows = _REQUIRED_OBLIGATION_CLASS_ROSTER - {
+            k for k, v in self.obligation_class_to_proof_event_predicates.items() if v
+        }
+        if missing_predicate_rows:
+            raise ConstitutionalError(
+                f"ConstitutionalPolicySet: obligation_class_to_proof_event_predicates missing/empty row(s) "
+                f"{sorted(c.value for c in missing_predicate_rows)}"
+            )
         missing_falsification_rows = _REQUIRED_OBLIGATION_CLASS_ROSTER - set(self.obligation_class_to_falsification_class)
         if missing_falsification_rows:
             raise ConstitutionalError(
                 f"ConstitutionalPolicySet: obligation_class_to_falsification_class missing row(s) "
                 f"{sorted(c.value for c in missing_falsification_rows)}"
+            )
+        missing_routing_rows = _REQUIRED_OBLIGATION_CLASS_ROSTER - {
+            k for k, v in self.obligation_class_to_assurance_routing.items() if v
+        }
+        if missing_routing_rows:
+            raise ConstitutionalError(
+                f"ConstitutionalPolicySet: obligation_class_to_assurance_routing missing/empty row(s) "
+                f"{sorted(c.value for c in missing_routing_rows)}"
             )
         missing_impact_rows = _REQUIRED_REQUIREMENT_CLASS_ROSTER - {
             k for k, v in self.requirement_classification_to_ambiguity_impact_domains.items() if v
@@ -884,8 +944,14 @@ class ConstitutionalPolicySet:
             "requirement_class_to_obligation_classes": {
                 k.value: [v.value for v in vs] for k, vs in self.requirement_class_to_obligation_classes.items()
             },
+            "obligation_class_to_proof_event_predicates": {
+                k.value: list(vs) for k, vs in self.obligation_class_to_proof_event_predicates.items()
+            },
             "obligation_class_to_falsification_class": {
                 k.value: v.value for k, v in self.obligation_class_to_falsification_class.items()
+            },
+            "obligation_class_to_assurance_routing": {
+                k.value: list(vs) for k, vs in self.obligation_class_to_assurance_routing.items()
             },
             "requirement_classification_to_ambiguity_impact_domains": {
                 k.value: [v.value for v in vs] for k, vs in self.requirement_classification_to_ambiguity_impact_domains.items()
@@ -905,14 +971,22 @@ class ConstitutionalPolicySet:
         return cls(
             policy_generation=raw["policy_generation"],
             requirement_class_to_obligation_classes={
-                RequirementClass(k): tuple(ObligationClass(v) for v in vs)
+                RequirementClass(k): tuple(ObligationClass(v) for v in _expect_list(vs, k, "ConstitutionalPolicySet.requirement_class_to_obligation_classes"))
                 for k, vs in raw["requirement_class_to_obligation_classes"].items()
+            },
+            obligation_class_to_proof_event_predicates={
+                ObligationClass(k): _expect_list_of_str(vs, k, "ConstitutionalPolicySet.obligation_class_to_proof_event_predicates")
+                for k, vs in raw["obligation_class_to_proof_event_predicates"].items()
             },
             obligation_class_to_falsification_class={
                 ObligationClass(k): FalsificationClass(v) for k, v in raw["obligation_class_to_falsification_class"].items()
             },
+            obligation_class_to_assurance_routing={
+                ObligationClass(k): _expect_list_of_str(vs, k, "ConstitutionalPolicySet.obligation_class_to_assurance_routing")
+                for k, vs in raw["obligation_class_to_assurance_routing"].items()
+            },
             requirement_classification_to_ambiguity_impact_domains={
-                RequirementClass(k): tuple(AmbiguityImpactDomain(v) for v in vs)
+                RequirementClass(k): tuple(AmbiguityImpactDomain(v) for v in _expect_list(vs, k, "ConstitutionalPolicySet.requirement_classification_to_ambiguity_impact_domains"))
                 for k, vs in raw["requirement_classification_to_ambiguity_impact_domains"].items()
             },
             assurance_matrix_generation=raw["assurance_matrix_generation"],
@@ -996,6 +1070,23 @@ class PolicyClosureManifest:
                     raise ConstitutionalError(
                         f"PolicyClosureManifest: mutation of NON_WEAKENABLE field {entry.field_identity} lacks a registered exemption"
                     )
+
+        # G2-02 acceptance, the other direction: "policy operator coverage
+        # is total ... " — every one of the five required policy families
+        # must have EITHER a demonstrated weakening operator in the
+        # candidate ledger OR a registered NON_WEAKENABLE exemption. A
+        # closure whose candidate ledger says nothing about a field, and
+        # which registers no exemption for it either, has not actually
+        # demonstrated that field's operator coverage — an empty ledger
+        # must not pass by vacuous absence of counterexamples.
+        exempted_fields = {e.field_identity for e in self.policy.non_weakenable_exemptions}
+        demonstrated_fields = {e.field_identity for e in self.candidate_policy_ledger}
+        uncovered = ConstitutionalPolicySet.REQUIRED_POLICY_FIELD_ROSTER - exempted_fields - demonstrated_fields
+        if uncovered:
+            raise ConstitutionalError(
+                f"PolicyClosureManifest: policy field(s) {sorted(uncovered)} have neither a demonstrated "
+                f"weakening operator in candidate_policy_ledger nor a registered NON_WEAKENABLE exemption"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1188,7 +1279,7 @@ class ConstitutionalCampaignProgram:
         return cls(
             program_generation=raw["program_generation"],
             obligation_ir_digest=raw["obligation_ir_digest"],
-            task_ids=tuple(raw["task_ids"]),
+            task_ids=_expect_list_of_str(raw["task_ids"], "task_ids", "ConstitutionalCampaignProgram"),
         )
 
     @classmethod
@@ -1281,7 +1372,7 @@ class CompilationCertificate:
             policy_generation=raw["policy_generation"],
             policy_closure_digest=raw["policy_closure_digest"],
             obligation_ir_digest=raw["obligation_ir_digest"],
-            transformation_witnesses=tuple(raw["transformation_witnesses"]),
+            transformation_witnesses=_expect_list_of_str(raw["transformation_witnesses"], "transformation_witnesses", "CompilationCertificate"),
             mutation_domain_derivation_digest=raw["mutation_domain_derivation_digest"],
             proof_graph_derivation_digest=raw["proof_graph_derivation_digest"],
             assurance_routing_digest=raw["assurance_routing_digest"],
@@ -1349,8 +1440,8 @@ class ProofGraphNode:
             obligation_id=raw["obligation_id"],
             state=ProofState(raw["state"]),
             falsification_class=FalsificationClass(raw["falsification_class"]),
-            evidence_refs=tuple(raw["evidence_refs"]),
-            predecessor_obligation_ids=tuple(raw["predecessor_obligation_ids"]),
+            evidence_refs=_expect_list_of_str(raw["evidence_refs"], "evidence_refs", "ProofGraphNode"),
+            predecessor_obligation_ids=_expect_list_of_str(raw["predecessor_obligation_ids"], "predecessor_obligation_ids", "ProofGraphNode"),
         )
 
 
@@ -1379,6 +1470,30 @@ class ProofGraph:
                 raise ConstitutionalError(
                     f"ProofGraph: node {node.obligation_id} references unknown predecessor(s) {sorted(unknown_predecessors)}"
                 )
+        self._check_acyclic()
+
+    def _check_acyclic(self) -> None:
+        # Self-predecessors are already rejected by ProofGraphNode.validate();
+        # a multi-node cycle (A -> B -> A) passes that check but still has no
+        # finite predecessor depth, which the frozen falsification-topology
+        # partial order (G2-00 SS11.1) requires. Standard three-colour DFS.
+        by_id = {node.obligation_id: node for node in self.nodes}
+        WHITE, GRAY, BLACK = 0, 1, 2
+        color: dict[str, int] = {node.obligation_id: WHITE for node in self.nodes}
+
+        def visit(node_id: str, path: list[str]) -> None:
+            color[node_id] = GRAY
+            for pred_id in by_id[node_id].predecessor_obligation_ids:
+                if color[pred_id] == GRAY:
+                    cycle = " -> ".join(path[path.index(pred_id):] + [pred_id])
+                    raise ConstitutionalError(f"ProofGraph: predecessor cycle detected: {cycle}")
+                if color[pred_id] == WHITE:
+                    visit(pred_id, path + [pred_id])
+            color[node_id] = BLACK
+
+        for node in self.nodes:
+            if color[node.obligation_id] == WHITE:
+                visit(node.obligation_id, [node.obligation_id])
 
     def is_fully_proven(self) -> bool:
         """A terminated campaign missing any required proof is NOT_PROVEN
@@ -1572,7 +1687,7 @@ class ExternalAssuranceBinding:
             campaign_id=raw["campaign_id"],
             campaign_generation=raw["campaign_generation"],
             milestone_id=raw["milestone_id"],
-            obligation_ids=tuple(raw["obligation_ids"]),
+            obligation_ids=_expect_list_of_str(raw["obligation_ids"], "obligation_ids", "ExternalAssuranceBinding"),
             supplied_copy=ExternalAssuranceCopy.from_dict(raw["supplied_copy"]),
             retained_copy=ExternalAssuranceCopy.from_dict(raw["retained_copy"]),
         )
@@ -1604,6 +1719,15 @@ class QualificationPackage:
         _nonempty_str(self.proof_graph_digest, "proof_graph_digest", "QualificationPackage")
         for binding in self.assurance_bindings:
             binding.validate()
+            # G2-00 SS11.2 binds assurance to an exact campaign; a binding
+            # whose own campaign_id differs from this package's is evidence
+            # for a *different* campaign's qualification, not this one's,
+            # regardless of how well-formed the binding itself is.
+            if binding.campaign_id != self.campaign_id:
+                raise ConstitutionalError(
+                    f"QualificationPackage: assurance binding {binding.assurance_type!r} campaign_id "
+                    f"{binding.campaign_id!r} does not match package campaign_id {self.campaign_id!r}"
+                )
         # Missing expected assurance -> NOT_PROVEN (G2-00 SS11.2): every
         # required type must have at least one bound copy pair present.
         bound_types = {b.assurance_type for b in self.assurance_bindings}
@@ -1632,7 +1756,7 @@ class QualificationPackage:
             campaign_id=raw["campaign_id"],
             proof_graph_digest=raw["proof_graph_digest"],
             assurance_bindings=tuple(ExternalAssuranceBinding.from_dict(b) for b in raw["assurance_bindings"]),
-            required_assurance_types=tuple(raw["required_assurance_types"]),
+            required_assurance_types=_expect_list_of_str(raw["required_assurance_types"], "required_assurance_types", "QualificationPackage"),
         )
 
     @classmethod
@@ -1703,58 +1827,142 @@ class ChronicleEvent:
 # G2-02 deliverable: `AUTHORITY_TRANSFER_STABILIZATION_POLICY` schema
 # (G2-00 SS15 governs the staged-authority-transfer behaviour this policy
 # will later gate; G2-02's scope is the schema, not the transfer runtime).
+#
+# G2-00 SS15's frozen lifecycle, verbatim:
+#   PREPARED -> STAGED -> SOFT_COMMITTED -> STABILIZING ->
+#   STABILIZATION_PROVEN -> IRREVERSIBLY_COMMITTED
+# "Every transfer has a rehearsed abort path before its commit boundary" and
+# a failed stabilization must "fence the new owner, reconcile state, and
+# reinstate the previous implementation under a fresh authority generation"
+# — ABORTED is that path, reachable from every non-terminal stage up to and
+# including STABILIZATION_PROVEN (the last stage before the irreversible
+# commit boundary), but never from IRREVERSIBLY_COMMITTED itself.
 class AuthorityTransferStage(str, Enum):
-    PROPOSED = "PROPOSED"
+    PREPARED = "PREPARED"
+    STAGED = "STAGED"
+    SOFT_COMMITTED = "SOFT_COMMITTED"
     STABILIZING = "STABILIZING"
-    STABLE = "STABLE"
-    ROLLED_BACK = "ROLLED_BACK"
-    COMPLETE = "COMPLETE"
+    STABILIZATION_PROVEN = "STABILIZATION_PROVEN"
+    IRREVERSIBLY_COMMITTED = "IRREVERSIBLY_COMMITTED"
+    ABORTED = "ABORTED"
 
 
 _AUTHORITY_TRANSFER_ALLOWED_TRANSITIONS: dict[AuthorityTransferStage, frozenset[AuthorityTransferStage]] = {
-    AuthorityTransferStage.PROPOSED: frozenset({AuthorityTransferStage.STABILIZING, AuthorityTransferStage.ROLLED_BACK}),
-    AuthorityTransferStage.STABILIZING: frozenset({AuthorityTransferStage.STABLE, AuthorityTransferStage.ROLLED_BACK}),
-    AuthorityTransferStage.STABLE: frozenset({AuthorityTransferStage.COMPLETE, AuthorityTransferStage.ROLLED_BACK}),
-    AuthorityTransferStage.ROLLED_BACK: frozenset(),
-    AuthorityTransferStage.COMPLETE: frozenset(),
+    AuthorityTransferStage.PREPARED: frozenset({AuthorityTransferStage.STAGED, AuthorityTransferStage.ABORTED}),
+    AuthorityTransferStage.STAGED: frozenset({AuthorityTransferStage.SOFT_COMMITTED, AuthorityTransferStage.ABORTED}),
+    AuthorityTransferStage.SOFT_COMMITTED: frozenset({AuthorityTransferStage.STABILIZING, AuthorityTransferStage.ABORTED}),
+    AuthorityTransferStage.STABILIZING: frozenset({AuthorityTransferStage.STABILIZATION_PROVEN, AuthorityTransferStage.ABORTED}),
+    AuthorityTransferStage.STABILIZATION_PROVEN: frozenset(
+        {AuthorityTransferStage.IRREVERSIBLY_COMMITTED, AuthorityTransferStage.ABORTED}
+    ),
+    AuthorityTransferStage.IRREVERSIBLY_COMMITTED: frozenset(),
+    AuthorityTransferStage.ABORTED: frozenset(),
 }
+
+
+# The 8 mandatory stabilization-evidence categories G2-00 SS15 names,
+# verbatim: "required real operations, Chronicle events, induced failure,
+# recovery result, external checkpoint, Observer predicates, abort/
+# reinstatement conditions and irreversible-commit conditions."
+STABILIZATION_EVIDENCE_CATEGORIES: "frozenset[str]" = frozenset(
+    {
+        "real_operations",
+        "chronicle_events",
+        "induced_failure",
+        "recovery_result",
+        "external_checkpoint",
+        "observer_predicates",
+        "abort_reinstatement_conditions",
+        "irreversible_commit_conditions",
+    }
+)
 
 
 @dataclass(frozen=True)
 class AuthorityTransferStabilizationPolicy:
-    """`AUTHORITY_TRANSFER_STABILIZATION_POLICY` (G2-02 deliverable): the
-    minimum stabilization window and rollback conditions a staged authority
-    transfer must satisfy before advancing stage."""
+    """`AUTHORITY_TRANSFER_STABILIZATION_POLICY` (G2-02 deliverable, G2-00
+    SS15): defines the required real operations, Chronicle events, induced
+    failure, recovery result, external checkpoint, Observer predicates,
+    abort/reinstatement conditions and irreversible-commit conditions a
+    staged authority transfer must satisfy — not merely an observation
+    count, which cannot represent any of those eight mandatory proofs."""
 
     policy_generation: int
-    minimum_stabilization_observations: int
-    required_rollback_conditions: tuple[str, ...]
+    required_real_operations: tuple[str, ...]
+    required_chronicle_events: tuple[str, ...]
+    required_induced_failure_scenarios: tuple[str, ...]
+    required_recovery_results: tuple[str, ...]
+    required_external_checkpoints: tuple[str, ...]
+    required_observer_predicates: tuple[str, ...]
+    abort_reinstatement_conditions: tuple[str, ...]
+    irreversible_commit_conditions: tuple[str, ...]
 
-    _EXPECTED_KEYS = frozenset({"policy_generation", "minimum_stabilization_observations", "required_rollback_conditions"})
+    _EXPECTED_KEYS = frozenset(
+        {
+            "policy_generation",
+            "required_real_operations",
+            "required_chronicle_events",
+            "required_induced_failure_scenarios",
+            "required_recovery_results",
+            "required_external_checkpoints",
+            "required_observer_predicates",
+            "abort_reinstatement_conditions",
+            "irreversible_commit_conditions",
+        }
+    )
 
     def validate(self) -> None:
         _positive_int(self.policy_generation, "policy_generation", "AuthorityTransferStabilizationPolicy")
-        if not isinstance(self.minimum_stabilization_observations, int) or self.minimum_stabilization_observations < 1:
-            raise ConstitutionalError(
-                "AuthorityTransferStabilizationPolicy: minimum_stabilization_observations must be a positive integer"
-            )
-        if not self.required_rollback_conditions:
-            raise ConstitutionalError("AuthorityTransferStabilizationPolicy: required_rollback_conditions must be non-empty")
+        for field in (
+            "required_real_operations",
+            "required_chronicle_events",
+            "required_induced_failure_scenarios",
+            "required_recovery_results",
+            "required_external_checkpoints",
+            "required_observer_predicates",
+            "abort_reinstatement_conditions",
+            "irreversible_commit_conditions",
+        ):
+            if not getattr(self, field):
+                raise ConstitutionalError(f"AuthorityTransferStabilizationPolicy.{field}: must be non-empty")
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "policy_generation": self.policy_generation,
-            "minimum_stabilization_observations": self.minimum_stabilization_observations,
-            "required_rollback_conditions": list(self.required_rollback_conditions),
+            "required_real_operations": list(self.required_real_operations),
+            "required_chronicle_events": list(self.required_chronicle_events),
+            "required_induced_failure_scenarios": list(self.required_induced_failure_scenarios),
+            "required_recovery_results": list(self.required_recovery_results),
+            "required_external_checkpoints": list(self.required_external_checkpoints),
+            "required_observer_predicates": list(self.required_observer_predicates),
+            "abort_reinstatement_conditions": list(self.abort_reinstatement_conditions),
+            "irreversible_commit_conditions": list(self.irreversible_commit_conditions),
         }
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> "AuthorityTransferStabilizationPolicy":
         _reject_unknown_keys(raw, cls._EXPECTED_KEYS, "AuthorityTransferStabilizationPolicy")
+        name = "AuthorityTransferStabilizationPolicy"
         return cls(
             policy_generation=raw["policy_generation"],
-            minimum_stabilization_observations=raw["minimum_stabilization_observations"],
-            required_rollback_conditions=tuple(raw["required_rollback_conditions"]),
+            required_real_operations=_expect_list_of_str(raw["required_real_operations"], "required_real_operations", name),
+            required_chronicle_events=_expect_list_of_str(raw["required_chronicle_events"], "required_chronicle_events", name),
+            required_induced_failure_scenarios=_expect_list_of_str(
+                raw["required_induced_failure_scenarios"], "required_induced_failure_scenarios", name
+            ),
+            required_recovery_results=_expect_list_of_str(raw["required_recovery_results"], "required_recovery_results", name),
+            required_external_checkpoints=_expect_list_of_str(
+                raw["required_external_checkpoints"], "required_external_checkpoints", name
+            ),
+            required_observer_predicates=_expect_list_of_str(
+                raw["required_observer_predicates"], "required_observer_predicates", name
+            ),
+            abort_reinstatement_conditions=_expect_list_of_str(
+                raw["abort_reinstatement_conditions"], "abort_reinstatement_conditions", name
+            ),
+            irreversible_commit_conditions=_expect_list_of_str(
+                raw["irreversible_commit_conditions"], "irreversible_commit_conditions", name
+            ),
         )
 
 
@@ -1765,10 +1973,18 @@ class AuthorityTransferRecord:
     to_authority_ref: str
     stage: AuthorityTransferStage
     stabilization_policy_generation: int
-    observations: int
+    # category name (from STABILIZATION_EVIDENCE_CATEGORIES) -> evidence refs
+    stabilization_evidence: dict[str, tuple[str, ...]]
 
     _EXPECTED_KEYS = frozenset(
-        {"transfer_id", "from_authority_ref", "to_authority_ref", "stage", "stabilization_policy_generation", "observations"}
+        {
+            "transfer_id",
+            "from_authority_ref",
+            "to_authority_ref",
+            "stage",
+            "stabilization_policy_generation",
+            "stabilization_evidence",
+        }
     )
 
     def validate(self) -> None:
@@ -1778,18 +1994,38 @@ class AuthorityTransferRecord:
         if self.from_authority_ref == self.to_authority_ref:
             raise ConstitutionalError(f"AuthorityTransferRecord {self.transfer_id}: from/to authority must differ")
         _positive_int(self.stabilization_policy_generation, "stabilization_policy_generation", "AuthorityTransferRecord")
-        if not isinstance(self.observations, int) or isinstance(self.observations, bool) or self.observations < 0:
-            raise ConstitutionalError(f"AuthorityTransferRecord {self.transfer_id}: observations must be a non-negative integer")
+        unknown_categories = set(self.stabilization_evidence) - STABILIZATION_EVIDENCE_CATEGORIES
+        if unknown_categories:
+            raise ConstitutionalError(
+                f"AuthorityTransferRecord {self.transfer_id}: unknown stabilization_evidence categor(y/ies) {sorted(unknown_categories)}"
+            )
+        for category, refs in self.stabilization_evidence.items():
+            if not refs:
+                raise ConstitutionalError(
+                    f"AuthorityTransferRecord {self.transfer_id}: stabilization_evidence[{category!r}] must be non-empty when present"
+                )
 
     def transition(self, new_stage: AuthorityTransferStage, *, policy: AuthorityTransferStabilizationPolicy) -> "AuthorityTransferRecord":
         if new_stage not in _AUTHORITY_TRANSFER_ALLOWED_TRANSITIONS[self.stage]:
             raise ConstitutionalError(
                 f"AuthorityTransferRecord {self.transfer_id}: illegal transition {self.stage.value}->{new_stage.value}"
             )
-        if new_stage == AuthorityTransferStage.STABLE and self.observations < policy.minimum_stabilization_observations:
+        if policy.policy_generation != self.stabilization_policy_generation:
             raise ConstitutionalError(
-                f"AuthorityTransferRecord {self.transfer_id}: below minimum_stabilization_observations for STABLE"
+                f"AuthorityTransferRecord {self.transfer_id}: policy binds a different stabilization_policy_generation"
             )
+        if new_stage == AuthorityTransferStage.STABILIZATION_PROVEN:
+            # Every one of the eight mandatory categories G2-00 SS15 names
+            # must have real, non-empty evidence bound — an arbitrary
+            # observation count cannot substitute for any of them.
+            missing = STABILIZATION_EVIDENCE_CATEGORIES - {
+                cat for cat, refs in self.stabilization_evidence.items() if refs
+            }
+            if missing:
+                raise ConstitutionalError(
+                    f"AuthorityTransferRecord {self.transfer_id}: STABILIZATION_PROVEN requires evidence for "
+                    f"categor(y/ies) {sorted(missing)}"
+                )
         from dataclasses import replace
 
         return replace(self, stage=new_stage)
@@ -1801,19 +2037,24 @@ class AuthorityTransferRecord:
             "to_authority_ref": self.to_authority_ref,
             "stage": self.stage.value,
             "stabilization_policy_generation": self.stabilization_policy_generation,
-            "observations": self.observations,
+            "stabilization_evidence": {k: list(v) for k, v in self.stabilization_evidence.items()},
         }
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> "AuthorityTransferRecord":
         _reject_unknown_keys(raw, cls._EXPECTED_KEYS, "AuthorityTransferRecord")
+        evidence_raw = raw["stabilization_evidence"]
+        if not isinstance(evidence_raw, dict):
+            raise ConstitutionalError("AuthorityTransferRecord.stabilization_evidence: must be a JSON object")
         return cls(
             transfer_id=raw["transfer_id"],
             from_authority_ref=raw["from_authority_ref"],
             to_authority_ref=raw["to_authority_ref"],
             stage=AuthorityTransferStage(raw["stage"]),
             stabilization_policy_generation=raw["stabilization_policy_generation"],
-            observations=raw["observations"],
+            stabilization_evidence={
+                k: _expect_list_of_str(v, k, "AuthorityTransferRecord.stabilization_evidence") for k, v in evidence_raw.items()
+            },
         )
 
 
@@ -1861,5 +2102,5 @@ class EscapeObservation:
             escape_class=EscapeClass(raw["escape_class"]),
             affected_generation=raw["affected_generation"],
             discovered_by=raw["discovered_by"],
-            bound_campaign_program_ids=tuple(raw["bound_campaign_program_ids"]),
+            bound_campaign_program_ids=_expect_list_of_str(raw["bound_campaign_program_ids"], "bound_campaign_program_ids", "EscapeObservation"),
         )

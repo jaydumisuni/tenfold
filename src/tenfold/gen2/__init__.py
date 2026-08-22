@@ -57,6 +57,7 @@ from .constitutional import (
     RequirementClass,
     RequirementClosureManifest,
     RuntimeObligation,
+    STABILIZATION_EVIDENCE_CATEGORIES,
 )
 
 __all__ = [
@@ -109,4 +110,5 @@ __all__ = [
     "RequirementClass",
     "RequirementClosureManifest",
     "RuntimeObligation",
+    "STABILIZATION_EVIDENCE_CATEGORIES",
 ]

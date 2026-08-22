@@ -41,6 +41,7 @@ from tenfold.gen2.constitutional import (
     Requirement,
     RequirementClass,
     RequirementClosureManifest,
+    STABILIZATION_EVIDENCE_CATEGORIES,
 )
 from tenfold.gen2.constitutional import _load_canonical_json
 
@@ -63,9 +64,43 @@ def _closure_manifest() -> RequirementClosureManifest:
 
 def _total_policy(*, exemptions: tuple[PolicyMutationExemption, ...] = ()) -> ConstitutionalPolicySet:
     req_to_obl = {rc: (ObligationClass(rc.value),) for rc in RequirementClass}
+    obl_to_predicates = {oc: (f"predicate-{oc.value}",) for oc in ObligationClass}
     obl_to_fals = {oc: FalsificationClass.STANDARD for oc in ObligationClass}
+    obl_to_routing = {oc: ("independent_authority_review",) for oc in ObligationClass}
     req_to_impact = {rc: (AmbiguityImpactDomain.ACCEPTANCE,) for rc in RequirementClass}
-    return ConstitutionalPolicySet(1, req_to_obl, obl_to_fals, req_to_impact, 1, "m" * 64, exemptions)
+    return ConstitutionalPolicySet(
+        1, req_to_obl, obl_to_predicates, obl_to_fals, obl_to_routing, req_to_impact, 1, "m" * 64, exemptions
+    )
+
+
+def _fully_covered_policy_closure(policy: ConstitutionalPolicySet) -> PolicyClosureManifest:
+    """A PolicyClosureManifest whose candidate_policy_ledger demonstrates a
+    weakening operator for every one of the five required policy fields, so
+    validate() passes the operator-coverage-totality check."""
+
+    ledger = tuple(
+        CandidatePolicyLedgerEntry(f"CH-{field}", field, PolicyMutationOperator.APPLICABILITY_NARROWING, "coverage demo", "reviewer")
+        for field in sorted(ConstitutionalPolicySet.REQUIRED_POLICY_FIELD_ROSTER)
+    )
+    return PolicyClosureManifest(policy.policy_generation, policy, ledger)
+
+
+def _stabilization_policy() -> AuthorityTransferStabilizationPolicy:
+    return AuthorityTransferStabilizationPolicy(
+        1,
+        ("real-op-1",),
+        ("chronicle-event-1",),
+        ("induced-failure-1",),
+        ("recovery-result-1",),
+        ("external-checkpoint-1",),
+        ("observer-predicate-1",),
+        ("abort-condition-1",),
+        ("irreversible-commit-condition-1",),
+    )
+
+
+def _full_stabilization_evidence() -> dict[str, tuple[str, ...]]:
+    return {category: (f"{category}-evidence",) for category in STABILIZATION_EVIDENCE_CATEGORIES}
 
 
 # ============================================================================
@@ -142,6 +177,17 @@ def test_g2_02_canonical_json_rejects_duplicate_keys() -> None:
         _load_canonical_json('{"a": 1, "a": 2}')
 
 
+def test_g2_02_string_scalar_rejected_for_array_field() -> None:
+    # The exact bug named by review: `tuple("T-1")` silently yields
+    # `('T', '-', '1')` for a bare Python tuple() call, which is exactly the
+    # lossy decoding G2-00 SS7.1 requires closed schemas to reject.
+    rcm = _closure_manifest()
+    bad = dict(rcm.to_dict())
+    bad["reviewers"] = "alice"
+    with pytest.raises(ConstitutionalError, match="must be a JSON array"):
+        RequirementClosureManifest.from_dict(bad)
+
+
 # ============================================================================
 # Classification Closure
 # ============================================================================
@@ -169,6 +215,16 @@ def test_g2_02_structural_floor_class_absent_from_semantic_classes_fails_closed(
     entry = ClassificationEntry("REQ-1", "alice", (RequirementClass.BEHAVIOUR,), (RequirementClass.SECURITY,), None)
     with pytest.raises(ConstitutionalError, match="absent from semantic classes"):
         entry.validate()
+
+
+def test_g2_02_classification_closure_lost_lineage_fails_closed() -> None:
+    # G2-00 SS6.2: classification evidence must survive merge/deduplication;
+    # a closure that reports lineage_preserved=False is reporting that this
+    # requirement was violated, not stating a benign metadata fact.
+    e1 = ClassificationEntry("REQ-1", "alice", (RequirementClass.BEHAVIOUR,), (), None)
+    cc = ClassificationClosure(1, "d" * 64, (e1,), False)
+    with pytest.raises(ConstitutionalError, match="lineage_preserved must be true"):
+        cc.validate()
 
 
 # ============================================================================
@@ -215,7 +271,9 @@ def test_g2_02_policy_set_total_mapping_validates() -> None:
     "mapping_name",
     [
         "requirement_class_to_obligation_classes",
+        "obligation_class_to_proof_event_predicates",
         "obligation_class_to_falsification_class",
+        "obligation_class_to_assurance_routing",
         "requirement_classification_to_ambiguity_impact_domains",
     ],
 )
@@ -246,15 +304,40 @@ def test_g2_02_non_weakenable_exemption_requires_distinct_attester_and_reviewer(
         exemption.validate()
 
 
-def test_g2_02_policy_closure_mutation_of_exempted_field_without_registered_exemption_fails_closed() -> None:
-    policy = _total_policy()  # no exemptions registered
-    exempted_by_claim_only = replace(policy)
-    change = CandidatePolicyLedgerEntry("CH-1", "some_field", PolicyMutationOperator.MEMBER_REMOVAL, "rationale", "reviewer")
-    # is_weakenable("some_field") is True here (no exemption registered means
-    # nothing is NON_WEAKENABLE), so this specific mutation is legitimately
-    # allowed; the fail-closed path is exercised by binding a mismatched
-    # closure_generation instead.
-    pcm = PolicyClosureManifest(2, policy, (change,))
+def test_g2_02_policy_closure_fully_covered_validates() -> None:
+    policy = _total_policy()
+    pcm = _fully_covered_policy_closure(policy)
+    pcm.validate()
+
+
+def test_g2_02_policy_closure_uncovered_field_fails_closed() -> None:
+    # G2-02 acceptance: "policy operator coverage is total or explicitly
+    # qualified by reviewed exemption." An empty candidate ledger and no
+    # exemptions means none of the five required fields have demonstrated
+    # coverage — this must reject, not pass by vacuous absence of
+    # counterexamples.
+    policy = _total_policy()
+    pcm = PolicyClosureManifest(1, policy, ())
+    with pytest.raises(ConstitutionalError, match="have neither a demonstrated"):
+        pcm.validate()
+
+
+def test_g2_02_policy_closure_exemption_satisfies_coverage_for_that_field() -> None:
+    exemption_field = sorted(ConstitutionalPolicySet.REQUIRED_POLICY_FIELD_ROSTER)[0]
+    exemption = PolicyMutationExemption(exemption_field, 1, "reason", "attester", "reviewer", ("ev",))
+    policy = _total_policy(exemptions=(exemption,))
+    other_fields = sorted(ConstitutionalPolicySet.REQUIRED_POLICY_FIELD_ROSTER - {exemption_field})
+    ledger = tuple(
+        CandidatePolicyLedgerEntry(f"CH-{f}", f, PolicyMutationOperator.APPLICABILITY_NARROWING, "coverage demo", "reviewer")
+        for f in other_fields
+    )
+    pcm = PolicyClosureManifest(1, policy, ledger)
+    pcm.validate()
+
+
+def test_g2_02_policy_closure_mismatched_generation_fails_closed() -> None:
+    policy = _total_policy()
+    pcm = replace(_fully_covered_policy_closure(policy), closure_generation=2)
     with pytest.raises(ConstitutionalError, match="policy.policy_generation must equal closure_generation"):
         pcm.validate()
 
@@ -325,6 +408,23 @@ def test_g2_02_proof_graph_self_predecessor_fails_closed() -> None:
         node.validate()
 
 
+def test_g2_02_proof_graph_multi_node_cycle_fails_closed() -> None:
+    # The exact escalation named by review: unknown/self checks pass A->B->A,
+    # but that graph has no finite predecessor depth.
+    a = ProofGraphNode("OB-A", ProofState.UNSATISFIED, FalsificationClass.STANDARD, (), ("OB-B",))
+    b = ProofGraphNode("OB-B", ProofState.UNSATISFIED, FalsificationClass.STANDARD, (), ("OB-A",))
+    pg = ProofGraph(1, "d" * 64, (a, b))
+    with pytest.raises(ConstitutionalError, match="predecessor cycle detected"):
+        pg.validate()
+
+
+def test_g2_02_proof_graph_dag_without_cycle_validates() -> None:
+    a = ProofGraphNode("OB-A", ProofState.UNSATISFIED, FalsificationClass.STANDARD, (), ())
+    b = ProofGraphNode("OB-B", ProofState.UNSATISFIED, FalsificationClass.STANDARD, (), ("OB-A",))
+    c = ProofGraphNode("OB-C", ProofState.UNSATISFIED, FalsificationClass.STANDARD, (), ("OB-A", "OB-B"))
+    ProofGraph(1, "d" * 64, (a, b, c)).validate()
+
+
 def test_g2_02_proof_graph_proven_requires_evidence() -> None:
     node = ProofGraphNode("OB-1", ProofState.PROVEN, FalsificationClass.STANDARD, (), ())
     with pytest.raises(ConstitutionalError, match="PROVEN requires non-empty evidence_refs"):
@@ -357,13 +457,13 @@ def test_g2_02_proof_graph_not_proven_is_terminal() -> None:
 # ============================================================================
 
 
-def _assurance_binding(*, mismatch: bool = False) -> ExternalAssuranceBinding:
+def _assurance_binding(*, mismatch: bool = False, campaign_id: str = "campaign-1") -> ExternalAssuranceBinding:
     supplied = ExternalAssuranceCopy(AssuranceCopySlot.SUPPLIED_TO_TENFOLD, "r" * 64, "s" * 64, "ExtAuth", 1)
     retained_digest = "x" * 64 if mismatch else "s" * 64
     retained = ExternalAssuranceCopy(
         AssuranceCopySlot.INDEPENDENTLY_RETAINED_BY_EXTERNAL_AUTHORITY, "r" * 64, retained_digest, "ExtAuth", 1
     )
-    return ExternalAssuranceBinding("independent_authority_review", "campaign-1", 1, "g2-02", ("OB-1",), supplied, retained)
+    return ExternalAssuranceBinding("independent_authority_review", campaign_id, 1, "g2-02", ("OB-1",), supplied, retained)
 
 
 def test_g2_02_external_assurance_reconciliation_mismatch_fails_closed() -> None:
@@ -394,6 +494,15 @@ def test_g2_02_qualification_package_satisfied_when_all_types_bound() -> None:
     qp.validate()
 
 
+def test_g2_02_qualification_package_binding_from_other_campaign_fails_closed() -> None:
+    # The exact escalation named by review: a well-formed binding for
+    # campaign-B must not satisfy campaign-A's qualification package.
+    binding = _assurance_binding(campaign_id="campaign-B")
+    qp = QualificationPackage(1, "campaign-A", "p" * 64, (binding,), ("independent_authority_review",))
+    with pytest.raises(ConstitutionalError, match="campaign_id .* does not match package campaign_id"):
+        qp.validate()
+
+
 # ============================================================================
 # Chronicle Event (schema only)
 # ============================================================================
@@ -417,23 +526,45 @@ def test_g2_02_chronicle_event_non_genesis_requires_previous_digest() -> None:
 
 
 def test_g2_02_authority_transfer_same_from_to_fails_closed() -> None:
-    record = AuthorityTransferRecord("X-1", "gen1", "gen1", AuthorityTransferStage.PROPOSED, 1, 0)
+    record = AuthorityTransferRecord("X-1", "gen1", "gen1", AuthorityTransferStage.PREPARED, 1, {})
     with pytest.raises(ConstitutionalError, match="from/to authority must differ"):
         record.validate()
 
 
-def test_g2_02_authority_transfer_below_minimum_observations_blocks_stable() -> None:
-    policy = AuthorityTransferStabilizationPolicy(1, 3, ("rollback_on_regression",))
-    record = AuthorityTransferRecord("X-1", "gen1", "gen2", AuthorityTransferStage.STABILIZING, 1, 2)
-    with pytest.raises(ConstitutionalError, match="below minimum_stabilization_observations"):
-        record.transition(AuthorityTransferStage.STABLE, policy=policy)
+def test_g2_02_authority_transfer_stabilization_proven_requires_all_evidence_categories() -> None:
+    policy = _stabilization_policy()
+    record = AuthorityTransferRecord("X-1", "gen1", "gen2", AuthorityTransferStage.STABILIZING, 1, {"real_operations": ("op-1",)})
+    with pytest.raises(ConstitutionalError, match="STABILIZATION_PROVEN requires evidence for categor"):
+        record.transition(AuthorityTransferStage.STABILIZATION_PROVEN, policy=policy)
 
 
-def test_g2_02_authority_transfer_rolled_back_is_terminal() -> None:
-    policy = AuthorityTransferStabilizationPolicy(1, 1, ("rollback_on_regression",))
-    record = AuthorityTransferRecord("X-1", "gen1", "gen2", AuthorityTransferStage.ROLLED_BACK, 1, 5)
+def test_g2_02_authority_transfer_stabilization_proven_with_full_evidence_succeeds() -> None:
+    policy = _stabilization_policy()
+    record = AuthorityTransferRecord("X-1", "gen1", "gen2", AuthorityTransferStage.STABILIZING, 1, _full_stabilization_evidence())
+    proven = record.transition(AuthorityTransferStage.STABILIZATION_PROVEN, policy=policy)
+    assert proven.stage == AuthorityTransferStage.STABILIZATION_PROVEN
+
+
+def test_g2_02_authority_transfer_irreversibly_committed_is_terminal() -> None:
+    policy = _stabilization_policy()
+    record = AuthorityTransferRecord("X-1", "gen1", "gen2", AuthorityTransferStage.IRREVERSIBLY_COMMITTED, 1, {})
     with pytest.raises(ConstitutionalError, match="illegal transition"):
-        record.transition(AuthorityTransferStage.STABILIZING, policy=policy)
+        record.transition(AuthorityTransferStage.ABORTED, policy=policy)
+
+
+def test_g2_02_authority_transfer_abort_reachable_before_commit_boundary() -> None:
+    # G2-00 SS15: "Every transfer has a rehearsed abort path before its
+    # commit boundary" — ABORTED must be reachable from STABILIZATION_PROVEN,
+    # the stage immediately before IRREVERSIBLY_COMMITTED.
+    policy = _stabilization_policy()
+    record = AuthorityTransferRecord("X-1", "gen1", "gen2", AuthorityTransferStage.STABILIZATION_PROVEN, 1, {})
+    aborted = record.transition(AuthorityTransferStage.ABORTED, policy=policy)
+    assert aborted.stage == AuthorityTransferStage.ABORTED
+
+
+def test_g2_02_authority_transfer_stabilization_policy_requires_all_eight_categories() -> None:
+    with pytest.raises(ConstitutionalError, match="required_chronicle_events: must be non-empty"):
+        AuthorityTransferStabilizationPolicy(1, ("op",), (), ("f",), ("r",), ("c",), ("o",), ("a",), ("i",)).validate()
 
 
 # ============================================================================
