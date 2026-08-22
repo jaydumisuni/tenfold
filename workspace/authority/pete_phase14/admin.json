@@ -1,0 +1,35 @@
+{
+  "schema": "tenfold.workspace-authority-binding.v1",
+  "observed_date": "2026-08-22",
+  "repository": "jaydumisuni/TTG-Admin-Console",
+  "pull_request": 17,
+  "base_branch": "main",
+  "base_sha": "34a80c91a3b4acfe0bd359b6833fc88e14549998",
+  "head_branch": "phase14-systems-pete-surface-20260818",
+  "head_sha": "efc76a5269232126911f4efd6d5ba88646458418",
+  "draft": true,
+  "mergeable": true,
+  "unresolved_review_threads": 0,
+  "changed_paths": [
+    "src/pete-systems-extension.js",
+    "src/phase14-entry.js",
+    "tests/pete-systems-phase14.test.mjs",
+    "tests/production-contract.test.mjs",
+    "wrangler.toml"
+  ],
+  "earned_evidence": [
+    "generation6_evidence_fenced_after_review_driven_candidate_move",
+    "external_review_detected_production_contract_still_pinned_to_entry_v3",
+    "production_contract_now_imports_phase14_entry_and_asserts_phase14_wrangle_entrypoint",
+    "existing_owner_bearer_clean_https_origin_fail_closed_correction_remains_bound"
+  ],
+  "pending_evidence": [
+    "generation7_corrected_head_source_regression",
+    "playwright_desktop_mobile_click_reload_offline_proof",
+    "same_origin_hunter_proxy_integration",
+    "final_exact_head_regression",
+    "independent_sergeant_review",
+    "external_review_reconciliation"
+  ],
+  "ship_authorized": false
+}
