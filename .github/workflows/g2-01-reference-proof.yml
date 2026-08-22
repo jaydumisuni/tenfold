@@ -79,63 +79,323 @@ jobs:
           LIVE_CONTAINER_IMAGE: mcr.microsoft.com/playwright/python:v1.57.0-amd64@sha256:8331696befd3ee8b5baefca428446345f548e415a2408fe1d3d1224e9d919682
           LIVE_CHECKOUT_ACTION: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
           LIVE_SETUP_PYTHON_ACTION: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
-          EXPECTED_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           LIVE_PYTHON_VERSION="$(python --version)"
           LIVE_PIP_VERSION="$(python -m pip --version | awk '{print $1" "$2}')"
           export LIVE_PYTHON_VERSION LIVE_PIP_VERSION
-          # This job's gen1-reference checkout exists only to support this
-          # validation; nothing downstream ever reads it again.
-          PYTHONPATH=candidate/src python - <<'PY'
+          # This script is deliberately NOT imported from candidate/src and
+          # does not import tenfold.gen2.reference at all: it is a separate,
+          # independently-implemented validator (stdlib-only) that reads
+          # only candidate DATA files (the bundle JSON, corpus manifests,
+          # proof text) plus the frozen gen1-reference checkout on disk. A
+          # candidate cannot defeat this gate by shipping a permissive
+          # reference.py, because this gate never executes any file from
+          # the candidate tree - only Python source embedded directly in
+          # this trusted workflow file.
+          python - <<'PY'
+          import hashlib
+          import json
           import os
-          from pathlib import Path
-          from tenfold.gen2.reference import Gen1ReferenceBundle
-          root = Path('candidate')
-          bundle = Gen1ReferenceBundle.load(root / 'docs/gen2/g2-01-gen1-reference-bundle.json')
-          bundle.validate(root, require_proven=False, expected_candidate_sha=os.environ.get('EXPECTED_CANDIDATE_SHA') or None)
-          bundle.validate_reference_tree(root, Path('gen1-reference'))
-          assert bundle.migration_reference_sha == '05aa384a34a650e677970904079a985ec8b26d90'
-          assert bundle.migration_reference_tree_sha == 'c7c130b573180e74438d70b6e11c17dd9bade648'
+          import re
+          from pathlib import Path, PurePosixPath
 
-          # Cross-check every recorded environment identity against what is
-          # actually running/pinned in this job, not merely the bundle's own
-          # internal self-consistency (which a candidate could tamper with
-          # coherently while never booting the environment it claims).
+          SHA1 = re.compile(r"^[0-9a-f]{40}$")
+          SHA256 = re.compile(r"^[0-9a-f]{64}$")
+          PYVER = re.compile(r"^Python [0-9]+\.[0-9]+\.[0-9]+$")
+          PINNED = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$")
+
+          MIGRATION_SHA = "05aa384a34a650e677970904079a985ec8b26d90"
+          MIGRATION_TREE = "c7c130b573180e74438d70b6e11c17dd9bade648"
+          BUNDLE_ARTIFACT_PATH = "docs/gen2/g2-01-gen1-reference-bundle.json"
+          PROOF_ARTIFACT_PATH = "docs/gen2/g2-01-cold-boot-proof.txt"
+
+          REQUIRED_COMPONENT_ROSTER = {
+              "Foreman", "derivation assurance", "scheduler", "campaign state",
+              "leases/fencing", "worker/task/evidence contracts", "Assurance Matrix integration",
+              "Council", "Repository Facility", "Oracle Facility", "Ptah Facility",
+              "recovery", "Operating Methods", "Project Method Profiles",
+          }
+          REQUIRED_COVERAGE_AREAS = {
+              "campaign derivation/frontier", "worker/task/evidence contracts", "scheduling/resource control",
+              "persistence/leases/recovery", "facilities", "assurance/council", "operating methods/project profiles",
+              "requirement/classification/policy closure", "obligation IR/proof-carrying compilation",
+              "Rust constitutional authority", "independent verifier", "Chronicle external anchoring/effect census",
+              "Root/issuing authority causal planes", "self-construction minimum/preferred runtime",
+          }
+          TRUSTED_SUBSTRATE = {
+              "sergeant_sha": "4a277cc5950aa08a98157b950c96fb88f2178c79",
+              "python_shared_library_sha256": "ba4450817186fbe1e3c477f6aefeee7c353cba3593cc9950382ad9d1f5e62896",
+              "python_shared_library_loader_path": "/usr/local/lib/libpython3.11.so.1.0",
+              "chromium_executable": "/ms-playwright/chromium-1200/chrome-linux64/chrome",
+              "chromium_sha256": "2e61bc3fd990bd4d7b419ef6b6303c67aaed683e5b83b3b25e416f015f343209",
+              "chromium_version": "Google Chrome for Testing 143.0.7499.4 ",
+          }
+          PROOF_HEADER_KEYS = (
+              "status", "migration_reference_sha", "migration_reference_tree_sha", "platform",
+              "container_image", "checkout_action", "setup_python_action", "python_version", "pip_version",
+              "python_shared_library_sha256", "python_shared_library_loader_path", "chromium_executable",
+              "chromium_sha256", "chromium_version", "sergeant_sha", "candidate_sha",
+          )
+
+          def fail(msg):
+              raise SystemExit(f"CANDIDATE VALIDATION FAILED: {msg}")
+
+          def file_digest(path):
+              h = hashlib.sha256()
+              with path.open("rb") as fh:
+                  for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          def canonical_digest(value):
+              raw = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+              return hashlib.sha256(raw).hexdigest()
+
+          def rel_safe(root, value):
+              pure = PurePosixPath(value)
+              if pure.is_absolute() or ".." in pure.parts or not pure.parts:
+                  fail(f"unsafe path: {value!r}")
+              p = (root / Path(*pure.parts)).resolve()
+              if p != root and root not in p.parents:
+                  fail(f"path escapes root: {value!r}")
+              return p
+
+          def compute_candidate_content_digest(candidate_root):
+              bundle_path = candidate_root / BUNDLE_ARTIFACT_PATH
+              raw = json.loads(bundle_path.read_text(encoding="utf-8"))
+              normalized = dict(raw)
+              normalized["cold_boot_status"] = "PENDING"
+              normalized["cold_boot_proof"] = None
+              normalized["proven_candidate_content_digest"] = None
+              bundle_digest = canonical_digest(normalized)
+              excluded = {BUNDLE_ARTIFACT_PATH, PROOF_ARTIFACT_PATH}
+              entries = []
+              for path in sorted(candidate_root.rglob("*")):
+                  if path.is_dir():
+                      continue
+                  rel = path.relative_to(candidate_root).as_posix()
+                  if rel == ".git" or rel.startswith(".git/"):
+                      continue
+                  if rel in excluded:
+                      continue
+                  entries.append(f"{file_digest(path)}  {rel}")
+              tree_digest = canonical_digest(entries)
+              return canonical_digest({"bundle": bundle_digest, "tree": tree_digest})
+
+          def parse_proof(text):
+              lines = text.splitlines()
+              if not lines or lines[0] != "TENFOLD_G2_01_COLD_BOOT_PROOF_V1":
+                  fail("proof artifact has wrong header")
+              if len(lines) < 1 + len(PROOF_HEADER_KEYS):
+                  fail("proof artifact missing required header fields")
+              fields = {}
+              for line in lines[1:1 + len(PROOF_HEADER_KEYS)]:
+                  key, sep, value = line.partition("=")
+                  if not sep or key not in PROOF_HEADER_KEYS or key in fields:
+                      fail(f"proof artifact malformed at field {key!r}")
+                  fields[key] = value
+              if set(fields) != set(PROOF_HEADER_KEYS):
+                  fail("proof artifact missing required header fields")
+              fields["_remainder"] = "\n".join(lines[1 + len(PROOF_HEADER_KEYS):])
+              return fields
+
+          candidate = Path("candidate").resolve()
+          reference = Path("gen1-reference").resolve()
+
+          bundle_path = candidate / BUNDLE_ARTIFACT_PATH
+          raw = json.loads(bundle_path.read_text(encoding="utf-8"))
+
+          if raw.get("schema") != "tenfold.gen1_reference.v2":
+              fail("unsupported schema")
+          if raw.get("migration_reference_sha") != MIGRATION_SHA:
+              fail("migration_reference_sha mismatch")
+          if raw.get("migration_reference_tree_sha") != MIGRATION_TREE:
+              fail("migration_reference_tree_sha mismatch")
+
+          dependency_lock = raw.get("dependency_lock") or []
+          if not dependency_lock:
+              fail("dependency_lock missing")
+          if canonical_digest(list(dependency_lock)) != raw.get("dependency_lock_digest"):
+              fail("dependency_lock_digest mismatch")
+
+          env = raw.get("environment", {})
+          for req in ("container_image", "platform", "checkout_action", "setup_python_action", "python_version", "pip_version"):
+              if req not in env:
+                  fail(f"environment.{req} missing")
+          image, sep, digest = env["container_image"].partition("@sha256:")
+          if not image or sep != "@sha256:" or not SHA256.fullmatch(digest):
+              fail("environment.container_image not content-addressed")
+          if not PINNED.fullmatch(env["checkout_action"]) or not PINNED.fullmatch(env["setup_python_action"]):
+              fail("environment action(s) not pinned to exact commit")
+          if not PYVER.fullmatch(env["python_version"]):
+              fail("environment.python_version malformed")
+          if not (env["pip_version"].startswith("pip ") and len(env["pip_version"].split()) == 2):
+              fail("environment.pip_version malformed")
+          ordered_env = {k: env[k] for k in sorted(env)}
+          expected_env_digest = canonical_digest({"environment": ordered_env, "dependency_lock": list(dependency_lock)})
+          if expected_env_digest != raw.get("reproducible_environment_digest"):
+              fail("reproducible_environment_digest mismatch")
+
+          def check_binding(field_name):
+              binding = raw.get(field_name)
+              if not binding:
+                  fail(f"{field_name} binding missing")
+              path = rel_safe(candidate, binding["path"])
+              if not path.is_file():
+                  fail(f"{field_name} artifact missing: {binding['path']}")
+              actual = file_digest(path)
+              if actual != binding["sha256"]:
+                  fail(f"{field_name} digest mismatch")
+              return path
+
+          reference_corpus_path = check_binding("reference_corpus")
+          semantic_corpus_path = check_binding("semantic_corpus")
+          fixture_corpus_path = check_binding("qualification_fixture_corpus")
+
+          def check_manifest(manifest_path):
+              text = manifest_path.read_text(encoding="utf-8")
+              seen = set()
+              count = 0
+              for line_no, line in enumerate(text.splitlines(), start=1):
+                  if not line:
+                      continue
+                  count += 1
+                  try:
+                      digest_, rel = line.split("  ", 1)
+                  except ValueError:
+                      fail(f"malformed manifest line {line_no} in {manifest_path.name}")
+                      return
+                  if not SHA256.fullmatch(digest_):
+                      fail(f"malformed digest at line {line_no} in {manifest_path.name}")
+                  if rel in seen:
+                      fail(f"duplicate corpus path: {rel}")
+                  seen.add(rel)
+                  target = rel_safe(reference, rel)
+                  if not target.is_file():
+                      fail(f"frozen reference artifact missing: {rel}")
+                  if file_digest(target) != digest_:
+                      fail(f"frozen reference artifact digest mismatch: {rel}")
+              if count == 0:
+                  fail(f"{manifest_path.name} is empty")
+
+          check_manifest(reference_corpus_path)
+          check_manifest(semantic_corpus_path)
+          check_manifest(fixture_corpus_path)
+
+          status = raw.get("cold_boot_status")
+          proof = raw.get("cold_boot_proof")
+          proven_digest = raw.get("proven_candidate_content_digest")
+          if status not in ("PENDING", "PASS"):
+              fail(f"invalid cold_boot_status {status!r}")
+          if status == "PASS":
+              if proof is None:
+                  fail("PASS without bound proof artifact")
+              if proven_digest is None or not SHA256.fullmatch(proven_digest):
+                  fail("PASS without well-formed proven_candidate_content_digest")
+              proof_path = check_binding("cold_boot_proof")
+              fields = parse_proof(proof_path.read_text(encoding="utf-8"))
+              if fields["status"] != "PASS":
+                  fail("proof artifact does not declare status=PASS")
+              if fields["migration_reference_sha"] != raw["migration_reference_sha"]:
+                  fail("proof migration_reference_sha mismatch")
+              if fields["migration_reference_tree_sha"] != raw["migration_reference_tree_sha"]:
+                  fail("proof migration_reference_tree_sha mismatch")
+              for f in ("platform", "container_image", "checkout_action", "setup_python_action", "python_version", "pip_version"):
+                  if fields[f] != env[f]:
+                      fail(f"proof environment.{f} mismatch")
+              for f, expected in TRUSTED_SUBSTRATE.items():
+                  if fields[f] != expected:
+                      fail(f"proof {f} does not match trusted substrate")
+              if not SHA1.fullmatch(fields["candidate_sha"]):
+                  fail("proof candidate_sha malformed")
+              actual_content_digest = compute_candidate_content_digest(candidate)
+              if actual_content_digest != proven_digest:
+                  fail("candidate content digest does not match bundle proven_candidate_content_digest")
+              remainder = fields["_remainder"]
+              if re.search(r"[0-9]+ skipped", remainder):
+                  fail("proof records a disallowed skipped test")
+              if not re.search(r"(?m)^[0-9]+ passed in ", remainder):
+                  fail("proof lacks a passing suite result line")
+              for artifact_name, binding_field in (
+                  ("reference_corpus", "reference_corpus"), ("semantic_corpus", "semantic_corpus"),
+                  ("qualification_fixture_corpus", "qualification_fixture_corpus"),
+              ):
+                  filename = PurePosixPath(raw[binding_field]["path"]).name
+                  m = re.search(rf"(?m)^([0-9a-f]{{64}})  candidate/.*/{re.escape(filename)}$", remainder)
+                  if not m:
+                      fail(f"proof missing manifest-digest line for {artifact_name}")
+                  if m.group(1) != raw[binding_field]["sha256"]:
+                      fail(f"proof manifest-digest line for {artifact_name} mismatch")
+          elif proof is not None:
+              fail("PENDING must not carry a proof artifact")
+          elif proven_digest is not None:
+              fail("PENDING must not carry a proven_candidate_content_digest")
+
+          names = [d.get("component") for d in raw.get("dispositions", [])]
+          if len(names) != len(set(names)) or not names:
+              fail("dispositions duplicate/empty")
+          for d in raw["dispositions"]:
+              if not (d.get("component") and d.get("disposition") and d.get("source_refs") and d.get("rationale") and d.get("target")):
+                  fail(f"incomplete disposition: {d.get('component')}")
+          missing = REQUIRED_COMPONENT_ROSTER - set(names)
+          if missing:
+              fail(f"dispositions roster missing: {sorted(missing)}")
+
+          areas = [a.get("semantic_area") for a in raw.get("reference_coverage", [])]
+          if len(areas) != len(set(areas)):
+              fail("reference_coverage duplicate areas")
+          missing_areas = REQUIRED_COVERAGE_AREAS - set(areas)
+          if missing_areas:
+              fail(f"reference_coverage roster missing: {sorted(missing_areas)}")
+
+          interim = raw.get("interim_root", {})
+          required_denials = {"campaign_modify_root", "campaign_widen_root_authority", "gen2_self_mint_before_g2_17"}
+          if not required_denials <= set(interim.get("denied_actions", [])):
+              fail("interim_root missing required denials")
+          if interim.get("generation", 0) < 1 or not interim.get("root_id") or not interim.get("provenance"):
+              fail("interim_root incomplete")
+
+          if not raw.get("authority_refs"):
+              fail("authority_refs empty")
+          if not all(MIGRATION_SHA in ref for ref in raw["authority_refs"]):
+              fail("authority_refs do not all cite the live canonical reference")
+
+          gen = raw.get("intentional_divergence_register_generation", 0)
+          if gen < 1:
+              fail("intentional_divergence_register_generation invalid")
+          ids, cases = set(), set()
+          for item in raw.get("intentional_divergences", []):
+              if item.get("register_generation") != gen:
+                  fail(f"divergence generation mismatch: {item.get('divergence_id')}")
+              if item.get("divergence_id") in ids or item.get("case_id") in cases:
+                  fail("duplicate divergence id/case")
+              ids.add(item.get("divergence_id"))
+              cases.add(item.get("case_id"))
+              if item.get("reference_digest") == item.get("candidate_digest"):
+                  fail(f"divergence waives equal outputs: {item.get('divergence_id')}")
+
           live = {
-              'platform': os.environ['LIVE_PLATFORM'],
-              'container_image': os.environ['LIVE_CONTAINER_IMAGE'],
-              'checkout_action': os.environ['LIVE_CHECKOUT_ACTION'],
-              'setup_python_action': os.environ['LIVE_SETUP_PYTHON_ACTION'],
-              'python_version': os.environ['LIVE_PYTHON_VERSION'],
-              'pip_version': os.environ['LIVE_PIP_VERSION'],
+              "platform": os.environ["LIVE_PLATFORM"],
+              "container_image": os.environ["LIVE_CONTAINER_IMAGE"],
+              "checkout_action": os.environ["LIVE_CHECKOUT_ACTION"],
+              "setup_python_action": os.environ["LIVE_SETUP_PYTHON_ACTION"],
+              "python_version": os.environ["LIVE_PYTHON_VERSION"],
+              "pip_version": os.environ["LIVE_PIP_VERSION"],
           }
           for field, value in live.items():
-              declared = getattr(bundle.environment, field)
-              assert declared == value, f"bundle.environment.{field} {declared!r} != live {value!r}"
+              if env[field] != value:
+                  fail(f"environment.{field} {env[field]!r} != live {value!r}")
 
-          # Cross-check bundle.dependency_lock against the environment that
-          # was actually installed and proven (not the static pip-freeze.txt
-          # file alone, which a candidate could leave stale while editing the
-          # JSON's own dependency_lock array and recomputing its digests).
           installed_lock = sorted(
-              (line.strip() for line in Path('/tmp/g2-01-installed-lock.txt').read_text().splitlines() if line.strip()),
+              (l.strip() for l in Path("/tmp/g2-01-installed-lock.txt").read_text().splitlines() if l.strip()),
               key=str.casefold,
           )
-          declared_lock = sorted(bundle.dependency_lock, key=str.casefold)
-          assert installed_lock == declared_lock, "bundle.dependency_lock does not match the actually installed environment"
+          declared_lock = sorted(dependency_lock, key=str.casefold)
+          if installed_lock != declared_lock:
+              fail("dependency_lock does not match the actually installed environment")
 
-          # The finalized bundle legitimately transitions PENDING -> PASS once
-          # a bound proof artifact + proven_candidate_sha are committed;
-          # Gen1ReferenceBundle.validate() above already enforces the
-          # proof-artifact binding, proof-content cross-check (including that
-          # the proof's own candidate_sha matches both the bundle's trusted
-          # proven_candidate_sha and, when EXPECTED_CANDIDATE_SHA is set, this
-          # job's live candidate identity), and required-roster completeness
-          # for both dispositions and reference_coverage. This lane must
-          # therefore accept and re-verify either lifecycle state rather than
-          # only ever admitting the pre-proof PENDING state.
-          assert bundle.cold_boot_status in ('PENDING', 'PASS')
+          print("CANDIDATE VALIDATION PASSED (independently implemented, no import of candidate-authored code)")
           PY
 
   # This job never checks out or executes anything from the candidate tree

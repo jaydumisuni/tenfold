@@ -4,17 +4,20 @@ from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
 import json
+import re
 import shutil
 
 import pytest
 
 from tenfold.gen2.reference import (
     REQUIRED_COMPONENT_ROSTER,
+    TRUSTED_COLD_BOOT_SUBSTRATE,
     ArtifactBinding,
     Gen1DifferentialHarness,
     Gen1ReferenceBundle,
     IntentionalDivergence,
     ReferenceError,
+    compute_candidate_content_digest,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -39,7 +42,7 @@ def test_g2_01_bundle_binds_exact_current_pre_gen2_reference() -> None:
     assert bundle.environment.pip_version == "pip 26.2.1"
     assert bundle.cold_boot_status == "PENDING"
     assert bundle.cold_boot_proof is None
-    assert bundle.proven_candidate_sha is None
+    assert bundle.proven_candidate_content_digest is None
 
 
 def test_g2_01_reference_manifest_contains_master_build_horizon() -> None:
@@ -57,7 +60,7 @@ def test_g2_01_default_inherited_dispositions_are_preserved() -> None:
 
 def _copy_bound_manifests(tmp_path: Path) -> None:
     destination = tmp_path / "docs/gen2"
-    destination.mkdir(parents=True)
+    destination.mkdir(parents=True, exist_ok=True)
     for name in (
         "g2-01-reference-corpus.sha256",
         "g2-01-semantic-corpus.sha256",
@@ -179,22 +182,33 @@ def _write_cold_boot_proof(path: Path, bundle: Gen1ReferenceBundle, **overrides:
         "setup_python_action": bundle.environment.setup_python_action,
         "python_version": bundle.environment.python_version,
         "pip_version": bundle.environment.pip_version,
-        "python_shared_library_sha256": "0" * 64,
-        "python_shared_library_loader_path": "/usr/local/lib/libpython3.11.so.1.0",
-        "chromium_executable": "/usr/local/bin/chromium",
-        "chromium_sha256": "1" * 64,
-        "chromium_version": "Chromium 130.0.0.0",
-        "sergeant_sha": "4a277cc5950aa08a98157b950c96fb88f2178c79",
+        **TRUSTED_COLD_BOOT_SUBSTRATE,
         "candidate_sha": "a" * 40,
     }
     fields.update(overrides)
     lines = ["TENFOLD_G2_01_COLD_BOOT_PROOF_V1"]
     lines.extend(f"{key}={value}" for key, value in fields.items())
     lines.append("158 passed in 4.83s")
+    lines.append(f"{bundle.reference_corpus.sha256}  candidate/{bundle.reference_corpus.path}")
+    lines.append(f"{bundle.semantic_corpus.sha256}  candidate/{bundle.semantic_corpus.path}")
+    lines.append(f"{bundle.qualification_fixture_corpus.sha256}  candidate/{bundle.qualification_fixture_corpus.path}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _bind_pass_bundle(tmp_path: Path, *, proven_candidate_sha: str | None = "a" * 40, **proof_overrides: str) -> Gen1ReferenceBundle:
+def _write_full_bundle_json(tmp_path: Path, bundle: Gen1ReferenceBundle) -> None:
+    target = tmp_path / "docs/gen2/g2-01-gen1-reference-bundle.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(bundle.to_dict(), sort_keys=True), encoding="utf-8")
+
+
+def _bind_pass_bundle(
+    tmp_path: Path, *, content_digest_override: str | None = "__compute__", **proof_overrides: str
+) -> Gen1ReferenceBundle:
+    """Build a self-consistent PASS bundle in tmp_path. By default the
+    proven_candidate_content_digest is computed for real from the tmp_path
+    tree (matching what production validation recomputes), so genuine
+    positive-path tests pass; pass an explicit sha256-shaped string to test
+    a deliberate mismatch instead."""
     bundle = load_bundle()
     _copy_bound_manifests(tmp_path)
     proof_path = tmp_path / "docs/gen2/g2-01-cold-boot-proof.txt"
@@ -203,7 +217,15 @@ def _bind_pass_bundle(tmp_path: Path, *, proven_candidate_sha: str | None = "a" 
         path="docs/gen2/g2-01-cold-boot-proof.txt",
         sha256=sha256(proof_path.read_bytes()).hexdigest(),
     )
-    return replace(bundle, cold_boot_status="PASS", cold_boot_proof=binding, proven_candidate_sha=proven_candidate_sha)
+    draft = replace(bundle, cold_boot_status="PASS", cold_boot_proof=binding, proven_candidate_content_digest=None)
+    _write_full_bundle_json(tmp_path, draft)
+    if content_digest_override == "__compute__":
+        digest = compute_candidate_content_digest(tmp_path)
+    else:
+        digest = content_digest_override
+    final = replace(draft, proven_candidate_content_digest=digest)
+    _write_full_bundle_json(tmp_path, final)
+    return final
 
 
 def test_g2_01_genuine_pass_proof_content_is_accepted(tmp_path: Path) -> None:
@@ -220,7 +242,11 @@ def test_g2_01_unrelated_file_bound_as_proof_fails_closed(tmp_path: Path) -> Non
     unrelated.parent.mkdir(parents=True, exist_ok=True)
     unrelated.write_text("# Not a cold-boot proof\n", encoding="utf-8")
     binding = ArtifactBinding(path="docs/gen2/g2-01-cold-boot-proof.txt", sha256=sha256(unrelated.read_bytes()).hexdigest())
-    passed = replace(bundle, cold_boot_status="PASS", cold_boot_proof=binding, proven_candidate_sha="a" * 40)
+    draft = replace(bundle, cold_boot_status="PASS", cold_boot_proof=binding, proven_candidate_content_digest=None)
+    _write_full_bundle_json(tmp_path, draft)
+    digest = compute_candidate_content_digest(tmp_path)
+    passed = replace(draft, proven_candidate_content_digest=digest)
+    _write_full_bundle_json(tmp_path, passed)
     with pytest.raises(ReferenceError, match="wrong header"):
         passed.validate(tmp_path, require_proven=False)
 
@@ -276,45 +302,120 @@ def test_g2_01_proof_recording_a_skip_fails_closed(tmp_path: Path) -> None:
         bundle.validate_cold_boot_proof_content(tmp_path)
 
 
-def test_g2_01_pass_without_proven_candidate_sha_fails_closed(tmp_path: Path) -> None:
-    bundle = _bind_pass_bundle(tmp_path, proven_candidate_sha=None)
-    with pytest.raises(ReferenceError, match="lacks a bound proven_candidate_sha"):
+def test_g2_01_pass_without_proven_candidate_content_digest_fails_closed(tmp_path: Path) -> None:
+    bundle = _bind_pass_bundle(tmp_path, content_digest_override=None)
+    with pytest.raises(ReferenceError, match="lacks a bound proven_candidate_content_digest"):
         bundle.validate(tmp_path, require_proven=False)
 
 
-def test_g2_01_malformed_proven_candidate_sha_fails_closed(tmp_path: Path) -> None:
-    bundle = _bind_pass_bundle(tmp_path, proven_candidate_sha="not-a-sha")
-    with pytest.raises(ReferenceError, match="exact lowercase SHA-1"):
+def test_g2_01_malformed_proven_candidate_content_digest_fails_closed(tmp_path: Path) -> None:
+    bundle = _bind_pass_bundle(tmp_path, content_digest_override="not-a-digest")
+    with pytest.raises(ReferenceError, match="exact lowercase SHA-256"):
         bundle.validate(tmp_path, require_proven=False)
 
 
-def test_g2_01_pending_with_proven_candidate_sha_fails_closed() -> None:
+def test_g2_01_pending_with_proven_candidate_content_digest_fails_closed() -> None:
     bundle = load_bundle()
-    broken = replace(bundle, proven_candidate_sha="a" * 40)
-    with pytest.raises(ReferenceError, match="must not carry a proven_candidate_sha"):
+    broken = replace(bundle, proven_candidate_content_digest="a" * 64)
+    with pytest.raises(ReferenceError, match="must not carry a proven_candidate_content_digest"):
         broken.validate(ROOT, require_proven=False)
 
 
-def test_g2_01_proven_candidate_sha_not_matching_proof_content_fails_closed(tmp_path: Path) -> None:
-    # The exact replay named by review: the proof file itself claims one
-    # candidate but the bundle's trusted proven_candidate_sha claims another.
-    bundle = _bind_pass_bundle(tmp_path, proven_candidate_sha="b" * 40)
-    with pytest.raises(ReferenceError, match="does not match bundle proven_candidate_sha"):
+def test_g2_01_proven_candidate_content_digest_not_matching_tree_fails_closed(tmp_path: Path) -> None:
+    # The exact replay named by review: a bundle claiming a
+    # proven_candidate_content_digest that does not actually correspond to
+    # the candidate tree it is bound alongside (e.g. copied from an
+    # unrelated commit) must be rejected, not merely syntax-checked.
+    bundle = _bind_pass_bundle(tmp_path, content_digest_override="b" * 64)
+    with pytest.raises(ReferenceError, match="does not match bundle proven_candidate_content_digest"):
         bundle.validate_cold_boot_proof_content(tmp_path)
 
 
-def test_g2_01_proven_candidate_sha_not_matching_live_candidate_fails_closed(tmp_path: Path) -> None:
-    # Even when the bundle is internally self-consistent, a live CI job
-    # checking out a *different* actual candidate SHA than the one the
-    # bundle/proof claim must still reject it.
+def test_g2_01_proven_candidate_content_digest_not_matching_live_candidate_fails_closed(tmp_path: Path) -> None:
+    # Even when the bundle is internally self-consistent with its own tree,
+    # a live CI job whose actually-checked-out candidate content digests to
+    # something different must still reject it (guards against binding a
+    # stale/replayed proof+bundle pair to a different closing commit).
     bundle = _bind_pass_bundle(tmp_path)
-    with pytest.raises(ReferenceError, match="does not match the live candidate under test"):
-        bundle.validate_cold_boot_proof_content(tmp_path, expected_candidate_sha="c" * 40)
+    with pytest.raises(ReferenceError, match="does not match the live candidate content under test"):
+        bundle.validate_cold_boot_proof_content(tmp_path, expected_candidate_content_digest="c" * 64)
 
 
-def test_g2_01_proven_candidate_sha_matching_live_candidate_is_accepted(tmp_path: Path) -> None:
+def test_g2_01_proven_candidate_content_digest_matching_live_candidate_is_accepted(tmp_path: Path) -> None:
     bundle = _bind_pass_bundle(tmp_path)
-    bundle.validate_cold_boot_proof_content(tmp_path, expected_candidate_sha="a" * 40)
+    bundle.validate_cold_boot_proof_content(
+        tmp_path, expected_candidate_content_digest=bundle.proven_candidate_content_digest
+    )
+
+
+def test_g2_01_content_digest_is_stable_across_finalization_delta(tmp_path: Path) -> None:
+    # The digest a PENDING candidate would compute for itself must equal
+    # the digest recomputed after finalization adds the proof artifact and
+    # flips cold_boot_status/cold_boot_proof/proven_candidate_content_digest
+    # to their PASS values - otherwise the closing commit (and every later
+    # periodic re-proof of it) could never validate against its own bound
+    # identity.
+    pending_bundle = load_bundle()
+    _copy_bound_manifests(tmp_path)
+    _write_full_bundle_json(tmp_path, pending_bundle)
+    pending_digest = compute_candidate_content_digest(tmp_path)
+
+    passed_bundle = _bind_pass_bundle(tmp_path)
+    assert passed_bundle.proven_candidate_content_digest == pending_digest
+
+
+def test_g2_01_proof_with_forged_substrate_field_fails_closed(tmp_path: Path) -> None:
+    bundle = _bind_pass_bundle(tmp_path, chromium_sha256="9" * 64)
+    with pytest.raises(ReferenceError, match="chromium_sha256 does not match trusted substrate"):
+        bundle.validate_cold_boot_proof_content(tmp_path)
+
+
+def test_g2_01_proof_with_wrong_sergeant_sha_fails_closed(tmp_path: Path) -> None:
+    bundle = _bind_pass_bundle(tmp_path, sergeant_sha="0" * 40)
+    with pytest.raises(ReferenceError, match="sergeant_sha does not match trusted substrate"):
+        bundle.validate_cold_boot_proof_content(tmp_path)
+
+
+def test_g2_01_proof_missing_manifest_digest_line_fails_closed(tmp_path: Path) -> None:
+    bundle = load_bundle()
+    _copy_bound_manifests(tmp_path)
+    proof_path = tmp_path / "docs/gen2/g2-01-cold-boot-proof.txt"
+    _write_cold_boot_proof(proof_path, bundle)
+    text = proof_path.read_text(encoding="utf-8")
+    # Drop the reference_corpus manifest-digest line.
+    lines = [l for l in text.splitlines() if "g2-01-reference-corpus.sha256" not in l]
+    proof_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    binding = ArtifactBinding(path="docs/gen2/g2-01-cold-boot-proof.txt", sha256=sha256(proof_path.read_bytes()).hexdigest())
+    draft = replace(bundle, cold_boot_status="PASS", cold_boot_proof=binding, proven_candidate_content_digest=None)
+    _write_full_bundle_json(tmp_path, draft)
+    digest = compute_candidate_content_digest(tmp_path)
+    final = replace(draft, proven_candidate_content_digest=digest)
+    _write_full_bundle_json(tmp_path, final)
+    with pytest.raises(ReferenceError, match="missing a manifest-digest line for reference_corpus"):
+        final.validate_cold_boot_proof_content(tmp_path)
+
+
+def test_g2_01_proof_with_wrong_manifest_digest_line_fails_closed(tmp_path: Path) -> None:
+    bundle = _bind_pass_bundle(tmp_path)
+    # Tamper the proof file's own recorded reference_corpus digest line
+    # while leaving the bundle's own binding (and the proof's own SHA-256
+    # binding to the tampered file) internally consistent with each other.
+    proof_path = tmp_path / "docs/gen2/g2-01-cold-boot-proof.txt"
+    text = proof_path.read_text(encoding="utf-8")
+    text = re.sub(
+        r"[0-9a-f]{64}(  candidate/docs/gen2/g2-01-reference-corpus\.sha256)",
+        r"" + ("f" * 64) + r"\1",
+        text,
+    )
+    proof_path.write_text(text, encoding="utf-8")
+    binding = ArtifactBinding(path="docs/gen2/g2-01-cold-boot-proof.txt", sha256=sha256(proof_path.read_bytes()).hexdigest())
+    tampered = replace(bundle, cold_boot_proof=binding)
+    _write_full_bundle_json(tmp_path, replace(tampered, proven_candidate_content_digest=None))
+    digest = compute_candidate_content_digest(tmp_path)
+    final = replace(tampered, proven_candidate_content_digest=digest)
+    _write_full_bundle_json(tmp_path, final)
+    with pytest.raises(ReferenceError, match="manifest-digest line for reference_corpus does not match bundle binding"):
+        final.validate_cold_boot_proof_content(tmp_path)
 
 
 def test_g2_01_current_bundle_satisfies_the_reference_coverage_roster() -> None:

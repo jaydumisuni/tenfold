@@ -87,6 +87,27 @@ REQUIRED_REFERENCE_COVERAGE_AREAS: frozenset[str] = frozenset(
 )
 
 
+# Trusted expected values for the deterministic cold-boot substrate that a
+# real proof produced from the pinned, content-addressed container image
+# must exactly reproduce. Measured once from a genuine passing run (GitHub
+# Actions run 32563024430, candidate be7d29f) against the exact pinned
+# image digest in EnvironmentBinding.container_image; because that image is
+# content-addressed, these values are themselves reproducible from it and
+# are not free-form fields a forged proof may fill with arbitrary content.
+TRUSTED_COLD_BOOT_SUBSTRATE: dict[str, str] = {
+    "sergeant_sha": "4a277cc5950aa08a98157b950c96fb88f2178c79",
+    "python_shared_library_sha256": "ba4450817186fbe1e3c477f6aefeee7c353cba3593cc9950382ad9d1f5e62896",
+    "python_shared_library_loader_path": "/usr/local/lib/libpython3.11.so.1.0",
+    "chromium_executable": "/ms-playwright/chromium-1200/chrome-linux64/chrome",
+    "chromium_sha256": "2e61bc3fd990bd4d7b419ef6b6303c67aaed683e5b83b3b25e416f015f343209",
+    "chromium_version": "Google Chrome for Testing 143.0.7499.4 ",
+}
+
+
+BUNDLE_ARTIFACT_PATH = "docs/gen2/g2-01-gen1-reference-bundle.json"
+PROOF_ARTIFACT_PATH = "docs/gen2/g2-01-cold-boot-proof.txt"
+
+
 _PROOF_HEADER_KEYS = (
     "status",
     "migration_reference_sha",
@@ -157,6 +178,51 @@ def _relative_path(root: Path, value: str) -> Path:
     if candidate != root and root not in candidate.parents:
         raise ReferenceError(f"artifact path escapes root: {value!r}")
     return candidate
+
+
+def compute_candidate_content_digest(candidate_root: str | Path) -> str:
+    """Compute a stable identity digest for a candidate tree.
+
+    A commit-SHA-based candidate identity is unusable for binding a PASS
+    proof: the finalization commit that *adds* the proof artifact and flips
+    the bundle's own cold_boot_status/cold_boot_proof/identity fields to
+    their PASS values necessarily has a different commit SHA than the
+    pre-finalization commit the proof was produced against, so a live
+    per-commit SHA comparison can never succeed on the closing commit
+    itself (or on any later periodic re-proof of it).
+
+    This digest is unaffected by that finalization delta: the bundle JSON
+    is hashed with its own cold_boot_status/cold_boot_proof/identity fields
+    normalized back to their pre-finalization (PENDING) values before
+    hashing, and the not-yet-existing proof artifact file is excluded from
+    the tree walk by its fixed, known path. Both the pre-finalization
+    candidate and the post-finalization closing commit therefore produce
+    the identical digest, so a live CI job can always recompute and compare
+    it regardless of which side of finalization it runs on.
+    """
+    root = Path(candidate_root).resolve()
+    bundle_path = root / BUNDLE_ARTIFACT_PATH
+    raw = json.loads(bundle_path.read_text(encoding="utf-8"))
+    normalized = dict(raw)
+    normalized["cold_boot_status"] = "PENDING"
+    normalized["cold_boot_proof"] = None
+    normalized["proven_candidate_content_digest"] = None
+    bundle_digest = _digest(normalized)
+
+    excluded = {BUNDLE_ARTIFACT_PATH, PROOF_ARTIFACT_PATH}
+    entries: list[str] = []
+    for path in sorted(root.rglob("*")):
+        if path.is_dir():
+            continue
+        rel = path.relative_to(root).as_posix()
+        if rel == ".git" or rel.startswith(".git/"):
+            continue
+        if rel in excluded:
+            continue
+        entries.append(f"{_file_digest(path)}  {rel}")
+    tree_digest = _digest(entries)
+
+    return _digest({"bundle": bundle_digest, "tree": tree_digest})
 
 
 @dataclass(frozen=True)
@@ -297,7 +363,7 @@ class Gen1ReferenceBundle:
     qualification_fixture_corpus: ArtifactBinding
     cold_boot_status: str
     cold_boot_proof: ArtifactBinding | None
-    proven_candidate_sha: str | None
+    proven_candidate_content_digest: str | None
     dispositions: tuple[ComponentDisposition, ...]
     intentional_divergence_register_generation: int
     intentional_divergences: tuple[IntentionalDivergence, ...]
@@ -327,7 +393,9 @@ class Gen1ReferenceBundle:
             qualification_fixture_corpus=ArtifactBinding(**raw["qualification_fixture_corpus"]),
             cold_boot_status=str(raw["cold_boot_status"]),
             cold_boot_proof=(None if raw.get("cold_boot_proof") is None else ArtifactBinding(**raw["cold_boot_proof"])),
-            proven_candidate_sha=(None if raw.get("proven_candidate_sha") is None else str(raw["proven_candidate_sha"])),
+            proven_candidate_content_digest=(
+                None if raw.get("proven_candidate_content_digest") is None else str(raw["proven_candidate_content_digest"])
+            ),
             dispositions=tuple(
                 ComponentDisposition(
                     item["component"], Disposition(item["disposition"]), tuple(item["source_refs"]),
@@ -361,7 +429,7 @@ class Gen1ReferenceBundle:
         artifact_root: str | Path,
         *,
         require_proven: bool = True,
-        expected_candidate_sha: str | None = None,
+        expected_candidate_content_digest: str | None = None,
     ) -> None:
         if self.schema != "tenfold.gen1_reference.v2":
             raise ReferenceError("unsupported Gen1 reference bundle schema")
@@ -385,16 +453,18 @@ class Gen1ReferenceBundle:
         if self.cold_boot_status == "PASS":
             if self.cold_boot_proof is None:
                 raise ReferenceError("PASS cold boot lacks bound proof artifact")
-            if self.proven_candidate_sha is None:
-                raise ReferenceError("PASS cold boot lacks a bound proven_candidate_sha")
-            if not _SHA1.fullmatch(self.proven_candidate_sha):
-                raise ReferenceError("proven_candidate_sha must be an exact lowercase SHA-1")
+            if self.proven_candidate_content_digest is None:
+                raise ReferenceError("PASS cold boot lacks a bound proven_candidate_content_digest")
+            if not _SHA256.fullmatch(self.proven_candidate_content_digest):
+                raise ReferenceError("proven_candidate_content_digest must be an exact lowercase SHA-256")
             self.cold_boot_proof.validate(artifact_root)
-            self.validate_cold_boot_proof_content(artifact_root, expected_candidate_sha=expected_candidate_sha)
+            self.validate_cold_boot_proof_content(
+                artifact_root, expected_candidate_content_digest=expected_candidate_content_digest
+            )
         elif self.cold_boot_proof is not None:
             raise ReferenceError("PENDING cold boot must not carry a proof artifact")
-        elif self.proven_candidate_sha is not None:
-            raise ReferenceError("PENDING cold boot must not carry a proven_candidate_sha")
+        elif self.proven_candidate_content_digest is not None:
+            raise ReferenceError("PENDING cold boot must not carry a proven_candidate_content_digest")
         if require_proven and self.cold_boot_status != "PASS":
             raise ReferenceError("exact Gen1 reference environment is not proven")
         names = [item.component for item in self.dispositions]
@@ -434,13 +504,15 @@ class Gen1ReferenceBundle:
             raise ReferenceError("reference bundle lacks frozen authority bindings")
 
     def validate_cold_boot_proof_content(
-        self, artifact_root: str | Path, *, expected_candidate_sha: str | None = None
+        self, artifact_root: str | Path, *, expected_candidate_content_digest: str | None = None
     ) -> None:
         """Independently verify the bound `cold_boot_proof` artifact is
         actually a cold-boot proof for *this* bundle, not merely a file whose
         path/sha256 happens to be bound. `ArtifactBinding.validate` alone
         only proves existence and digest match; it cannot detect an
-        unrelated file being bound as the proof."""
+        unrelated file being bound as the proof, a substrate field filled
+        with an arbitrary value, or a manifest-digest line that disagrees
+        with what the bundle itself declares."""
         if self.cold_boot_status != "PASS" or self.cold_boot_proof is None:
             raise ReferenceError("cold-boot proof content check requires a PASS-bound proof artifact")
         path = self.cold_boot_proof.validate(artifact_root)
@@ -454,20 +526,32 @@ class Gen1ReferenceBundle:
         for field_name in ("platform", "container_image", "checkout_action", "setup_python_action", "python_version", "pip_version"):
             if fields[field_name] != getattr(self.environment, field_name):
                 raise ReferenceError(f"cold-boot proof artifact environment.{field_name} mismatch")
+        # Every field deterministically reproducible from the pinned,
+        # content-addressed container image (already exactly cross-checked
+        # above) must match its trusted expected value exactly. Existence-
+        # only/well-formedness-only checking here previously let a forged
+        # proof declare arbitrary chromium/python-library digests and still
+        # validate.
+        for field_name, expected_value in TRUSTED_COLD_BOOT_SUBSTRATE.items():
+            if fields[field_name] != expected_value:
+                raise ReferenceError(f"cold-boot proof artifact {field_name} does not match trusted substrate")
         if not _SHA1.fullmatch(fields["candidate_sha"]):
             raise ReferenceError("cold-boot proof artifact candidate_sha missing/malformed")
-        # Bind the proof to the exact candidate it was produced for: the
-        # proof file's own claimed candidate_sha must match the bundle's
-        # trusted proven_candidate_sha field (internal consistency, so the
-        # bundle cannot silently rebind a proof produced for a different
-        # commit), and when a live caller supplies the actual SHA under test
-        # (only known to the CI job itself), that must match too (external
-        # liveness, so a stale/replayed proof+bundle pair from an earlier
-        # commit cannot be re-bound to a new closing commit).
-        if self.proven_candidate_sha is not None and fields["candidate_sha"] != self.proven_candidate_sha:
-            raise ReferenceError("cold-boot proof artifact candidate_sha does not match bundle proven_candidate_sha")
-        if expected_candidate_sha is not None and fields["candidate_sha"] != expected_candidate_sha:
-            raise ReferenceError("cold-boot proof artifact candidate_sha does not match the live candidate under test")
+        # Bind the proof to the exact candidate content it was produced for.
+        # A literal commit-SHA comparison cannot work here: committing the
+        # proof (plus the bundle's own PASS/proof/identity fields) creates a
+        # new commit whose SHA differs from the SHA the proof was produced
+        # against, so binding to a commit SHA would make the closing commit
+        # (and every later periodic re-proof of it) permanently unable to
+        # validate. proven_candidate_content_digest instead excludes exactly
+        # that self-referential finalization delta, so it is identical
+        # whether computed before or after finalization.
+        if self.proven_candidate_content_digest is not None:
+            actual_digest = compute_candidate_content_digest(artifact_root)
+            if actual_digest != self.proven_candidate_content_digest:
+                raise ReferenceError("candidate content digest does not match bundle proven_candidate_content_digest")
+        if expected_candidate_content_digest is not None and expected_candidate_content_digest != self.proven_candidate_content_digest:
+            raise ReferenceError("proven_candidate_content_digest does not match the live candidate content under test")
         remainder = fields["_remainder"]
         # Checked in this order so a tampered/forged summary line that
         # combines both ("N passed, M skipped in ...") is rejected for the
@@ -479,6 +563,22 @@ class Gen1ReferenceBundle:
             raise ReferenceError("cold-boot proof artifact records a disallowed skipped test")
         if not re.search(r"(?m)^[0-9]+ passed in ", remainder):
             raise ReferenceError("cold-boot proof artifact lacks a passing repository-only suite result line")
+        # The embedded manifest-digest lines (sha256sum output for the three
+        # bound corpus manifests) must agree with what the bundle itself
+        # declares for those same artifacts; otherwise a forged proof could
+        # record digests for manifests different from the ones actually
+        # bound and validated elsewhere in this bundle.
+        for artifact_name, binding in (
+            ("reference_corpus", self.reference_corpus),
+            ("semantic_corpus", self.semantic_corpus),
+            ("qualification_fixture_corpus", self.qualification_fixture_corpus),
+        ):
+            filename = PurePosixPath(binding.path).name
+            match = re.search(rf"(?m)^([0-9a-f]{{64}})  candidate/.*/{re.escape(filename)}$", remainder)
+            if not match:
+                raise ReferenceError(f"cold-boot proof artifact is missing a manifest-digest line for {artifact_name}")
+            if match.group(1) != binding.sha256:
+                raise ReferenceError(f"cold-boot proof artifact manifest-digest line for {artifact_name} does not match bundle binding")
 
     @staticmethod
     def _validate_manifest_against_reference(manifest: Path, reference_root: Path) -> None:
