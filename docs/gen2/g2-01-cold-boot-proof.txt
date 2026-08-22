@@ -1,0 +1,26 @@
+TENFOLD_G2_01_COLD_BOOT_PROOF_V1
+status=PASS
+migration_reference_sha=05aa384a34a650e677970904079a985ec8b26d90
+migration_reference_tree_sha=c7c130b573180e74438d70b6e11c17dd9bade648
+platform=linux/amd64
+container_image=mcr.microsoft.com/playwright/python:v1.57.0-amd64@sha256:8331696befd3ee8b5baefca428446345f548e415a2408fe1d3d1224e9d919682
+checkout_action=actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+setup_python_action=actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+python_version=Python 3.11.16
+pip_version=pip 26.2.1
+python_shared_library_sha256=ba4450817186fbe1e3c477f6aefeee7c353cba3593cc9950382ad9d1f5e62896
+python_shared_library_loader_path=/usr/local/lib/libpython3.11.so.1.0
+chromium_executable=/ms-playwright/chromium-1200/chrome-linux64/chrome
+chromium_sha256=2e61bc3fd990bd4d7b419ef6b6303c67aaed683e5b83b3b25e416f015f343209
+chromium_version=Google Chrome for Testing 143.0.7499.4 
+sergeant_sha=4a277cc5950aa08a98157b950c96fb88f2178c79
+candidate_sha=f254b5cb86427202b596bac4ea09def1cb5512e0
+candidate_content_digest=7317b0e6e3f16c07e8ce76820710bf9687c3dd7828bec8e851dc61c0bd194125
+61ae355d36ca5cd311c99ceb09504ac93954240e3b8ff9ccccbf3b8e8a252b73  candidate/docs/gen2/g2-01-pip-freeze.txt
+e3d4192b8a3c2ec5dadfd69baff473fb740df45d9f43e1a796d730449cf5ba04  candidate/docs/gen2/g2-01-reference-corpus.sha256
+fb3338f1453d3c1b4797fdfeed7ecef4e7c4a6cd385d434bffac0b4ecadc0bc3  candidate/docs/gen2/g2-01-semantic-corpus.sha256
+6f20368f7785dd0007c1645f5ed02e4993002765e0989ca73206e62251b208cf  candidate/docs/gen2/g2-01-qualification-fixture-corpus.sha256
+........................................................................ [ 45%]
+........................................................................ [ 91%]
+..............                                                           [100%]
+158 passed in 3.83s

@@ -1,0 +1,700 @@
+name: G2-01 exact Gen1 reference proof
+
+on:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 1 * *'
+
+permissions:
+  contents: read
+
+jobs:
+  # PR-controlled code (tenfold.gen2.reference, imported from the candidate
+  # tree) runs only in this job, against this job's own dedicated frozen-
+  # reference checkout and dependency install. This job never runs the
+  # authoritative pytest suite and its result is consumed by cold-boot only
+  # as a pass/fail gate (`needs:`); there is no shared filesystem, container
+  # instance, or process between this job and cold-boot, so nothing
+  # candidate-controlled code does here - however privileged its own process
+  # identity is - has any causal path to the checkout or runtime cold-boot
+  # uses. This is real isolation (separate ephemeral runners), not policed
+  # privilege/permission bits within one shared job.
+  #
+  # Acknowledged residual boundary (TF-00 SS6 / G2-00 residual boundary R2,
+  # "Attested Semantics"): the validator embedded below is itself part of
+  # this workflow file, which this same PR can modify. For a same-repository
+  # (non-fork) pull_request, GitHub does not pin workflow definitions to the
+  # base branch the way it does for external-fork contributions, so no
+  # purely mechanical gate within a single PR can be un-tamperable by the
+  # PR's own author. G2-01 is the first milestone introducing this
+  # validator, so no pre-existing frozen validator outside the candidate
+  # revision yet exists to pin it to - a genuine bootstrap constraint, not
+  # an oversight. What this workflow does provide: (a) an independently-
+  # implemented validator (no shared code path with tenfold.gen2.reference,
+  # so a defect/tamper in one does not automatically pass the other), (b)
+  # a second, separately-maintained, tracked-in-repository independent
+  # reviewer (scripts/g2_01_independent_authority_review.py, stdlib-only,
+  # reads raw git-object bytes, never imports candidate code; run manually
+  # against each candidate head during this milestone's construction, not
+  # yet wired as an automated CI gate), and (c) iterative adversarial
+  # review before promotion. The final trust anchor for this
+  # milestone is the interim Root's (repository Owner's) explicit review
+  # and merge decision, per TF-00 SS2 ("Training is shared. Authority is
+  # not.") and this file's own INTERIM_ROOT_DECLARATION.md - not a claim
+  # that this gate is adversarially trustless against its own author.
+  candidate-check:
+    runs-on: ubuntu-24.04
+    container:
+      image: mcr.microsoft.com/playwright/python:v1.57.0-amd64@sha256:8331696befd3ee8b5baefca428446345f548e415a2408fe1d3d1224e9d919682
+    steps:
+      - name: Checkout exact G2-01 candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout frozen Gen1 migration reference
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: 05aa384a34a650e677970904079a985ec8b26d90
+          path: gen1-reference
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up exact Python 3.11.16
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11.16'
+
+      - name: Verify frozen environment identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "x86_64"
+          test "$(python --version)" = "Python 3.11.16"
+          test "$(git -C gen1-reference rev-parse HEAD)" = "05aa384a34a650e677970904079a985ec8b26d90"
+          test "$(git -C gen1-reference write-tree)" = "c7c130b573180e74438d70b6e11c17dd9bade648"
+          test -z "$(git -C gen1-reference status --porcelain)"
+
+      - name: Install exact frozen dependency environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --no-deps \
+            pip==26.2.1 setuptools==79.0.1 wheel==0.45.1 \
+            Pygments==2.21.0 greenlet==3.5.5 iniconfig==2.3.0 packaging==26.3 \
+            playwright==1.57.0 pluggy==1.6.0 pyee==13.0.1 pytest==9.1.1 typing_extensions==4.16.0
+          python -m pip install --no-build-isolation --no-deps ./gen1-reference
+          python -m pip install --no-build-isolation --no-deps \
+            'git+https://github.com/jaydumisuni/Sergeant.git@4a277cc5950aa08a98157b950c96fb88f2178c79'
+          test "$(python -m pip --version | awk '{print $1" "$2}')" = "pip 26.2.1"
+          python -m pip freeze --all | grep -v '^tenfold' | LC_ALL=C sort -f > /tmp/g2-01-installed-lock.txt
+          LC_ALL=C sort -f candidate/docs/gen2/g2-01-pip-freeze.txt > /tmp/g2-01-candidate-lock.txt
+          diff -u /tmp/g2-01-candidate-lock.txt /tmp/g2-01-installed-lock.txt
+
+      - name: Verify candidate bindings against exact reference tree and live substrate
+        shell: bash
+        env:
+          LIVE_PLATFORM: linux/amd64
+          LIVE_CONTAINER_IMAGE: mcr.microsoft.com/playwright/python:v1.57.0-amd64@sha256:8331696befd3ee8b5baefca428446345f548e415a2408fe1d3d1224e9d919682
+          LIVE_CHECKOUT_ACTION: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+          LIVE_SETUP_PYTHON_ACTION: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        run: |
+          set -euo pipefail
+          LIVE_PYTHON_VERSION="$(python --version)"
+          LIVE_PIP_VERSION="$(python -m pip --version | awk '{print $1" "$2}')"
+          export LIVE_PYTHON_VERSION LIVE_PIP_VERSION
+          # This script is deliberately NOT imported from candidate/src and
+          # does not import tenfold.gen2.reference at all: it is a separate,
+          # independently-implemented validator (stdlib-only) that reads
+          # only candidate DATA files (the bundle JSON, corpus manifests,
+          # proof text) plus the frozen gen1-reference checkout on disk. A
+          # candidate cannot defeat this gate by shipping a permissive
+          # reference.py, because this gate never executes any file from
+          # the candidate tree - only Python source embedded directly in
+          # this trusted workflow file.
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path, PurePosixPath
+
+          SHA1 = re.compile(r"^[0-9a-f]{40}$")
+          SHA256 = re.compile(r"^[0-9a-f]{64}$")
+          PYVER = re.compile(r"^Python [0-9]+\.[0-9]+\.[0-9]+$")
+          PINNED = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$")
+
+          MIGRATION_SHA = "05aa384a34a650e677970904079a985ec8b26d90"
+          MIGRATION_TREE = "c7c130b573180e74438d70b6e11c17dd9bade648"
+          BUNDLE_ARTIFACT_PATH = "docs/gen2/g2-01-gen1-reference-bundle.json"
+          PROOF_ARTIFACT_PATH = "docs/gen2/g2-01-cold-boot-proof.txt"
+          # Every path the documented G2-01 closure process requires to
+          # advance atomically with the final proof record; all of them
+          # change purely because this milestone completed, not because the
+          # underlying candidate content changed, so all must be excluded
+          # from the stable identity or the closing commit's own required
+          # recovery-surface updates would break digest stability.
+          CLOSURE_RECORD_PATHS = {
+              BUNDLE_ARTIFACT_PATH, PROOF_ARTIFACT_PATH,
+              "docs/gen2/G2-01-review-record.md", "README.md", "PICKUP.md",
+          }
+
+          REQUIRED_COMPONENT_ROSTER = {
+              "Foreman", "derivation assurance", "scheduler", "campaign state",
+              "leases/fencing", "worker/task/evidence contracts", "Assurance Matrix integration",
+              "Council", "Repository Facility", "Oracle Facility", "Ptah Facility",
+              "recovery", "Operating Methods", "Project Method Profiles",
+          }
+          REQUIRED_COVERAGE_AREAS = {
+              "campaign derivation/frontier", "worker/task/evidence contracts", "scheduling/resource control",
+              "persistence/leases/recovery", "facilities", "assurance/council", "operating methods/project profiles",
+              "requirement/classification/policy closure", "obligation IR/proof-carrying compilation",
+              "Rust constitutional authority", "independent verifier", "Chronicle external anchoring/effect census",
+              "Root/issuing authority causal planes", "self-construction minimum/preferred runtime",
+          }
+          TRUSTED_SUBSTRATE = {
+              "sergeant_sha": "4a277cc5950aa08a98157b950c96fb88f2178c79",
+              "python_shared_library_sha256": "ba4450817186fbe1e3c477f6aefeee7c353cba3593cc9950382ad9d1f5e62896",
+              "python_shared_library_loader_path": "/usr/local/lib/libpython3.11.so.1.0",
+              "chromium_executable": "/ms-playwright/chromium-1200/chrome-linux64/chrome",
+              "chromium_sha256": "2e61bc3fd990bd4d7b419ef6b6303c67aaed683e5b83b3b25e416f015f343209",
+              "chromium_version": "Google Chrome for Testing 143.0.7499.4 ",
+          }
+          PROOF_HEADER_KEYS = (
+              "status", "migration_reference_sha", "migration_reference_tree_sha", "platform",
+              "container_image", "checkout_action", "setup_python_action", "python_version", "pip_version",
+              "python_shared_library_sha256", "python_shared_library_loader_path", "chromium_executable",
+              "chromium_sha256", "chromium_version", "sergeant_sha", "candidate_sha", "candidate_content_digest",
+          )
+          VALID_DISPOSITIONS = {"KEEP", "WRAP", "EVOLVE", "PORT", "SUPERSEDE"}
+
+          def fail(msg):
+              raise SystemExit(f"CANDIDATE VALIDATION FAILED: {msg}")
+
+          def file_digest(path):
+              h = hashlib.sha256()
+              with path.open("rb") as fh:
+                  for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          def canonical_digest(value):
+              raw = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+              return hashlib.sha256(raw).hexdigest()
+
+          def rel_safe(root, value):
+              pure = PurePosixPath(value)
+              if pure.is_absolute() or ".." in pure.parts or not pure.parts:
+                  fail(f"unsafe path: {value!r}")
+              p = (root / Path(*pure.parts)).resolve()
+              if p != root and root not in p.parents:
+                  fail(f"path escapes root: {value!r}")
+              return p
+
+          def git_ls_files_with_blobs(root, subpaths=()):
+              # Tracked entries only (mode + blob SHA via `git ls-files -s`),
+              # not a raw filesystem walk: importing a module can create
+              # untracked __pycache__ files, which would otherwise make the
+              # digest depend on incidental prior process state.
+              result = subprocess.run(
+                  ["git", "-C", str(root), "ls-files", "-s", "--", *subpaths],
+                  capture_output=True, text=True, check=True,
+              )
+              entries = []
+              for line in result.stdout.splitlines():
+                  if not line:
+                      continue
+                  meta, _, rel = line.partition("\t")
+                  mode, blob_sha, _stage = meta.split()
+                  entries.append((mode, blob_sha, rel))
+              return entries
+
+          def compute_candidate_content_digest(candidate_root):
+              bundle_path = candidate_root / BUNDLE_ARTIFACT_PATH
+              raw = json.loads(bundle_path.read_text(encoding="utf-8"))
+              normalized = dict(raw)
+              normalized["cold_boot_status"] = "PENDING"
+              normalized["cold_boot_proof"] = None
+              normalized["proven_candidate_content_digest"] = None
+              bundle_digest = canonical_digest(normalized)
+              entries = [
+                  f"{mode} {blob_sha}  {rel}"
+                  for mode, blob_sha, rel in git_ls_files_with_blobs(candidate_root)
+                  if rel not in CLOSURE_RECORD_PATHS
+              ]
+              tree_digest = canonical_digest(sorted(entries))
+              return canonical_digest({"bundle": bundle_digest, "tree": tree_digest})
+
+          def parse_proof(text):
+              lines = text.splitlines()
+              if not lines or lines[0] != "TENFOLD_G2_01_COLD_BOOT_PROOF_V1":
+                  fail("proof artifact has wrong header")
+              if len(lines) < 1 + len(PROOF_HEADER_KEYS):
+                  fail("proof artifact missing required header fields")
+              fields = {}
+              for line in lines[1:1 + len(PROOF_HEADER_KEYS)]:
+                  key, sep, value = line.partition("=")
+                  if not sep or key not in PROOF_HEADER_KEYS or key in fields:
+                      fail(f"proof artifact malformed at field {key!r}")
+                  fields[key] = value
+              if set(fields) != set(PROOF_HEADER_KEYS):
+                  fail("proof artifact missing required header fields")
+              fields["_remainder"] = "\n".join(lines[1 + len(PROOF_HEADER_KEYS):])
+              return fields
+
+          candidate = Path("candidate").resolve()
+          reference = Path("gen1-reference").resolve()
+
+          bundle_path = candidate / BUNDLE_ARTIFACT_PATH
+          raw = json.loads(bundle_path.read_text(encoding="utf-8"))
+
+          if raw.get("schema") != "tenfold.gen1_reference.v2":
+              fail("unsupported schema")
+          if raw.get("migration_reference_sha") != MIGRATION_SHA:
+              fail("migration_reference_sha mismatch")
+          if raw.get("migration_reference_tree_sha") != MIGRATION_TREE:
+              fail("migration_reference_tree_sha mismatch")
+
+          dependency_lock = raw.get("dependency_lock") or []
+          if not dependency_lock:
+              fail("dependency_lock missing")
+          if canonical_digest(list(dependency_lock)) != raw.get("dependency_lock_digest"):
+              fail("dependency_lock_digest mismatch")
+
+          env = raw.get("environment", {})
+          for req in ("container_image", "platform", "checkout_action", "setup_python_action", "python_version", "pip_version"):
+              if req not in env:
+                  fail(f"environment.{req} missing")
+          image, sep, digest = env["container_image"].partition("@sha256:")
+          if not image or sep != "@sha256:" or not SHA256.fullmatch(digest):
+              fail("environment.container_image not content-addressed")
+          if not PINNED.fullmatch(env["checkout_action"]) or not PINNED.fullmatch(env["setup_python_action"]):
+              fail("environment action(s) not pinned to exact commit")
+          if not PYVER.fullmatch(env["python_version"]):
+              fail("environment.python_version malformed")
+          if not (env["pip_version"].startswith("pip ") and len(env["pip_version"].split()) == 2):
+              fail("environment.pip_version malformed")
+          ordered_env = {k: env[k] for k in sorted(env)}
+          expected_env_digest = canonical_digest({"environment": ordered_env, "dependency_lock": list(dependency_lock)})
+          if expected_env_digest != raw.get("reproducible_environment_digest"):
+              fail("reproducible_environment_digest mismatch")
+
+          def check_binding(field_name):
+              binding = raw.get(field_name)
+              if not binding:
+                  fail(f"{field_name} binding missing")
+              path = rel_safe(candidate, binding["path"])
+              if not path.is_file():
+                  fail(f"{field_name} artifact missing: {binding['path']}")
+              actual = file_digest(path)
+              if actual != binding["sha256"]:
+                  fail(f"{field_name} digest mismatch")
+              return path
+
+          reference_corpus_path = check_binding("reference_corpus")
+          semantic_corpus_path = check_binding("semantic_corpus")
+          fixture_corpus_path = check_binding("qualification_fixture_corpus")
+
+          CORPUS_SCOPES = {
+              "reference_corpus": ("src", "tests", "docs"),
+              "semantic_corpus": ("src",),
+              "qualification_fixture_corpus": ("tests",),
+          }
+
+          def check_manifest(manifest_path, corpus_name):
+              text = manifest_path.read_text(encoding="utf-8")
+              seen = set()
+              count = 0
+              for line_no, line in enumerate(text.splitlines(), start=1):
+                  if not line:
+                      continue
+                  count += 1
+                  try:
+                      digest_, rel = line.split("  ", 1)
+                  except ValueError:
+                      fail(f"malformed manifest line {line_no} in {manifest_path.name}")
+                      return
+                  if not SHA256.fullmatch(digest_):
+                      fail(f"malformed digest at line {line_no} in {manifest_path.name}")
+                  if rel in seen:
+                      fail(f"duplicate corpus path: {rel}")
+                  seen.add(rel)
+                  target = rel_safe(reference, rel)
+                  if not target.is_file():
+                      fail(f"frozen reference artifact missing: {rel}")
+                  if file_digest(target) != digest_:
+                      fail(f"frozen reference artifact digest mismatch: {rel}")
+              if count == 0:
+                  fail(f"{manifest_path.name} is empty")
+              # A manifest that only ever needs to CONTAIN correct entries can
+              # be thinned to a single genuine file and still pass every check
+              # above. Independently enumerate what the frozen reference tree
+              # actually contains under this corpus's scope and require the
+              # manifest to be complete against it.
+              expected = {rel for _mode, _blob, rel in git_ls_files_with_blobs(reference, CORPUS_SCOPES[corpus_name])}
+              missing = expected - seen
+              if missing:
+                  preview = sorted(missing)[:5]
+                  suffix = "..." if len(missing) > 5 else ""
+                  fail(f"{corpus_name} manifest omits required frozen reference file(s): {preview}{suffix}")
+              extra = seen - expected
+              if extra:
+                  preview = sorted(extra)[:5]
+                  suffix = "..." if len(extra) > 5 else ""
+                  fail(f"{corpus_name} manifest contains out-of-scope file(s): {preview}{suffix}")
+
+          check_manifest(reference_corpus_path, "reference_corpus")
+          check_manifest(semantic_corpus_path, "semantic_corpus")
+          check_manifest(fixture_corpus_path, "qualification_fixture_corpus")
+
+          status = raw.get("cold_boot_status")
+          proof = raw.get("cold_boot_proof")
+          proven_digest = raw.get("proven_candidate_content_digest")
+          if status not in ("PENDING", "PASS"):
+              fail(f"invalid cold_boot_status {status!r}")
+          if status == "PASS":
+              if proof is None:
+                  fail("PASS without bound proof artifact")
+              if proven_digest is None or not SHA256.fullmatch(proven_digest):
+                  fail("PASS without well-formed proven_candidate_content_digest")
+              proof_path = check_binding("cold_boot_proof")
+              fields = parse_proof(proof_path.read_text(encoding="utf-8"))
+              if fields["status"] != "PASS":
+                  fail("proof artifact does not declare status=PASS")
+              if fields["migration_reference_sha"] != raw["migration_reference_sha"]:
+                  fail("proof migration_reference_sha mismatch")
+              if fields["migration_reference_tree_sha"] != raw["migration_reference_tree_sha"]:
+                  fail("proof migration_reference_tree_sha mismatch")
+              for f in ("platform", "container_image", "checkout_action", "setup_python_action", "python_version", "pip_version"):
+                  if fields[f] != env[f]:
+                      fail(f"proof environment.{f} mismatch")
+              for f, expected in TRUSTED_SUBSTRATE.items():
+                  if fields[f] != expected:
+                      fail(f"proof {f} does not match trusted substrate")
+              if not SHA1.fullmatch(fields["candidate_sha"]):
+                  fail("proof candidate_sha malformed")
+              actual_content_digest = compute_candidate_content_digest(candidate)
+              if actual_content_digest != proven_digest:
+                  fail("candidate content digest does not match bundle proven_candidate_content_digest")
+              # The proof text itself must record the candidate content
+              # digest it was generated for, not merely a syntactically
+              # valid but never-compared commit SHA; otherwise a previously
+              # generated PASS proof could be copied onto a changed
+              # candidate with unchanged manifests and accepted after
+              # recomputing the bundle digest.
+              if not SHA256.fullmatch(fields["candidate_content_digest"]):
+                  fail("proof candidate_content_digest missing/malformed")
+              if fields["candidate_content_digest"] != proven_digest:
+                  fail("proof candidate_content_digest does not match bundle proven_candidate_content_digest")
+              remainder = fields["_remainder"]
+              if re.search(r"[0-9]+ skipped", remainder):
+                  fail("proof records a disallowed skipped test")
+              if not re.search(r"(?m)^[0-9]+ passed in ", remainder):
+                  fail("proof lacks a passing suite result line")
+              for artifact_name, binding_field in (
+                  ("reference_corpus", "reference_corpus"), ("semantic_corpus", "semantic_corpus"),
+                  ("qualification_fixture_corpus", "qualification_fixture_corpus"),
+              ):
+                  filename = PurePosixPath(raw[binding_field]["path"]).name
+                  m = re.search(rf"(?m)^([0-9a-f]{{64}})  candidate/.*/{re.escape(filename)}$", remainder)
+                  if not m:
+                      fail(f"proof missing manifest-digest line for {artifact_name}")
+                  if m.group(1) != raw[binding_field]["sha256"]:
+                      fail(f"proof manifest-digest line for {artifact_name} mismatch")
+          elif proof is not None:
+              fail("PENDING must not carry a proof artifact")
+          elif proven_digest is not None:
+              fail("PENDING must not carry a proven_candidate_content_digest")
+
+          names = [d.get("component") for d in raw.get("dispositions", [])]
+          if len(names) != len(set(names)) or not names:
+              fail("dispositions duplicate/empty")
+          for d in raw["dispositions"]:
+              if not (d.get("component") and d.get("disposition") and d.get("source_refs") and d.get("rationale") and d.get("target")):
+                  fail(f"incomplete disposition: {d.get('component')}")
+              if d.get("disposition") not in VALID_DISPOSITIONS:
+                  fail(f"disposition {d.get('disposition')!r} for {d.get('component')} is not a valid disposition value")
+          missing = REQUIRED_COMPONENT_ROSTER - set(names)
+          if missing:
+              fail(f"dispositions roster missing: {sorted(missing)}")
+
+          VALID_COVERAGE_CLASSES = {"WITHIN_GEN1_REFERENCE_SURFACE", "GEN2_ONLY_SURFACE"}
+          areas = [a.get("semantic_area") for a in raw.get("reference_coverage", [])]
+          if len(areas) != len(set(areas)):
+              fail("reference_coverage duplicate areas")
+          missing_areas = REQUIRED_COVERAGE_AREAS - set(areas)
+          if missing_areas:
+              fail(f"reference_coverage roster missing: {sorted(missing_areas)}")
+          for item in raw.get("reference_coverage", []):
+              cls = item.get("classification")
+              if cls not in VALID_COVERAGE_CLASSES:
+                  fail(f"reference_coverage classification {cls!r} for {item.get('semantic_area')} is not valid")
+              if not item.get("rationale"):
+                  fail(f"reference_coverage rationale missing for {item.get('semantic_area')}")
+              if cls == "WITHIN_GEN1_REFERENCE_SURFACE" and not item.get("reference_refs"):
+                  fail(f"reference_coverage {item.get('semantic_area')} is WITHIN_GEN1_REFERENCE_SURFACE without reference_refs")
+
+          TRUSTED_INTERIM_ROOT_ID = "TENFOLD-G2-INTERIM-ROOT"
+          TRUSTED_INTERIM_ROOT_AUTHORITY_CLASS = "EXTERNAL_MANUAL_INTERIM_ROOT"
+          TRUSTED_INTERIM_ROOT_ALLOWED_ACTIONS = {
+              "supply_explicit_scoped_credentials",
+              "approve_root_amendment_under_frozen_authority",
+              "revoke_scoped_bootstrap_authority",
+          }
+          REQUIRED_INTERIM_ROOT_DENIALS = {"campaign_modify_root", "campaign_widen_root_authority", "gen2_self_mint_before_g2_17"}
+          interim = raw.get("interim_root", {})
+          if interim.get("generation", 0) < 1 or not interim.get("root_id") or not interim.get("provenance"):
+              fail("interim_root incomplete")
+          if interim.get("root_id") != TRUSTED_INTERIM_ROOT_ID:
+              fail("interim_root root_id does not match the trusted bound identity")
+          if interim.get("authority_class") != TRUSTED_INTERIM_ROOT_AUTHORITY_CLASS:
+              fail("interim_root authority_class does not match the trusted bound value")
+          if not REQUIRED_INTERIM_ROOT_DENIALS <= set(interim.get("denied_actions", [])):
+              fail("interim_root missing required denials")
+          # A candidate that keeps the required denial strings while adding
+          # e.g. unbounded_credential_mint to allowed_actions would otherwise
+          # pass: allowed_actions must be exactly the frozen closed set.
+          if set(interim.get("allowed_actions", [])) != TRUSTED_INTERIM_ROOT_ALLOWED_ACTIONS:
+              fail("interim_root allowed_actions does not match the trusted closed set")
+          if not set(interim.get("allowed_actions", [])).isdisjoint(interim.get("denied_actions", [])):
+              fail("interim_root allowed_actions and denied_actions are not disjoint")
+
+          if not raw.get("authority_refs"):
+              fail("authority_refs empty")
+          if not all(MIGRATION_SHA in ref for ref in raw["authority_refs"]):
+              fail("authority_refs do not all cite the live canonical reference")
+
+          gen = raw.get("intentional_divergence_register_generation", 0)
+          if gen < 1:
+              fail("intentional_divergence_register_generation invalid")
+          ids, cases = set(), set()
+          for item in raw.get("intentional_divergences", []):
+              if not (item.get("divergence_id") and item.get("case_id") and item.get("authority_ref") and item.get("rationale")):
+                  fail(f"divergence record incomplete: {item.get('divergence_id')}")
+              if not SHA256.fullmatch(item.get("reference_digest") or "") or not SHA256.fullmatch(item.get("candidate_digest") or ""):
+                  fail(f"divergence must bind exact SHA-256 outputs: {item.get('divergence_id')}")
+              if item.get("register_generation") != gen:
+                  fail(f"divergence generation mismatch: {item.get('divergence_id')}")
+              if item.get("divergence_id") in ids or item.get("case_id") in cases:
+                  fail("duplicate divergence id/case")
+              ids.add(item.get("divergence_id"))
+              cases.add(item.get("case_id"))
+              if item.get("reference_digest") == item.get("candidate_digest"):
+                  fail(f"divergence waives equal outputs: {item.get('divergence_id')}")
+
+          live = {
+              "platform": os.environ["LIVE_PLATFORM"],
+              "container_image": os.environ["LIVE_CONTAINER_IMAGE"],
+              "checkout_action": os.environ["LIVE_CHECKOUT_ACTION"],
+              "setup_python_action": os.environ["LIVE_SETUP_PYTHON_ACTION"],
+              "python_version": os.environ["LIVE_PYTHON_VERSION"],
+              "pip_version": os.environ["LIVE_PIP_VERSION"],
+          }
+          for field, value in live.items():
+              if env[field] != value:
+                  fail(f"environment.{field} {env[field]!r} != live {value!r}")
+
+          installed_lock = sorted(
+              (l.strip() for l in Path("/tmp/g2-01-installed-lock.txt").read_text().splitlines() if l.strip()),
+              key=str.casefold,
+          )
+          declared_lock = sorted(dependency_lock, key=str.casefold)
+          if installed_lock != declared_lock:
+              fail("dependency_lock does not match the actually installed environment")
+
+          print("CANDIDATE VALIDATION PASSED (independently implemented, no import of candidate-authored code)")
+          PY
+
+  # This job never checks out or executes anything from the candidate tree
+  # (it reads only a fixed set of candidate file bytes via sha256sum below,
+  # for informational manifest-digest recording - never imported or run).
+  # It depends on candidate-check passing first, but shares no filesystem or
+  # container instance with it: this is a fresh runner with its own frozen
+  # reference checkout that candidate-controlled code in the other job never
+  # had any access to.
+  cold-boot:
+    needs: candidate-check
+    # The hosted runner label is transport only. The authoritative userspace is
+    # the content-addressed OCI image below, bound together with linux/amd64.
+    runs-on: ubuntu-24.04
+    container:
+      image: mcr.microsoft.com/playwright/python:v1.57.0-amd64@sha256:8331696befd3ee8b5baefca428446345f548e415a2408fe1d3d1224e9d919682
+    steps:
+      - name: Checkout exact G2-01 candidate (read-only, for manifest digests only)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout frozen Gen1 migration reference
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: 05aa384a34a650e677970904079a985ec8b26d90
+          path: gen1-reference
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up exact Python 3.11.16
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11.16'
+
+      - name: Verify frozen environment identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "x86_64"
+          test "$(python --version)" = "Python 3.11.16"
+          test "$(git -C gen1-reference rev-parse HEAD)" = "05aa384a34a650e677970904079a985ec8b26d90"
+          test "$(git -C gen1-reference write-tree)" = "c7c130b573180e74438d70b6e11c17dd9bade648"
+          test -z "$(git -C gen1-reference status --porcelain)"
+
+      - name: Compute candidate content digest
+        id: content_digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Same algorithm as candidate-check's inline validator and
+          # tenfold.gen2.reference.compute_candidate_content_digest: a
+          # content digest over Git-tracked candidate entries (mode + blob
+          # SHA), excluding the bundle JSON's own self-referential fields
+          # and the not-yet-existing proof artifact path, so it is stable
+          # whether computed before or after the finalization commit that
+          # adds this very proof. Recorded here so the proof text itself
+          # attests the candidate identity it was produced for.
+          digest="$(python3 - <<'PY'
+          import hashlib, json, subprocess
+          BUNDLE_ARTIFACT_PATH = "docs/gen2/g2-01-gen1-reference-bundle.json"
+          PROOF_ARTIFACT_PATH = "docs/gen2/g2-01-cold-boot-proof.txt"
+          # Every path the documented G2-01 closure process requires to
+          # advance atomically with the final proof record; all of them
+          # change purely because this milestone completed, not because the
+          # underlying candidate content changed, so all must be excluded
+          # from the stable identity or the closing commit's own required
+          # recovery-surface updates would break digest stability.
+          CLOSURE_RECORD_PATHS = {
+              BUNDLE_ARTIFACT_PATH, PROOF_ARTIFACT_PATH,
+              "docs/gen2/G2-01-review-record.md", "README.md", "PICKUP.md",
+          }
+          def canonical_digest(value):
+              raw = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+              return hashlib.sha256(raw).hexdigest()
+          raw = json.loads(open(f"candidate/{BUNDLE_ARTIFACT_PATH}").read())
+          normalized = dict(raw)
+          normalized["cold_boot_status"] = "PENDING"
+          normalized["cold_boot_proof"] = None
+          normalized["proven_candidate_content_digest"] = None
+          bundle_digest = canonical_digest(normalized)
+          result = subprocess.run(["git", "-C", "candidate", "ls-files", "-s"], capture_output=True, text=True, check=True)
+          entries = []
+          for line in result.stdout.splitlines():
+              if not line:
+                  continue
+              meta, _, rel = line.partition("\t")
+              mode, blob_sha, _stage = meta.split()
+              if rel in CLOSURE_RECORD_PATHS:
+                  continue
+              entries.append(f"{mode} {blob_sha}  {rel}")
+          tree_digest = canonical_digest(sorted(entries))
+          print(canonical_digest({"bundle": bundle_digest, "tree": tree_digest}))
+          PY
+          )"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Bind exact Python shared runtime for sanitized Gen1 workers
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_lib="$Python_ROOT_DIR/lib/libpython3.11.so.1.0"
+          test -f "$source_lib"
+          install -m 0644 "$source_lib" /usr/local/lib/libpython3.11.so.1.0
+          ldconfig
+          test "$(sha256sum "$source_lib" | awk '{print $1}')" = "$(sha256sum /usr/local/lib/libpython3.11.so.1.0 | awk '{print $1}')"
+          env -i PATH="$PATH" HOME="$HOME" python -c "import sys; assert sys.version_info[:3] == (3, 11, 16)"
+
+      - name: Bind content-addressed Chromium for accepted Gen1 browser proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t browsers < <(find /ms-playwright -type f -name chrome -perm -111 | LC_ALL=C sort)
+          test "${#browsers[@]}" -eq 1
+          browser="${browsers[0]}"
+          ln -sf "$browser" /usr/local/bin/chromium
+          test -x /usr/local/bin/chromium
+          chromium --version
+          sha256sum "$browser" > /tmp/g2-01-chromium.sha256
+
+      - name: Install exact frozen dependency environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --no-deps \
+            pip==26.2.1 setuptools==79.0.1 wheel==0.45.1 \
+            Pygments==2.21.0 greenlet==3.5.5 iniconfig==2.3.0 packaging==26.3 \
+            playwright==1.57.0 pluggy==1.6.0 pyee==13.0.1 pytest==9.1.1 typing_extensions==4.16.0
+          python -m pip install --no-build-isolation --no-deps ./gen1-reference
+          python -m pip install --no-build-isolation --no-deps \
+            'git+https://github.com/jaydumisuni/Sergeant.git@4a277cc5950aa08a98157b950c96fb88f2178c79'
+          test "$(python -m pip --version | awk '{print $1" "$2}')" = "pip 26.2.1"
+          python -m pip freeze --all | grep -v '^tenfold' | LC_ALL=C sort -f > /tmp/g2-01-installed-lock.txt
+          LC_ALL=C sort -f candidate/docs/gen2/g2-01-pip-freeze.txt > /tmp/g2-01-candidate-lock.txt
+          diff -u /tmp/g2-01-candidate-lock.txt /tmp/g2-01-installed-lock.txt
+
+      - name: Run exact Gen1 repository-only cold boot
+        shell: bash
+        env:
+          TENFOLD_REPOSITORY_ONLY_PROOF: '1'
+          TENFOLD_CANDIDATE_SHA: 05aa384a34a650e677970904079a985ec8b26d90
+        run: |
+          set -euo pipefail
+          cd gen1-reference
+          python -m compileall -q src
+          python -m pytest -q | tee "$GITHUB_WORKSPACE/g2-01-pytest-reference.txt"
+          grep -Eq '^[0-9]+ passed in ' "$GITHUB_WORKSPACE/g2-01-pytest-reference.txt"
+          ! grep -Eq '[0-9]+ skipped' "$GITHUB_WORKSPACE/g2-01-pytest-reference.txt"
+
+      - name: Build cold-boot proof artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo 'TENFOLD_G2_01_COLD_BOOT_PROOF_V1'
+            echo 'status=PASS'
+            echo 'migration_reference_sha=05aa384a34a650e677970904079a985ec8b26d90'
+            echo 'migration_reference_tree_sha=c7c130b573180e74438d70b6e11c17dd9bade648'
+            echo 'platform=linux/amd64'
+            echo 'container_image=mcr.microsoft.com/playwright/python:v1.57.0-amd64@sha256:8331696befd3ee8b5baefca428446345f548e415a2408fe1d3d1224e9d919682'
+            echo 'checkout_action=actions/checkout@11d5960a326750d5838078e36cf38b85af677262'
+            echo 'setup_python_action=actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065'
+            echo "python_version=$(python --version)"
+            echo "pip_version=$(python -m pip --version | awk '{print $1" "$2}')"
+            echo "python_shared_library_sha256=$(sha256sum /usr/local/lib/libpython3.11.so.1.0 | awk '{print $1}')"
+            echo 'python_shared_library_loader_path=/usr/local/lib/libpython3.11.so.1.0'
+            echo "chromium_executable=$(readlink -f /usr/local/bin/chromium)"
+            echo "chromium_sha256=$(sha256sum "$(readlink -f /usr/local/bin/chromium)" | awk '{print $1}')"
+            echo "chromium_version=$(chromium --version)"
+            echo 'sergeant_sha=4a277cc5950aa08a98157b950c96fb88f2178c79'
+            echo "candidate_sha=${{ github.event.pull_request.head.sha || github.sha }}"
+            echo "candidate_content_digest=${{ steps.content_digest.outputs.digest }}"
+            sha256sum candidate/docs/gen2/g2-01-pip-freeze.txt
+            sha256sum candidate/docs/gen2/g2-01-reference-corpus.sha256
+            sha256sum candidate/docs/gen2/g2-01-semantic-corpus.sha256
+            sha256sum candidate/docs/gen2/g2-01-qualification-fixture-corpus.sha256
+            cat g2-01-pytest-reference.txt
+          } > g2-01-cold-boot-proof.txt
+          sha256sum g2-01-cold-boot-proof.txt
+
+      - name: Upload exact cold-boot proof
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: g2-01-cold-boot-proof
+          path: g2-01-cold-boot-proof.txt
+          if-no-files-found: error
+          retention-days: 7
