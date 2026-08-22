@@ -59,3 +59,25 @@ jobs:
             PATH="$VENV/bin:$PATH" TENFOLD_REPOSITORY_ONLY_PROOF=1 "$VENV/bin/python" -m compileall -q src
             PATH="$VENV/bin:$PATH" TENFOLD_REPOSITORY_ONLY_PROOF=1 "$VENV/bin/python" -m pytest -q
           )
+
+      - name: TEMP export canonical source for chat workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_SHA=fd3645cc49126d730c697c4701e3be42eb073d42
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          test "$(git rev-parse FETCH_HEAD)" = "$BASE_SHA"
+          git archive --format=tar.gz --output="$RUNNER_TEMP/tenfold-main-fd3645cc.tar.gz" "$BASE_SHA"
+          sha256sum "$RUNNER_TEMP/tenfold-main-fd3645cc.tar.gz" | tee "$RUNNER_TEMP/tenfold-main-fd3645cc.tar.gz.sha256"
+          printf '%s\n' "$BASE_SHA" > "$RUNNER_TEMP/tenfold-main-fd3645cc.commit"
+
+      - name: TEMP upload canonical source transport artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tenfold-main-fd3645cc-source
+          path: |
+            ${{ runner.temp }}/tenfold-main-fd3645cc.tar.gz
+            ${{ runner.temp }}/tenfold-main-fd3645cc.tar.gz.sha256
+            ${{ runner.temp }}/tenfold-main-fd3645cc.commit
+          if-no-files-found: error
+          retention-days: 1
