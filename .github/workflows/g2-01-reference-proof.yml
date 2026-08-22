@@ -87,6 +87,12 @@ jobs:
           LC_ALL=C sort -f candidate/docs/gen2/g2-01-pip-freeze.txt > /tmp/g2-01-candidate-lock.txt
           diff -u /tmp/g2-01-candidate-lock.txt /tmp/g2-01-installed-lock.txt
 
+      - name: Lock frozen reference read-only before candidate-controlled validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod -R a-w gen1-reference
+
       - name: Verify candidate bindings against exact reference tree
         shell: bash
         run: |
@@ -101,8 +107,34 @@ jobs:
           assert bundle.migration_reference_sha == '05aa384a34a650e677970904079a985ec8b26d90'
           assert bundle.migration_reference_tree_sha == 'c7c130b573180e74438d70b6e11c17dd9bade648'
           assert bundle.environment.python_version == 'Python 3.11.16'
-          assert bundle.cold_boot_status == 'PENDING'
+          # The finalized bundle legitimately transitions PENDING -> PASS once a
+          # bound proof artifact is committed; Gen1ReferenceBundle.validate()
+          # above already enforces the proof-artifact binding/self-consistency
+          # for PASS and the absence of a proof binding for PENDING. This proof
+          # lane must therefore accept and re-prove either lifecycle state
+          # rather than only ever admitting the pre-proof PENDING state.
+          assert bundle.cold_boot_status in ('PENDING', 'PASS')
           PY
+
+      - name: Reverify frozen reference untouched by candidate-controlled validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The previous step executes PR-controlled code (tenfold.gen2.reference
+          # imported from the candidate tree). That code must not be able to
+          # forge the proof substrate by mutating the frozen Gen1 checkout it was
+          # only supposed to read. Re-run the exact identity/cleanliness check
+          # performed before the candidate ran, while the checkout is still
+          # locked read-only, then restore write access for the authoritative
+          # suite (compileall/pytest need to write __pycache__/.pyc). Untracked
+          # files are intentionally excluded here because the earlier "Install
+          # exact frozen dependency environment" step legitimately leaves
+          # untracked build metadata (e.g. egg-info) in gen1-reference; only a
+          # change to a tracked frozen source file is a proof-integrity failure.
+          test "$(git -C gen1-reference rev-parse HEAD)" = "05aa384a34a650e677970904079a985ec8b26d90"
+          test "$(git -C gen1-reference write-tree)" = "c7c130b573180e74438d70b6e11c17dd9bade648"
+          test -z "$(git -C gen1-reference status --porcelain --untracked-files=no)"
+          chmod -R u+w gen1-reference
 
       - name: Run exact Gen1 repository-only cold boot
         shell: bash
