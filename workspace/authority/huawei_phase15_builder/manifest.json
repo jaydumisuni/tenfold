@@ -1,0 +1,18 @@
+{
+  "schema": "tenfold.workspace-authority-snapshot.v1",
+  "construction_only": true,
+  "repository": "jaydumisuni/thetechguy-software-builder",
+  "head": "682c9158751cc581efdecd20e8a83a7958695f78",
+  "files": {
+    "docs/PROJECT_SCRIPT_TARGET_ADAPTER.md": {
+      "git_blob_sha": "e11cd294397e1fcb883224fcaa32af4ab9e40228"
+    },
+    "scripts/builder_ops.py": {
+      "git_blob_sha": "0163f16071b483fdeddc067e6a6a3a46af523f86"
+    },
+    "scripts/verify_built_application_runtime.py": {
+      "git_blob_sha": "9aee5bb25f843e70557c79a6c3ed29da668ad61e"
+    }
+  },
+  "authority_boundary": "This snapshot exists only because the Tenfold workspace Actions token cannot read the private Builder repository. The source was recovered through the connected GitHub authority at the exact bound head. It is workspace construction evidence, not Builder product authority and must never merge to Tenfold main."
+}

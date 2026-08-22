@@ -1,0 +1,130 @@
+name: Workspace Huawei Phase 15 Tenfold
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "workspace/huawei_phase15_campaign_v2.py"
+      - "workspace/authority/huawei_phase15_builder/**"
+      - ".github/workflows/workspace-huawei-phase15.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  huawei-phase15:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      HUAWEI_HEAD: 114f2c25f5fd0ec93e4685a0cc5d9a0e458042d3
+      BUILDER_HEAD: 682c9158751cc581efdecd20e8a83a7958695f78
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONPATH: ${{ github.workspace }}/src
+    steps:
+      - name: Check out exact Tenfold workspace head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Assert exact Tenfold workspace head
+        shell: bash
+        env:
+          TENFOLD_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: test "$(git rev-parse HEAD)" = "$TENFOLD_HEAD"
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Bind qualified Tenfold source runtime without modifying checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import tenfold
+          print(tenfold.__file__)
+          PY
+          test -z "$(git status --porcelain)"
+
+      - name: Check out exact Huawei authority
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: jaydumisuni/TECHGUYTOOL-Huawei
+          ref: ${{ env.HUAWEI_HEAD }}
+          path: .workspace-authority/huawei
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Materialize exact private Builder authority snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.workspace-authority/builder"
+          cp -a "$GITHUB_WORKSPACE/workspace/authority/huawei_phase15_builder/." "$GITHUB_WORKSPACE/.workspace-authority/builder/"
+
+      - name: Assert exact Huawei head and snapshot identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          AUTHORITY="$GITHUB_WORKSPACE/.workspace-authority"
+          test "$(git -C "$AUTHORITY/huawei" rev-parse HEAD)" = "$HUAWEI_HEAD"
+          test -z "$(git -C "$AUTHORITY/huawei" status --porcelain)"
+          python - "$AUTHORITY/builder/manifest.json" "$BUILDER_HEAD" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert data['schema'] == 'tenfold.workspace-authority-snapshot.v1'
+          assert data['construction_only'] is True
+          assert data['repository'] == 'jaydumisuni/thetechguy-software-builder'
+          assert data['head'] == sys.argv[2]
+          PY
+          printf '%s\n' "$AUTHORITY" > "$RUNNER_TEMP/huawei-phase15-authority-root"
+
+      - name: Execute real Tenfold Huawei campaign
+        shell: bash
+        run: |
+          set -euo pipefail
+          AUTHORITY="$(cat "$RUNNER_TEMP/huawei-phase15-authority-root")"
+          OUT="$RUNNER_TEMP/huawei-phase15-tenfold.json"
+          python workspace/huawei_phase15_campaign_v2.py --authority-root "$AUTHORITY" --output "$OUT" | tee "$RUNNER_TEMP/huawei-phase15-tenfold.log"
+          grep -q 'TENFOLD_HUAWEI_PHASE15_CAMPAIGN_OK' "$RUNNER_TEMP/huawei-phase15-tenfold.log"
+          python - "$OUT" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert data['derivation_passed'] is True
+          assert data['deterministic_worker_failures'] == 0
+          assert data['authority_council']['accepted_for_rebrief'] is True
+          assert data['static_contract_failures'] == []
+          assert data['shadow_campaign_retired'] is True
+          assert data['builder']['source'] == 'construction_only_exact_blob_snapshot'
+          assert data['frontier']['ready'] == ['ORACLE_LIVE']
+          assert set(data['frontier']['blocked']) == {
+              'BUILDER_PLAN', 'FINAL_BUILD', 'PHASE15_REFREEZE', 'RUNTIME_PROOF', 'SOURCE_UI'
+          }
+          print(json.dumps(data, indent=2, sort_keys=True))
+          PY
+
+      - name: Prove Huawei authority remained clean
+        shell: bash
+        run: |
+          set -euo pipefail
+          AUTHORITY="$(cat "$RUNNER_TEMP/huawei-phase15-authority-root")"
+          test "$(git -C "$AUTHORITY/huawei" rev-parse HEAD)" = "$HUAWEI_HEAD"
+          test -z "$(git -C "$AUTHORITY/huawei" status --porcelain)"
+
+      - name: Remove construction-only authority materialization
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/.workspace-authority"
+
+      - name: Prove Tenfold workspace remained clean
+        shell: bash
+        env:
+          TENFOLD_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TENFOLD_HEAD"
+          status="$(git status --porcelain)"
+          printf '%s\n' "$status"
+          test -z "$status"
