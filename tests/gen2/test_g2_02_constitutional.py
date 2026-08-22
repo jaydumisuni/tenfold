@@ -145,6 +145,16 @@ def test_g2_02_requirement_missing_candidate_ledger_fails_closed() -> None:
         rcm.validate()
 
 
+def test_g2_02_orphaned_candidate_ledger_fails_closed() -> None:
+    # A ledger for a requirement_id absent from self.requirements is stale
+    # or mistargeted evidence, not benign extra data.
+    ledger = _independent_ledger()
+    ghost_ledger = _independent_ledger("REQ-GHOST")
+    rcm = RequirementClosureManifest(1, "s" * 64, (_requirement(),), (ledger, ghost_ledger), "manual", ("alice",))
+    with pytest.raises(ConstitutionalError, match="Candidate Ledger\\(s\\) for unknown requirement_id"):
+        rcm.validate()
+
+
 def test_g2_02_candidate_ledger_requires_accepted_or_merged() -> None:
     rejected = CandidateLedgerEntry("C-A", "REQ-1", "alice", "manual", "v1", 1, "d" * 64, CandidatePathDisposition.REJECTED)
     ledger = CandidateLedger("REQ-1", (rejected,))
@@ -357,7 +367,7 @@ def test_g2_02_policy_closure_duplicate_change_id_fails_closed() -> None:
 
 def _obligation_nodes() -> tuple[ObligationIRNode, ...]:
     return tuple(
-        ObligationIRNode(f"OB-{oc.value}", "REQ-1", oc, "predicate", FalsificationClass.STANDARD)
+        ObligationIRNode(f"OB-{oc.value}", "REQ-1", oc, f"predicate-{oc.value}", FalsificationClass.STANDARD)
         for oc in ObligationClass
     )
 
@@ -375,6 +385,23 @@ def test_g2_02_obligation_ir_falsification_class_must_match_policy_row() -> None
     mismatched = replace(nodes[0], falsification_class=FalsificationClass.CRITICAL)
     oir = ObligationIR(1, "r" * 64, "c" * 64, "p" * 64, (mismatched,) + nodes[1:])
     with pytest.raises(ConstitutionalError, match="does not match the frozen policy row"):
+        oir.validate(policy=policy)
+
+
+def test_g2_02_obligation_ir_matching_nodes_validate_against_policy() -> None:
+    policy = _total_policy()
+    ObligationIR(1, "r" * 64, "c" * 64, "p" * 64, _obligation_nodes()).validate(policy=policy)
+
+
+def test_g2_02_obligation_ir_proof_predicate_must_be_in_policy_row() -> None:
+    # Symmetric to the falsification-class cross-check: a node's
+    # proof_predicate must be one of the policy's declared predicates for
+    # its obligation_class, not an arbitrary string.
+    policy = _total_policy()
+    nodes = _obligation_nodes()
+    mismatched = replace(nodes[0], proof_predicate="not-a-declared-predicate")
+    oir = ObligationIR(1, "r" * 64, "c" * 64, "p" * 64, (mismatched,) + nodes[1:])
+    with pytest.raises(ConstitutionalError, match="is not in the frozen policy's proof/event predicates"):
         oir.validate(policy=policy)
 
 

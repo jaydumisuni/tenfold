@@ -454,6 +454,16 @@ class RequirementClosureManifest:
             raise ConstitutionalError(
                 f"RequirementClosureManifest: requirement(s) missing a Candidate Ledger: {sorted(missing_ledgers)}"
             )
+        # The reverse direction: a ledger for a requirement_id that is not
+        # in self.requirements is orphaned evidence for a requirement this
+        # closure does not actually contain — silently accepting it would
+        # let stale or mistargeted candidate evidence sit unnoticed in a
+        # closed manifest.
+        orphaned_ledgers = set(ledgers_by_requirement) - set(req_ids)
+        if orphaned_ledgers:
+            raise ConstitutionalError(
+                f"RequirementClosureManifest: Candidate Ledger(s) for unknown requirement_id: {sorted(orphaned_ledgers)}"
+            )
         for ledger in self.candidate_ledgers:
             ledger.validate()
 
@@ -1207,6 +1217,24 @@ class ObligationIR:
                     raise ConstitutionalError(
                         f"ObligationIR: node {node.obligation_id} falsification_class does not match "
                         f"the frozen policy row for its obligation_class"
+                    )
+                # Symmetric to the falsification-class cross-check above: a
+                # node's proof_predicate must be one of the frozen policy's
+                # obligation_class_to_proof_event_predicates for its own
+                # obligation_class, not an arbitrary string. Without this,
+                # ConstitutionalPolicySet's proof/event-predicate family
+                # would be schema-complete but never actually checked
+                # against real IR nodes.
+                allowed_predicates = policy.obligation_class_to_proof_event_predicates.get(node.obligation_class)
+                if allowed_predicates is None:
+                    raise ConstitutionalError(
+                        f"ObligationIR: node {node.obligation_id} obligation_class "
+                        f"{node.obligation_class.value} has no policy proof/event-predicate row"
+                    )
+                if node.proof_predicate not in allowed_predicates:
+                    raise ConstitutionalError(
+                        f"ObligationIR: node {node.obligation_id} proof_predicate {node.proof_predicate!r} is not "
+                        f"in the frozen policy's proof/event predicates for its obligation_class"
                     )
 
     def to_dict(self) -> dict[str, Any]:
