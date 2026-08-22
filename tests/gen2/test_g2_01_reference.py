@@ -35,16 +35,18 @@ def load_bundle() -> Gen1ReferenceBundle:
 
 def test_g2_01_bundle_binds_exact_current_pre_gen2_reference() -> None:
     bundle = load_bundle()
-    bundle.validate(ROOT, require_proven=False)
+    bundle.validate(ROOT, require_proven=True)
     assert bundle.migration_reference_sha == MAIN
     assert bundle.migration_reference_tree_sha == TREE
     assert bundle.environment.container_image == IMAGE
     assert bundle.environment.platform == "linux/amd64"
     assert bundle.environment.python_version == "Python 3.11.16"
     assert bundle.environment.pip_version == "pip 26.2.1"
-    assert bundle.cold_boot_status == "PENDING"
-    assert bundle.cold_boot_proof is None
-    assert bundle.proven_candidate_content_digest is None
+    assert bundle.cold_boot_status == "PASS"
+    assert bundle.cold_boot_proof is not None
+    assert bundle.proven_candidate_content_digest == (
+        "742a8282eb59fb87b478fedccb52fdee6f1b39525a1d0e2171bcf8c15948366c"
+    )
 
 
 def test_g2_01_reference_manifest_contains_master_build_horizon() -> None:
@@ -104,9 +106,20 @@ def test_g2_01_dependency_lock_tampering_fails_closed() -> None:
 
 def test_g2_01_proven_claim_requires_bound_cold_boot_artifact() -> None:
     bundle = load_bundle()
+    pending = replace(
+        bundle,
+        cold_boot_status="PENDING",
+        cold_boot_proof=None,
+        proven_candidate_content_digest=None,
+    )
     with pytest.raises(ReferenceError, match="not proven"):
-        bundle.validate(ROOT, require_proven=True)
-    bad_pass = replace(bundle, cold_boot_status="PASS")
+        pending.validate(ROOT, require_proven=True)
+    bad_pass = replace(
+        bundle,
+        cold_boot_status="PASS",
+        cold_boot_proof=None,
+        proven_candidate_content_digest=None,
+    )
     with pytest.raises(ReferenceError, match="lacks bound proof"):
         bad_pass.validate(ROOT, require_proven=False)
 
@@ -345,7 +358,12 @@ def test_g2_01_malformed_proven_candidate_content_digest_fails_closed(tmp_path: 
 
 def test_g2_01_pending_with_proven_candidate_content_digest_fails_closed() -> None:
     bundle = load_bundle()
-    broken = replace(bundle, proven_candidate_content_digest="a" * 64)
+    broken = replace(
+        bundle,
+        cold_boot_status="PENDING",
+        cold_boot_proof=None,
+        proven_candidate_content_digest="a" * 64,
+    )
     with pytest.raises(ReferenceError, match="must not carry a proven_candidate_content_digest"):
         broken.validate(ROOT, require_proven=False)
 
