@@ -1,8 +1,9 @@
 # G2-04 — Independent Verifier Specification and Core — Review / Proof Record
 
-**Status:** PROVING (round 1 — awaiting real hostile adversarial review)
+**Status:** PROVEN
 **Authority:** G2-00 §12 + G2-04
 **Dependency satisfied:** G2-02 PROVEN (`a3a9b19702b203ad79aecebdf039eb12254e8daf`, merged `4a3af2d`)
+**Proven candidate:** `c7606a6ea4d3a3a7f4a37783863de68915dd0600`
 
 ## Construction authority
 
@@ -27,8 +28,9 @@ frozen authority (TF-00, G2-00, the closed schemas in
 `tenfold.gen2.constitutional`) directly. This milestone's own module
 (`src/tenfold/gen2/verifier.py`) is therefore a genuinely separate
 implementation from `tenfold.gen2.constitutional`: it does not import that
-module, and re-derives its own canonical decoder, closed-schema checker, and
-a concrete independent semantic check against a real G2-02 artifact type
+module (confirmed by inspection on the final head), and re-derives its own
+canonical decoder, closed-schema checker, and a concrete independent
+semantic check against a real G2-02 artifact type
 (`RequirementClosureManifest`) from the frozen authority text a second time.
 
 There is no Rust kernel yet (G2-00 §4 places Rust constitutional authority
@@ -52,12 +54,14 @@ disagreement.
   — a concrete, exercised independent semantic check against a real G2-02
   `RequirementClosureManifest`: proven to genuinely agree with a valid
   producer artifact *and* genuinely detect defects (orphaned ledger, missing
-  ledger, no-accepted-entry, duplicate requirement_id) the producer's own
-  code also rejects, via a hand-derived second implementation;
+  ledger, no-accepted-entry, duplicate requirement_id, entry bound to the
+  wrong requirement) the producer's own code also rejects, via a
+  hand-derived second implementation;
 - lineage `INDEPENDENTLY_SPECIFIED` (`LineageKind`/`ComponentLineage`, all
   four kinds from G2-00 §12.2: `INDEPENDENTLY_SPECIFIED`, `PORTED_FROM`,
   `GENERATED_FROM`, `REVIEWED_AGAINST`);
-- disagreement ledger (`DisagreementRecord`) and convergence-statistics
+- disagreement ledger (`DisagreementRecord`, with positive-generation and
+  non-empty-digest well-formedness checks) and convergence-statistics
   schema (`ConvergenceStatistics`), both from G2-00 §12.1, including the
   explicit "kernel never corrected is a review trigger, not automatic
   failure" invariant and the ARCHITECTURAL_AMBIGUITY / no-resulting-change
@@ -77,82 +81,98 @@ disagreement.
   (`independent_reconcile_external_assurance`/
   `ExternalAssuranceReconciliationResult`) — an independent re-derivation of
   the copy-A/copy-B reconciliation `tenfold.gen2.constitutional.
-  ExternalAssuranceBinding.validate()` performs, not a call into it.
+  ExternalAssuranceBinding.validate()` performs, checking request/response
+  digests, authority identity/generation, *and* campaign generation /
+  milestone / obligation binding per G2-00 §11.2's full requirement.
 
-`tests/gen2/test_g2_04_verifier.py` — 50 permanent fixtures, including a
+`tests/gen2/test_g2_04_verifier.py` — 60 permanent fixtures, including a
 9-case adversarial JSON decoder corpus (trailing commas, unquoted keys,
 single-quoted strings, unterminated objects/strings, `undefined`, leading
 zeros, `NaN`) and the independent-verifier-agrees/independent-verifier-
-disagrees pair against a real G2-02 artifact.
+disagrees pairs against a real G2-02 artifact.
 
-## Self-found defects (this module's own construction, before external
-review)
+## Construction and review history
 
-1. The initial decoder relied on `json.loads`'s default `parse_constant`
-   behaviour, which accepts `NaN`/`Infinity`/`-Infinity` as a non-standard
-   extension not valid per RFC 8259. The adversarial corpus test written
-   against this module's own independent decoder caught it directly. The
-   same gap turned out to exist in the already-merged, already-PROVEN
-   `tenfold.gen2.constitutional._load_canonical_json` — filed and fixed as
-   its own dedicated post-merge correction, PR #40, rather than folded into
-   this PR, since G2-02 is already closed and the two fixes have
-   independent proof/review obligations.
-2. Three bare `SomeEnum(raw[...])` construction sites (mirroring G2-02's
-   own round-5 finding exactly) leaked a bare `ValueError` instead of this
-   module's own `VerifierError` for an invalid enum string. Fixed with a
-   local `_expect_enum` helper before this module was ever pushed for
-   external review, applying the lesson already learned from G2-02's
-   history rather than waiting to rediscover it.
+1. Initial construction: independent decoder, closed-schema checker,
+   minimal verifier core, lineage/disagreement/convergence/extension-
+   protocol/Shared-Trust-Surface/reconciliation schemas, 50 fixtures.
+   Two defects self-found and fixed before any external review: the
+   decoder's acceptance of the non-standard NaN/Infinity/-Infinity JSON
+   constant extension (also found to affect the already-merged
+   `constitutional.py`, corrected separately as PR #40 since G2-02 is
+   already closed), and three bare `Enum(value)` construction sites leaking
+   bare `ValueError` instead of this module's own `VerifierError` — the
+   same bug class G2-02's own round 5 found, applied here proactively.
+2. Real, independently-obtained adversarial review (chatgpt-codex-connector,
+   separate system, no shared implementation with the module author) found
+   3 genuine defects — 2 P1, 1 P2: `independent_reconcile_external_assurance`
+   checked only the four copy-internal fields, never the campaign
+   generation or obligation/milestone binding G2-00 §11.2 also requires;
+   the minimal verifier core's ledger loop never checked an entry's own
+   `requirement_id` against its enclosing ledger's, letting evidence for one
+   requirement be presented as closure evidence for another; `DisagreementRecord`
+   accepted non-positive generations and empty digests. All fixed with
+   genuine code changes and permanent regression tests; all 3 review
+   threads resolved.
 
-## Acceptance criteria status (self-assessed, pending independent/hostile
-confirmation)
+10 permanent regression fixtures added across both rounds (50 → 60).
 
-- specification cites frozen authority only: every schema/constant in this
-  module carries a G2-00 §12/§12.1/§12.2 citation in its docstring, derived
-  directly from the authority text, not from any kernel implementation
-  (none exists yet);
+## Proof evidence
+
+Real GitHub Actions CI on the exact proven candidate `c7606a6`:
+
+- `verify` (Tenfold CI): **success** — `60` gen2/test_g2_04_verifier.py
+  tests passed, full suite `321 passed`, only the pre-existing unrelated
+  Windows-only environment failures — run:
+  <https://github.com/jaydumisuni/tenfold/actions/runs/32595926130>.
+
+G2-04, like G2-02, has no dedicated cold-boot/candidate-check proof lane;
+its proof surface is the standard repository test suite plus real hostile
+review.
+
+## Independent authority review
+
+`independent_authority_review` assurance (G2-00 §11.2, required by
+`FOUNDING_MATRIX.required_for(("authority",))`) is satisfied by the real,
+independently-obtained chatgpt-codex-connector review described above:
+lineage `INDEPENDENTLY_SPECIFIED`, 3 real findings, all addressed with
+genuine code changes and permanent regression tests, 0 unresolved findings
+on the final head.
+
+## Milestone Council
+
+Real `tenfold.council.reconcile()` invocation (3 evidence packets from
+verification/evidence/challenge Officer reports binding the CI run above,
+the independent adversarial review history, and PR review-thread resolution
+status) against `tenfold.assurance.FOUNDING_MATRIX.required_for(("authority",))`:
+
+- required assurance: `independent_authority_review`, `tenfold_council`;
+- satisfied assurance: both;
+- material_disagreement: `false`;
+- unresolved_assurance: none;
+- **accepted_for_rebrief: `true`**.
+
+All 3 PR #41 review threads are resolved on the final head.
+
+## Acceptance reconciliation
+
+- specification cites frozen authority only: every schema/constant carries
+  a G2-00 §12/§12.1/§12.2 citation, derived from the authority text — **PASS**;
 - kernel implementation is not verifier specification source: no kernel
-  exists yet to be a source; `VerifierSpecificationDelta.resulting_lineage()`
-  encodes the rule that would apply once one does;
+  exists yet — **PASS** (vacuously, and by design);
 - initial adversarial decoder corpus passes: 9-case parametrized corpus,
-  `test_g2_04_independent_decoder_adversarial_corpus_rejects_malformed_json`;
-- external assurance copies reconcile: exercised by
-  `test_g2_04_independent_reconciliation_matches` /
-  `test_g2_04_independent_reconciliation_detects_mismatch`;
-- derivation lineage independently reviewed: `ComponentLineage` schema
-  complete for all four kinds; this record's own construction history
-  above documents the module's own lineage as `INDEPENDENTLY_SPECIFIED`
-  (no import of `tenfold.gen2.constitutional`, verified by inspection —
-  `grep -n "from .constitutional\|from tenfold.gen2.constitutional"
-  src/tenfold/gen2/verifier.py` returns nothing).
-
-## Local verification
-
-Full repository suite: 311 passed, 11 pre-existing failures unrelated to
-this change (9 Windows-only subprocess/symlink environment failures, 2
-known Windows `git checkout` CRLF-conversion artifacts in
-`tests/gen2/test_g2_01_reference.py`, both already documented in prior
-closure history) — none touch this milestone's code.
-
-## Pending before canonical PROVEN
-
-This record intentionally does **not** claim PROVEN. Consistent with G2-01
-and G2-02's own closure discipline, self-review — even the two genuine
-defects already found and fixed above — is not sufficient on its own.
-Before this milestone may be declared canonically PROVEN:
-
-1. real GitHub Actions CI (`verify`) green on the exact PR head;
-2. real, independently-obtained hostile review findings addressed with
-   genuine code changes;
-3. real `tenfold.council.reconcile()` invocation against
-   `tenfold.assurance.FOUNDING_MATRIX.required_for(("authority",))`
-   returning `accepted_for_rebrief: true`;
-4. atomic closure commit updating this record, `README.md` and `PICKUP.md`
-   to PROVEN on the exact reviewed head.
+  all passing — **PASS**;
+- external assurance copies reconcile, including campaign/milestone/
+  obligation binding per G2-00 §11.2's full requirement (round 2 fix) —
+  **PASS**;
+- derivation lineage independently reviewed: this module's own lineage is
+  `INDEPENDENTLY_SPECIFIED` (verified: no import of
+  `tenfold.gen2.constitutional`) — **PASS**.
 
 ## Does not enable
 
 - Gen-2 authoritative execution;
 - Rust kernel construction (that begins at later milestones per G2-00 §4);
-- G2-05 execution before this milestone reaches canonical `PROVEN` (G2-05
-  depends on G2-02, G2-03 *and* G2-04 per the frozen dependency spine).
+- G2-05 execution before G2-02, G2-03 *and* G2-04 all reach canonical
+  `PROVEN` (G2-05 depends on all three per the frozen dependency spine —
+  G2-02 and G2-04 now satisfied; G2-03 remains outstanding).
