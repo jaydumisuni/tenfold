@@ -166,6 +166,30 @@ def git_rev_parse(repo: str, ref: str) -> str:
     return _run(["git", "-C", repo, "rev-parse", ref]).strip()
 
 
+def git_ls_tree_paths(repo: str, ref: str, subpaths: tuple[str, ...]) -> set:
+    result = subprocess.run(
+        ["git", "-C", repo, "ls-tree", "-r", "--name-only", ref, "--", *subpaths],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise IndependentReviewFailure(f"could not enumerate {ref} tree under {subpaths}: {result.stderr.strip()}")
+    return {line for line in result.stdout.splitlines() if line}
+
+
+VALID_DISPOSITION_VALUES = {"KEEP", "WRAP", "EVOLVE", "PORT", "SUPERSEDE"}
+VALID_COVERAGE_CLASSES = {"WITHIN_GEN1_REFERENCE_SURFACE", "GEN2_ONLY_SURFACE"}
+
+# Independently re-derived from the documented corpus descriptions (complete
+# pre-G2 src+tests+docs / src / tests corpora), not imported from
+# tenfold.gen2.reference.CORPUS_SCOPES.
+INDEPENDENT_CORPUS_SCOPES = {
+    "reference_corpus": ("src", "tests", "docs"),
+    "semantic_corpus": ("src",),
+    "qualification_fixture_corpus": ("tests",),
+}
+
+
 def git_tree_sha(repo: str, commit: str) -> str:
     return _run(["git", "-C", repo, "rev-parse", f"{commit}^{{tree}}"]).strip()
 
@@ -335,8 +359,11 @@ def review(repo: str, candidate: str, reference: str, findings: Findings) -> dic
     fixture_corpus_path = check_artifact_binding("qualification_fixture_corpus")
 
     # --- corpus manifests verified against the LIVE frozen reference tree,
-    # --- not merely against whatever the candidate itself claims ----------
-    def check_manifest_against_reference(manifest_path: str | None, label: str) -> None:
+    # --- not merely against whatever the candidate itself claims. Exact
+    # --- scope (not just per-line correctness) is independently enumerated
+    # --- so a manifest thinned to a subset, or broadened with unrelated
+    # --- extra files, is rejected either way. ------------------------------
+    def check_manifest_against_reference(manifest_path: str | None, label: str, scope: tuple[str, ...]) -> None:
         if manifest_path is None:
             return
         text = git_show(repo, candidate, manifest_path).decode("utf-8")
@@ -374,14 +401,24 @@ def review(repo: str, candidate: str, reference: str, findings: Findings) -> dic
             if actual != digest:
                 findings.fail(label, f"frozen reference artifact digest mismatch: {rel}")
                 line_failures += 1
-        if line_failures == 0 and line_count > 0:
-            findings.ok(f"{label}: {line_count} entries independently verified against live reference")
-        elif line_count == 0:
+        if line_count == 0:
             findings.fail(label, "manifest is empty")
+            return
+        expected = git_ls_tree_paths(repo, live_reference_sha, scope)
+        missing = expected - seen
+        if missing:
+            findings.fail(label, f"omits required frozen reference file(s): {sorted(missing)[:5]}")
+            line_failures += 1
+        extra = seen - expected
+        if extra:
+            findings.fail(label, f"contains out-of-scope file(s): {sorted(extra)[:5]}")
+            line_failures += 1
+        if line_failures == 0:
+            findings.ok(f"{label}: {line_count} entries independently verified exact against live reference scope {scope}")
 
-    check_manifest_against_reference(reference_corpus_path, "reference_corpus manifest")
-    check_manifest_against_reference(semantic_corpus_path, "semantic_corpus manifest")
-    check_manifest_against_reference(fixture_corpus_path, "qualification_fixture_corpus manifest")
+    check_manifest_against_reference(reference_corpus_path, "reference_corpus manifest", INDEPENDENT_CORPUS_SCOPES["reference_corpus"])
+    check_manifest_against_reference(semantic_corpus_path, "semantic_corpus manifest", INDEPENDENT_CORPUS_SCOPES["semantic_corpus"])
+    check_manifest_against_reference(fixture_corpus_path, "qualification_fixture_corpus manifest", INDEPENDENT_CORPUS_SCOPES["qualification_fixture_corpus"])
 
     # --- cold-boot lifecycle state, independently re-derived --------------
     status = raw.get("cold_boot_status")
@@ -452,6 +489,15 @@ def review(repo: str, candidate: str, reference: str, findings: Findings) -> dic
             findings.fail("dispositions", f"incomplete disposition(s): {incomplete}")
         else:
             findings.ok(f"{len(names)} component dispositions independently verified complete/unique")
+        invalid_values = [
+            (d.get("component"), d.get("disposition"))
+            for d in dispositions
+            if d.get("disposition") not in VALID_DISPOSITION_VALUES
+        ]
+        if invalid_values:
+            findings.fail("dispositions", f"invalid disposition value(s): {invalid_values}")
+        else:
+            findings.ok("all disposition values independently verified against closed KEEP/WRAP/EVOLVE/PORT/SUPERSEDE enum")
         missing_components = INDEPENDENT_REQUIRED_COMPONENT_ROSTER - set(names)
         if missing_components:
             findings.fail("dispositions roster", f"missing required component(s): {sorted(missing_components)}")
@@ -492,6 +538,20 @@ def review(repo: str, candidate: str, reference: str, findings: Findings) -> dic
         findings.fail("reference_coverage roster", f"missing required semantic area(s): {sorted(missing_areas)}")
     else:
         findings.ok("reference_coverage roster independently verified complete against required set")
+    coverage_bad = False
+    for item in reference_coverage:
+        cls = item.get("classification")
+        if cls not in VALID_COVERAGE_CLASSES:
+            findings.fail("reference_coverage", f"invalid classification {cls!r} for {item.get('semantic_area')}")
+            coverage_bad = True
+        if not item.get("rationale"):
+            findings.fail("reference_coverage", f"rationale missing for {item.get('semantic_area')}")
+            coverage_bad = True
+        if cls == "WITHIN_GEN1_REFERENCE_SURFACE" and not item.get("reference_refs"):
+            findings.fail("reference_coverage", f"{item.get('semantic_area')} is WITHIN_GEN1_REFERENCE_SURFACE without reference_refs")
+            coverage_bad = True
+    if not coverage_bad and reference_coverage:
+        findings.ok("reference_coverage classification/rationale/reference_refs independently verified")
 
     # --- authority refs cite the live reference commit ---------------------
     authority_refs = raw.get("authority_refs", [])
@@ -512,6 +572,12 @@ def review(repo: str, candidate: str, reference: str, findings: Findings) -> dic
         cases: set[str] = set()
         bad = False
         for item in divergences:
+            if not (item.get("divergence_id") and item.get("case_id") and item.get("authority_ref") and item.get("rationale")):
+                findings.fail("intentional_divergences", f"record incomplete: {item.get('divergence_id')}")
+                bad = True
+            if not _SHA256.fullmatch(item.get("reference_digest") or "") or not _SHA256.fullmatch(item.get("candidate_digest") or ""):
+                findings.fail("intentional_divergences", f"must bind exact SHA-256 outputs: {item.get('divergence_id')}")
+                bad = True
             if item.get("register_generation") != gen:
                 findings.fail("intentional_divergences", f"generation mismatch: {item.get('divergence_id')}")
                 bad = True
@@ -529,6 +595,49 @@ def review(repo: str, candidate: str, reference: str, findings: Findings) -> dic
     return raw
 
 
+def parse_workflow_jobs_stdlib(text: str) -> dict:
+    """Minimal stdlib-only extraction of top-level job structure: job
+    names, each job's `needs:` value, and each job's full raw text block
+    (used below for name/run/with substring and regex checks, which do not
+    require per-step structure - a whole-job text search is equivalent for
+    the specific patterns this reviewer looks for). Deliberately not a
+    general YAML parser: this reviewer's own lineage/reproducibility claim
+    depends on having no third-party dependency whose absence or version
+    would make its result non-reproducible without an explicit environment
+    pin, so a narrow, self-contained parser is used instead of PyYAML.
+    """
+    lines = text.splitlines()
+    try:
+        jobs_idx = next(i for i, l in enumerate(lines) if l.rstrip() == "jobs:")
+    except StopIteration:
+        raise IndependentReviewFailure("workflow has no top-level 'jobs:' key")
+    job_header = re.compile(r"^  ([A-Za-z0-9_.-]+):\s*$")
+    job_starts = []
+    for i in range(jobs_idx + 1, len(lines)):
+        line = lines[i]
+        if line and not line.startswith(" "):
+            break
+        m = job_header.match(line)
+        if m:
+            job_starts.append((m.group(1), i))
+    if not job_starts:
+        raise IndependentReviewFailure("could not find any job definitions under 'jobs:'")
+    jobs: dict = {}
+    for idx, (name, start) in enumerate(job_starts):
+        end = job_starts[idx + 1][1] if idx + 1 < len(job_starts) else len(lines)
+        block = "\n".join(lines[start:end])
+        needs_match = re.search(r"(?m)^\s{4}needs:\s*(.+)$", block)
+        needs: list = []
+        if needs_match:
+            raw_needs = needs_match.group(1).strip()
+            if raw_needs.startswith("["):
+                needs = [n.strip().strip("'\"") for n in raw_needs.strip("[]").split(",") if n.strip()]
+            else:
+                needs = [raw_needs.strip("'\"")]
+        jobs[name] = {"text": block, "needs": needs}
+    return jobs
+
+
 def review_proof_lane_isolation(repo: str, candidate: str, findings: Findings) -> None:
     """Independently confirm the candidate-isolation fix is present in the
     exact candidate tree under review (not merely asserted in a commit
@@ -540,14 +649,9 @@ def review_proof_lane_isolation(repo: str, candidate: str, findings: Findings) -
     text = git_show(repo, candidate, workflow_path).decode("utf-8")
 
     try:
-        import yaml  # type: ignore
-        doc = yaml.safe_load(text)
-        jobs = doc.get("jobs", {})
-    except Exception:
-        jobs = None
-
-    if jobs is None:
-        findings.fail("proof-lane isolation", "could not parse workflow YAML to verify job structure")
+        jobs = parse_workflow_jobs_stdlib(text)
+    except IndependentReviewFailure as exc:
+        findings.fail("proof-lane isolation", f"could not parse workflow job structure: {exc}")
         return
 
     if "candidate-check" not in jobs or "cold-boot" not in jobs:
@@ -555,29 +659,13 @@ def review_proof_lane_isolation(repo: str, candidate: str, findings: Findings) -
         return
     findings.ok("proof-lane candidate-check and cold-boot are separate jobs")
 
-    cold_boot_needs = jobs["cold-boot"].get("needs")
-    needs_set = {cold_boot_needs} if isinstance(cold_boot_needs, str) else set(cold_boot_needs or [])
-    if "candidate-check" not in needs_set:
+    if "candidate-check" not in jobs["cold-boot"]["needs"]:
         findings.fail("proof-lane isolation", "cold-boot does not depend on candidate-check")
     else:
         findings.ok("proof-lane cold-boot gated on candidate-check via needs:")
 
-    candidate_check_steps = jobs["candidate-check"].get("steps", [])
-    cold_boot_steps = jobs["cold-boot"].get("steps", [])
-
-    def step_text(steps: list) -> str:
-        # Concatenate each step's real (unescaped) run/name/with content as
-        # parsed by YAML, not a json.dumps of the dict (which would escape
-        # quotes/newlines and break plain substring checks below).
-        parts = []
-        for s in steps:
-            parts.append(str(s.get("name", "")))
-            parts.append(str(s.get("run", "")))
-            parts.append(str(s.get("with", "")))
-        return "\n".join(parts)
-
-    candidate_step_text = step_text(candidate_check_steps)
-    cold_boot_step_text = step_text(cold_boot_steps)
+    candidate_step_text = jobs["candidate-check"]["text"]
+    cold_boot_step_text = jobs["cold-boot"]["text"]
 
     # The strongest form of the isolation finding: candidate-check must not
     # import tenfold.gen2.reference (or any candidate-authored .py file) at
