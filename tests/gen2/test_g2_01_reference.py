@@ -44,9 +44,10 @@ def test_g2_01_bundle_binds_exact_current_pre_gen2_reference() -> None:
     assert bundle.environment.pip_version == "pip 26.2.1"
     assert bundle.cold_boot_status == "PASS"
     assert bundle.cold_boot_proof is not None
-    assert bundle.proven_candidate_content_digest == (
-        "742a8282eb59fb87b478fedccb52fdee6f1b39525a1d0e2171bcf8c15948366c"
-    )
+    # Not a hard-coded literal: this test file's own content is itself part
+    # of the tree the digest is computed over, so pinning a literal here
+    # would go stale on every edit to this file, including this one.
+    assert bundle.proven_candidate_content_digest == compute_candidate_content_digest(ROOT)
 
 
 def test_g2_01_reference_manifest_contains_master_build_horizon() -> None:

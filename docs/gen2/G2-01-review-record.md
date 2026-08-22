@@ -1,6 +1,6 @@
 # G2-01 — Gen-1 Reference and Inheritance Freeze — Review / Proof Record
 
-**Status:** PROVING (round 7 — stale-fixture correction; fresh cold-boot proof pending on the corrected candidate)
+**Status:** PROVING (round 8 — replaced a hard-coded digest literal that created a circular self-reference; fresh cold-boot proof pending on the corrected candidate)
 **Authority:** TF-00 + frozen G2-00 §§3, 3.1, 3.2 + G2-01
 **Frozen Gen-1 migration reference:** `05aa384a34a650e677970904079a985ec8b26d90`
 **Frozen Gen-1 migration tree:** `c7c130b573180e74438d70b6e11c17dd9bade648`
@@ -52,10 +52,18 @@ round:
    closure-record-excluded paths, `proven_candidate_content_digest` legitimately
    no longer matches the corrected tree; the bundle is reverted to `PENDING`
    here so a fresh cold-boot proof can be bound to the corrected candidate.
+8. The round-7 fix itself pinned the freshly proven digest as a hard-coded
+   string literal in the same test file whose own content the digest is
+   computed over — a self-referential fixed point: any further edit to that
+   literal shifts the tree, which shifts the true digest, invalidating the
+   literal again. Replaced the literal with a live call to
+   `compute_candidate_content_digest(ROOT)`, so the assertion checks
+   self-consistency rather than a value that goes stale on its own edit.
+   Reverted the bundle to `PENDING` once more for this final tree.
 
 ## Frozen artifacts
 
-- `g2-01-gen1-reference-bundle.json` — schema `tenfold.gen1_reference.v2`, `cold_boot_status = PENDING` (round 7, awaiting fresh proof);
+- `g2-01-gen1-reference-bundle.json` — schema `tenfold.gen1_reference.v2`, `cold_boot_status = PENDING` (round 8, awaiting fresh proof);
 - `g2-01-cold-boot-proof.txt` — the exact bound cold-boot proof artifact;
 - `g2-01-reference-corpus.sha256` — complete pre-G2 `src + tests + docs` corpus (66 entries);
 - `g2-01-semantic-corpus.sha256` — pre-G2 `src` corpus (33 entries);
