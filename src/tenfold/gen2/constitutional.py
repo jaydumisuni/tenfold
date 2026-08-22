@@ -119,6 +119,20 @@ def _expect_dict(value: Any, field: str, schema_name: str) -> dict:
     return value
 
 
+def _expect_enum(enum_cls: type, value: Any, field: str, schema_name: str) -> Any:
+    """Construct a closed Enum member from raw JSON, re-raising Python's own
+    ValueError as ConstitutionalError. Every from_dict here is documented as
+    failing closed with ConstitutionalError for malformed constitutional
+    encodings (G2-00 SS7.1); a bare `SomeEnum(value)` call instead leaks a
+    raw ValueError for an invalid string, which a caller that specifically
+    catches ConstitutionalError (as this module's own tests do throughout)
+    would not catch."""
+    try:
+        return enum_cls(value)
+    except ValueError as exc:
+        raise ConstitutionalError(f"{schema_name}.{field}: invalid value {value!r} for {enum_cls.__name__}") from exc
+
+
 # ============================================================================
 # Foundational closed enums (G2-00 SS6, SS7, SS11)
 # ============================================================================
@@ -296,7 +310,7 @@ class Requirement:
             requirement_id=raw["requirement_id"],
             text=raw["text"],
             source_authority=raw["source_authority"],
-            classes=tuple(RequirementClass(c) for c in _expect_list(raw["classes"], "classes", "Requirement")),
+            classes=tuple(_expect_enum(RequirementClass, c, "classes", "Requirement") for c in _expect_list(raw["classes"], "classes", "Requirement")),
             generation=raw["generation"],
         )
 
@@ -359,7 +373,7 @@ class CandidateLedgerEntry:
             tooling_version=raw["tooling_version"],
             procedure_generation=raw["procedure_generation"],
             source_digest=raw["source_digest"],
-            disposition=CandidatePathDisposition(raw["disposition"]),
+            disposition=_expect_enum(CandidatePathDisposition, raw["disposition"], "disposition", "CandidateLedgerEntry"),
         )
 
 
@@ -582,8 +596,8 @@ class ClassificationEntry:
         return cls(
             requirement_id=raw["requirement_id"],
             classifier=raw["classifier"],
-            classes=tuple(RequirementClass(c) for c in _expect_list(raw["classes"], "classes", "ClassificationEntry")),
-            structural_floor_classes=tuple(RequirementClass(c) for c in _expect_list(raw["structural_floor_classes"], "structural_floor_classes", "ClassificationEntry")),
+            classes=tuple(_expect_enum(RequirementClass, c, "classes", "ClassificationEntry") for c in _expect_list(raw["classes"], "classes", "ClassificationEntry")),
+            structural_floor_classes=tuple(_expect_enum(RequirementClass, c, "structural_floor_classes", "ClassificationEntry") for c in _expect_list(raw["structural_floor_classes"], "structural_floor_classes", "ClassificationEntry")),
             downgrade_authority_ref=raw["downgrade_authority_ref"],
         )
 
@@ -760,9 +774,9 @@ class AmbiguityRecord:
         _reject_unknown_keys(raw, cls._EXPECTED_KEYS, "AmbiguityRecord")
         return cls(
             ambiguity_id=raw["ambiguity_id"],
-            state=AmbiguityState(raw["state"]),
+            state=_expect_enum(AmbiguityState, raw["state"], "state", "AmbiguityRecord"),
             affected_requirement_ids=_expect_list_of_str(raw["affected_requirement_ids"], "affected_requirement_ids", "AmbiguityRecord"),
-            affected_classes=tuple(RequirementClass(c) for c in _expect_list(raw["affected_classes"], "affected_classes", "AmbiguityRecord")),
+            affected_classes=tuple(_expect_enum(RequirementClass, c, "affected_classes", "AmbiguityRecord") for c in _expect_list(raw["affected_classes"], "affected_classes", "AmbiguityRecord")),
             source_authority_ref=raw["source_authority_ref"],
             generation=raw["generation"],
             disposition_authority_ref=raw["disposition_authority_ref"],
@@ -1002,23 +1016,23 @@ class ConstitutionalPolicySet:
         return cls(
             policy_generation=raw["policy_generation"],
             requirement_class_to_obligation_classes={
-                RequirementClass(k): tuple(ObligationClass(v) for v in _expect_list(vs, k, "ConstitutionalPolicySet.requirement_class_to_obligation_classes"))
+                _expect_enum(RequirementClass, k, "requirement_class_to_obligation_classes", "ConstitutionalPolicySet"): tuple(_expect_enum(ObligationClass, v, k, "ConstitutionalPolicySet.requirement_class_to_obligation_classes") for v in _expect_list(vs, k, "ConstitutionalPolicySet.requirement_class_to_obligation_classes"))
                 for k, vs in _expect_dict(raw["requirement_class_to_obligation_classes"], "requirement_class_to_obligation_classes", "ConstitutionalPolicySet").items()
             },
             obligation_class_to_proof_event_predicates={
-                ObligationClass(k): _expect_list_of_str(vs, k, "ConstitutionalPolicySet.obligation_class_to_proof_event_predicates")
+                _expect_enum(ObligationClass, k, "obligation_class_to_proof_event_predicates", "ConstitutionalPolicySet"): _expect_list_of_str(vs, k, "ConstitutionalPolicySet.obligation_class_to_proof_event_predicates")
                 for k, vs in _expect_dict(raw["obligation_class_to_proof_event_predicates"], "obligation_class_to_proof_event_predicates", "ConstitutionalPolicySet").items()
             },
             obligation_class_to_falsification_class={
-                ObligationClass(k): FalsificationClass(v)
+                _expect_enum(ObligationClass, k, "obligation_class_to_falsification_class", "ConstitutionalPolicySet"): _expect_enum(FalsificationClass, v, k, "ConstitutionalPolicySet.obligation_class_to_falsification_class")
                 for k, v in _expect_dict(raw["obligation_class_to_falsification_class"], "obligation_class_to_falsification_class", "ConstitutionalPolicySet").items()
             },
             obligation_class_to_assurance_routing={
-                ObligationClass(k): _expect_list_of_str(vs, k, "ConstitutionalPolicySet.obligation_class_to_assurance_routing")
+                _expect_enum(ObligationClass, k, "obligation_class_to_assurance_routing", "ConstitutionalPolicySet"): _expect_list_of_str(vs, k, "ConstitutionalPolicySet.obligation_class_to_assurance_routing")
                 for k, vs in _expect_dict(raw["obligation_class_to_assurance_routing"], "obligation_class_to_assurance_routing", "ConstitutionalPolicySet").items()
             },
             requirement_classification_to_ambiguity_impact_domains={
-                RequirementClass(k): tuple(AmbiguityImpactDomain(v) for v in _expect_list(vs, k, "ConstitutionalPolicySet.requirement_classification_to_ambiguity_impact_domains"))
+                _expect_enum(RequirementClass, k, "requirement_classification_to_ambiguity_impact_domains", "ConstitutionalPolicySet"): tuple(_expect_enum(AmbiguityImpactDomain, v, k, "ConstitutionalPolicySet.requirement_classification_to_ambiguity_impact_domains") for v in _expect_list(vs, k, "ConstitutionalPolicySet.requirement_classification_to_ambiguity_impact_domains"))
                 for k, vs in _expect_dict(raw["requirement_classification_to_ambiguity_impact_domains"], "requirement_classification_to_ambiguity_impact_domains", "ConstitutionalPolicySet").items()
             },
             assurance_matrix_generation=raw["assurance_matrix_generation"],
@@ -1066,7 +1080,7 @@ class CandidatePolicyLedgerEntry:
         return cls(
             change_id=raw["change_id"],
             field_identity=raw["field_identity"],
-            operator=PolicyMutationOperator(raw["operator"]),
+            operator=_expect_enum(PolicyMutationOperator, raw["operator"], "operator", "CandidatePolicyLedgerEntry"),
             rationale=raw["rationale"],
             reviewer=raw["reviewer"],
         )
@@ -1197,9 +1211,9 @@ class ObligationIRNode:
         return cls(
             obligation_id=raw["obligation_id"],
             requirement_id=raw["requirement_id"],
-            obligation_class=ObligationClass(raw["obligation_class"]),
+            obligation_class=_expect_enum(ObligationClass, raw["obligation_class"], "obligation_class", "ObligationIRNode"),
             proof_predicate=raw["proof_predicate"],
-            falsification_class=FalsificationClass(raw["falsification_class"]),
+            falsification_class=_expect_enum(FalsificationClass, raw["falsification_class"], "falsification_class", "ObligationIRNode"),
         )
 
 
@@ -1497,8 +1511,8 @@ class ProofGraphNode:
         _reject_unknown_keys(raw, cls._EXPECTED_KEYS, "ProofGraphNode")
         return cls(
             obligation_id=raw["obligation_id"],
-            state=ProofState(raw["state"]),
-            falsification_class=FalsificationClass(raw["falsification_class"]),
+            state=_expect_enum(ProofState, raw["state"], "state", "ProofGraphNode"),
+            falsification_class=_expect_enum(FalsificationClass, raw["falsification_class"], "falsification_class", "ProofGraphNode"),
             evidence_refs=_expect_list_of_str(raw["evidence_refs"], "evidence_refs", "ProofGraphNode"),
             predecessor_obligation_ids=_expect_list_of_str(raw["predecessor_obligation_ids"], "predecessor_obligation_ids", "ProofGraphNode"),
         )
@@ -1621,7 +1635,7 @@ class RuntimeObligation:
             obligation_id=raw["obligation_id"],
             campaign_id=raw["campaign_id"],
             node_id=raw["node_id"],
-            state=ProofState(raw["state"]),
+            state=_expect_enum(ProofState, raw["state"], "state", "RuntimeObligation"),
         )
 
 
@@ -1659,7 +1673,7 @@ class ExternalAssuranceCopy:
     def from_dict(cls, raw: Mapping[str, Any]) -> "ExternalAssuranceCopy":
         _reject_unknown_keys(raw, cls._EXPECTED_KEYS, "ExternalAssuranceCopy")
         return cls(
-            slot=AssuranceCopySlot(raw["slot"]),
+            slot=_expect_enum(AssuranceCopySlot, raw["slot"], "slot", "ExternalAssuranceCopy"),
             request_digest=raw["request_digest"],
             response_digest=raw["response_digest"],
             authority_identity=raw["authority_identity"],
@@ -2109,7 +2123,7 @@ class AuthorityTransferRecord:
             transfer_id=raw["transfer_id"],
             from_authority_ref=raw["from_authority_ref"],
             to_authority_ref=raw["to_authority_ref"],
-            stage=AuthorityTransferStage(raw["stage"]),
+            stage=_expect_enum(AuthorityTransferStage, raw["stage"], "stage", "AuthorityTransferRecord"),
             stabilization_policy_generation=raw["stabilization_policy_generation"],
             stabilization_evidence={
                 k: _expect_list_of_str(v, k, "AuthorityTransferRecord.stabilization_evidence") for k, v in evidence_raw.items()
@@ -2158,7 +2172,7 @@ class EscapeObservation:
         _reject_unknown_keys(raw, cls._EXPECTED_KEYS, "EscapeObservation")
         return cls(
             escape_id=raw["escape_id"],
-            escape_class=EscapeClass(raw["escape_class"]),
+            escape_class=_expect_enum(EscapeClass, raw["escape_class"], "escape_class", "EscapeObservation"),
             affected_generation=raw["affected_generation"],
             discovered_by=raw["discovered_by"],
             bound_campaign_program_ids=_expect_list_of_str(raw["bound_campaign_program_ids"], "bound_campaign_program_ids", "EscapeObservation"),

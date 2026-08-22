@@ -188,6 +188,18 @@ def test_g2_02_canonical_json_rejects_duplicate_keys() -> None:
         _load_canonical_json('{"a": 1, "a": 2}')
 
 
+def test_g2_02_invalid_enum_value_raises_constitutional_error_not_bare_value_error() -> None:
+    # Every from_dict here documents itself as failing closed with
+    # ConstitutionalError for malformed encodings. Python's own Enum(value)
+    # raises a bare ValueError, which a caller catching ConstitutionalError
+    # specifically (as this suite does throughout) would not catch.
+    rcm = _closure_manifest()
+    bad = dict(rcm.to_dict())
+    bad["requirements"] = [dict(rcm.to_dict()["requirements"][0], classes=["NOT_A_REAL_CLASS"])]
+    with pytest.raises(ConstitutionalError, match="invalid value .* for RequirementClass"):
+        RequirementClosureManifest.from_dict(bad)
+
+
 def test_g2_02_string_scalar_rejected_for_array_field() -> None:
     # The exact bug named by review: `tuple("T-1")` silently yields
     # `('T', '-', '1')` for a bare Python tuple() call, which is exactly the
