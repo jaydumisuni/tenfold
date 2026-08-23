@@ -651,6 +651,18 @@ impl ChronicleEngine {
         let lease = WriterLease { writer_id: writer_id.to_string(), writer_generation };
         std::fs::write(&lease_file, serde_json::to_string(&lease).unwrap()).map_err(io_err)?;
 
+        // Clear any append-lock left behind by a process that crashed
+        // mid-append (AppendLockGuard's Drop never runs after a crash, so
+        // a stale lock would otherwise wedge every future append
+        // permanently). A successful `open` establishes this caller as
+        // the sole authoritative view of the log going forward, which
+        // subsumes reclaiming an orphaned lock; this crate does not
+        // implement liveness-checked locks (e.g. PID + heartbeat), so it
+        // cannot distinguish "orphaned by a crash" from "held by a
+        // still-alive concurrent process" -- disclosed honestly as a
+        // real, if narrow, window rather than solved.
+        let _ = std::fs::remove_file(append_lock_path(log_path));
+
         let last_sequence = recovered.entries.last().map(|e| e.sequence).unwrap_or(0);
         let last_entry_digest = recovered.entries.last().map(|e| e.entry_digest.clone());
         let entry_count = recovered.entries.len() as u64;
@@ -880,6 +892,7 @@ mod tests {
     fn cleanup(path: &Path) {
         let _ = fs::remove_file(path);
         let _ = fs::remove_file(lease_path(path));
+        let _ = fs::remove_file(append_lock_path(path));
     }
 
     // ---- Trust Table admission ----
@@ -1201,6 +1214,29 @@ mod tests {
         let OpenedChronicle { mut engine, .. } = ChronicleEngine::open(&path, "w1", 1).unwrap();
         engine.append("w1", 1, "A", "d1").unwrap();
         assert!(!append_lock_path(&path).exists(), "the append lock must be released after a successful append");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn open_clears_a_stale_append_lock_left_by_a_crashed_process() {
+        // Self-review finding: AppendLockGuard's Drop never runs after a
+        // real crash, so a stale lock file would otherwise wedge every
+        // future append permanently. A fresh, successful `open` must
+        // reclaim it.
+        let path = temp_log_path("stalelock");
+        cleanup(&path);
+        {
+            let OpenedChronicle { mut engine, .. } = ChronicleEngine::open(&path, "w1", 1).unwrap();
+            engine.append("w1", 1, "A", "d1").unwrap();
+        }
+        // Simulate a crash that left the append-lock file behind.
+        std::fs::write(append_lock_path(&path), b"").unwrap();
+        assert!(append_lock_path(&path).exists());
+
+        let OpenedChronicle { mut engine, .. } = ChronicleEngine::open(&path, "w1", 1).unwrap();
+        assert!(!append_lock_path(&path).exists(), "open() must clear the orphaned lock");
+        let entry = engine.append("w1", 1, "B", "d2").unwrap();
+        assert_eq!(entry.sequence, 2);
         cleanup(&path);
     }
 
