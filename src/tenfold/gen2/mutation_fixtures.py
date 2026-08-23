@@ -149,6 +149,33 @@ from .execution_context import (
     probe_local_positional_authority,
     probe_network_positional_authority,
 )
+from .capability_graph import (
+    CapabilityCausationGraph,
+    CapabilityNode,
+    CausalEdge,
+    ContainingScopeTraversalResult,
+    EffectivePolicyClaim,
+    HighRiskUnboundedReachRejected,
+    NodeKind,
+    ObservationCover,
+    ObservationCoverGapDetected,
+    PositiveControlAttachment,
+    SubstrateCapabilityGeneration,
+    SubstrateCapabilityGenerationStale,
+    check_high_risk_reach_admission,
+    check_observation_cover_containment,
+    check_substrate_capability_generation_current,
+    compute_effect_reach_star,
+    cross_check_effective_policy,
+    verify_positive_control_detected,
+)
+from .capability_graph_bridge import (
+    CapabilityGraphCliError,
+    rust_check_high_risk_reach_admission,
+    rust_check_observation_cover_containment,
+    rust_compute_effect_reach_star,
+    rust_cross_check_effective_policy,
+)
 from tenfold.contracts import NodeState
 from tenfold.facility import FacilityError
 from tenfold.ownership import LeaseConflict, LeaseRegistry, WriteLease
@@ -1252,6 +1279,118 @@ def _g2_15_partial_axis_probing_kill_check() -> None:
     check_high_risk_execution_admission(state)
 
 
+class SelectorPositiveControlMissDetectedCorrectly(Exception):
+    """Fixture-only sentinel (see `PartialProofCorrectlyRejected` above for
+    the pattern): raised only after genuinely verifying that a query
+    missing a deliberately-attached selector-based automation marker is
+    correctly reported as a detection miss, not silently treated as a
+    pass."""
+
+
+def _g2_16_positive_control_miss_kill_check() -> None:
+    # G2-00 SS9.4's qualification positive control: "deliberately attaches
+    # selector-based automation to a disposable resource; the effective-
+    # policy query must detect it." A query whose automation_sources
+    # omits the attached marker must be recognized as a genuine detection
+    # failure, not silently treated as a pass.
+    query = EffectivePolicyClaim(resource_id="disposable-1", automation_sources=("unrelated-workflow",))
+    attachment = PositiveControlAttachment(resource_id="disposable-1", marker="selector-marker-xyz")
+    detected = verify_positive_control_detected(query, attachment)
+    if detected is not False:
+        raise AssertionError(f"verify_positive_control_detected incorrectly reported True for a query missing the attached marker: {detected}")
+    raise SelectorPositiveControlMissDetectedCorrectly(
+        "a query that omits a deliberately-attached selector-based automation marker is correctly recognized as a detection failure"
+    )
+
+
+def _g2_16_observation_cover_gap_kill_check() -> None:
+    # G2-00 SS9.6: AUTHORIZED_MUTATION_DOMAIN subset EFFECT_REACH* subset
+    # OBSERVATION_COVER. A resource genuinely reached by EFFECT_REACH* but
+    # absent from the qualified Observation Cover is rejected by both the
+    # real compiled Rust capability_graph kernel and the real Python
+    # containment check.
+    graph_dict = {
+        "nodes": [{"node_id": "p1", "kind": "PRINCIPAL"}, {"node_id": "r1", "kind": "RESOURCE"}],
+        "edges": [{"from": "p1", "to": "r1", "edge_class": "DIRECT_MUTATION"}],
+    }
+    rust_reach = rust_compute_effect_reach_star(graph_dict, ["p1"])
+    try:
+        rust_check_observation_cover_containment(["r1"], rust_reach, {"resource_ids": []})
+    except CapabilityGraphCliError:
+        pass
+    else:
+        raise AssertionError("rust capability_graph kernel incorrectly admitted an Observation Cover missing a reached resource")
+
+    graph = CapabilityCausationGraph(
+        nodes=(CapabilityNode("p1", NodeKind.PRINCIPAL), CapabilityNode("r1", NodeKind.RESOURCE)),
+        edges=(CausalEdge("p1", "r1", "DIRECT_MUTATION"),),
+    )
+    reach = compute_effect_reach_star(graph, frozenset({"p1"}))
+    check_observation_cover_containment(frozenset({"r1"}), reach, ObservationCover(resource_ids=frozenset()))
+
+
+def _g2_16_unbounded_reach_kill_check() -> None:
+    # G2-16 acceptance, verbatim: "high-risk unbounded reach rejects."
+    # G2-00 SS9.3: an unrecognized causal-edge class forces
+    # TRANSITIVE_REACH_UNBOUNDED, never silent omission.
+    graph_dict = {
+        "nodes": [{"node_id": "p1", "kind": "PRINCIPAL"}, {"node_id": "mystery", "kind": "RESOURCE"}],
+        "edges": [{"from": "p1", "to": "mystery", "edge_class": "SOME_NEWLY_DISCOVERED_AUTOMATION_KIND"}],
+    }
+    rust_result = rust_compute_effect_reach_star(graph_dict, ["p1"])
+    if rust_result["unbounded"] is not True:
+        raise AssertionError(f"rust capability_graph kernel failed to classify an unknown causal-edge class as unbounded: {rust_result}")
+    try:
+        rust_check_high_risk_reach_admission(rust_result)
+    except CapabilityGraphCliError:
+        pass
+    else:
+        raise AssertionError("rust capability_graph kernel incorrectly admitted an UNBOUNDED EFFECT_REACH* result for high-risk work")
+
+    graph = CapabilityCausationGraph(
+        nodes=(CapabilityNode("p1", NodeKind.PRINCIPAL), CapabilityNode("mystery", NodeKind.RESOURCE)),
+        edges=(CausalEdge("p1", "mystery", "SOME_NEWLY_DISCOVERED_AUTOMATION_KIND"),),
+    )
+    reach = compute_effect_reach_star(graph, frozenset({"p1"}))
+    if not reach.unbounded:
+        raise AssertionError("python capability_graph mirror failed to classify an unknown causal-edge class as unbounded")
+    check_high_risk_reach_admission(reach)
+
+
+def _g2_16_stale_substrate_generation_kill_check() -> None:
+    # G2-00 SS9.4: "Qualification binds SUBSTRATE_CAPABILITY_GENERATION;
+    # relevant substrate changes invalidate prior containment
+    # qualification."
+    qualified = SubstrateCapabilityGeneration(substrate_id="sub-1", generation=3, digest="d3")
+    current = SubstrateCapabilityGeneration(substrate_id="sub-1", generation=4, digest="d4")
+    check_substrate_capability_generation_current(qualified, current)
+
+
+class UndeclaredAutomationSourceCorrectlyDowngradesQualification(Exception):
+    """Fixture-only sentinel: raised only after genuinely verifying that a
+    containing-scope traversal finding an automation source the
+    effective-policy query omitted correctly downgrades
+    automation_surface_enumerable to False -- G2-00 SS9.4's "unknown
+    applicable automation downgrades qualification" acceptance clause."""
+
+
+def _g2_16_automation_cross_check_downgrade_kill_check() -> None:
+    query_dict = {"resource_id": "res-1", "automation_sources": ["workflow-a"]}
+    scope_dict = {"resource_id": "res-1", "automation_sources": ["workflow-a", "org-policy-hidden"]}
+    rust_result = rust_cross_check_effective_policy(query_dict, scope_dict)
+    if rust_result["automation_surface_enumerable"] is not False:
+        raise AssertionError(f"rust capability_graph kernel failed to downgrade qualification for an undeclared automation source: {rust_result}")
+
+    query = EffectivePolicyClaim(resource_id="res-1", automation_sources=("workflow-a",))
+    scope = ContainingScopeTraversalResult(resource_id="res-1", automation_sources=("workflow-a", "org-policy-hidden"))
+    result = cross_check_effective_policy(query, scope)
+    if result.automation_surface_enumerable is not False:
+        raise AssertionError(f"python capability_graph mirror failed to downgrade qualification for an undeclared automation source: {result}")
+    raise UndeclaredAutomationSourceCorrectlyDowngradesQualification(
+        "a containing-scope traversal finding an automation source the effective-policy query omitted correctly downgrades automation_surface_enumerable to False"
+    )
+
+
 def build_initial_mutation_suite() -> MutationSuite:
     suite = MutationSuite()
 
@@ -1558,10 +1697,12 @@ def build_initial_mutation_suite() -> MutationSuite:
             "MUT-EFFAUTO-001",
             MutationCategory.EFFECTIVE_AUTOMATION,
             "A deliberately-attached selector-based automation on a disposable resource is not "
-            "detected by the effective-policy query. No effective-automation runtime exists yet.",
-            "G2-00 SS9.4",
-            None,
-            None,
+            "detected by the effective-policy query, via the real verify_positive_control_detected "
+            "(G2-16).",
+            "G2-00 SS9.4; G2-16",
+            "capability_causation_graph",
+            _g2_16_positive_control_miss_kill_check,
+            SelectorPositiveControlMissDetectedCorrectly,
         )
     )
     suite.register(
@@ -1569,10 +1710,52 @@ def build_initial_mutation_suite() -> MutationSuite:
             "MUT-EFFCONTAIN-001",
             MutationCategory.EFFECT_CONTAINMENT,
             "AUTHORIZED_MUTATION_DOMAIN is not a subset of the qualified OBSERVATION_COVER for "
-            "high-risk mutation. No effect-containment runtime exists yet.",
-            "G2-00 SS9.6",
-            None,
-            None,
+            "high-risk mutation, rejected by both the real compiled Rust capability_graph kernel "
+            "and the real Python containment check (G2-16).",
+            "G2-00 SS9.6; G2-16",
+            "capability_causation_graph",
+            _g2_16_observation_cover_gap_kill_check,
+            ObservationCoverGapDetected,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G16-UNBOUNDEDREACH-001",
+            MutationCategory.EFFECT_CONTAINMENT,
+            "An EFFECT_REACH* result made TRANSITIVE_REACH_UNBOUNDED by an unrecognized causal-edge "
+            "class is rejected for high-risk work by both the real compiled Rust capability_graph "
+            "kernel and the real Python re-derivation (G2-16).",
+            "G2-00 SS9.3; G2-16",
+            "capability_causation_graph",
+            _g2_16_unbounded_reach_kill_check,
+            HighRiskUnboundedReachRejected,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G16-SUBSTRATEGEN-001",
+            MutationCategory.GENERATION_FENCING_VIOLATION,
+            "A SUBSTRATE_CAPABILITY_GENERATION whose generation/digest no longer matches the "
+            "current substrate is rejected as stale, invalidating prior containment qualification "
+            "(G2-16).",
+            "G2-00 SS9.4; G2-16",
+            "capability_causation_graph",
+            _g2_16_stale_substrate_generation_kill_check,
+            SubstrateCapabilityGenerationStale,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G16-AUTODOWNGRADE-001",
+            MutationCategory.EFFECTIVE_AUTOMATION,
+            "A containing-scope traversal that finds an automation source the effective-policy "
+            "query's own claim omitted correctly downgrades automation_surface_enumerable to "
+            "False, in both the real compiled Rust capability_graph kernel and the real Python "
+            "cross-check (G2-16).",
+            "G2-00 SS9.4; G2-16",
+            "capability_causation_graph",
+            _g2_16_automation_cross_check_downgrade_kill_check,
+            UndeclaredAutomationSourceCorrectlyDowngradesQualification,
         )
     )
     suite.register(

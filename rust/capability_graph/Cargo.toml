@@ -1,0 +1,18 @@
+[package]
+name = "tenfold-capability-graph"
+version = "0.1.0"
+edition = "2021"
+description = "Capability Causation Graph, EFFECT_REACH*, effective automation and Observation Cover (G2-00 SS9.3-9.6, G2-16) for Tenfold Gen 2.0."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+trust_table = { package = "tenfold-trust-table", path = "../trust_table" }
+
+[lib]
+name = "capability_graph"
+path = "src/lib.rs"
+
+[[bin]]
+name = "capability_graph_cli"
+path = "src/bin/capability_graph_cli.rs"
