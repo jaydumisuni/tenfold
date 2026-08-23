@@ -315,7 +315,7 @@ def _g2_07_broken_witness_kill_check() -> None:
     class_closure = ClassificationClosure(1, "d" * 64, (class_entry,), True)
     policy = _total_policy()
     node = ObligationIRNode("OB-1", "REQ-1", ObligationClass.SECURITY, "predicate-SECURITY", FalsificationClass.STANDARD)
-    ir = ObligationIR(1, "a" * 4, "b" * 4, "c" * 4, (node,))
+    ir = ObligationIR(1, req_closure.digest, class_closure.digest, policy.digest, (node,))
     compiled = compile_campaign_program(
         req_closure, class_closure, policy, ir, program_generation=1, certificate_generation=1, graph_generation=1
     )

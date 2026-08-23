@@ -131,9 +131,16 @@ def compile_campaign_program(
 ) -> CompiledCampaign:
     """G2-00 SS7's proof-carrying compiler core. Validates every input
     (including Obligation IR against the frozen policy's falsification-
-    class/proof-predicate rows), then derives, for every Obligation IR
-    node with no exceptions: one task_id, one transformation witness, one
-    Proof Graph node (UNSATISFIED — this is compile time, not proof time),
+    class/proof-predicate rows and, via `known_requirement_ids`, against
+    the supplied Requirement Closure's own real requirements — the
+    "disconnected obligation" check G2-06 built), then confirms the
+    Obligation IR is actually *bound* to the three supplied closures by
+    digest — individually-valid inputs from unrelated campaigns must not
+    silently compile together into a certificate that binds the real
+    closure digests alongside an unrelated Obligation IR (round-2 review
+    finding). Only then does it derive, for every Obligation IR node with
+    no exceptions: one task_id, one transformation witness, one Proof
+    Graph node (UNSATISFIED — this is compile time, not proof time),
     whether it belongs to the mutation domain, and which assurance types
     its obligation_class routes to. No Operating Method/Profile input
     exists in this signature — the method-independence property is that
@@ -141,7 +148,24 @@ def compile_campaign_program(
     requirement_closure.validate()
     classification_closure.validate()
     policy.validate()
-    obligation_ir.validate(policy=policy)
+    known_requirement_ids = frozenset(r.requirement_id for r in requirement_closure.requirements)
+    obligation_ir.validate(policy=policy, known_requirement_ids=known_requirement_ids)
+
+    if obligation_ir.requirement_closure_digest != requirement_closure.digest:
+        raise ConstitutionalError(
+            "compile_campaign_program: obligation_ir.requirement_closure_digest does not match the "
+            "supplied requirement_closure — the Obligation IR is bound to a different closure"
+        )
+    if obligation_ir.classification_closure_digest != classification_closure.digest:
+        raise ConstitutionalError(
+            "compile_campaign_program: obligation_ir.classification_closure_digest does not match the "
+            "supplied classification_closure — the Obligation IR is bound to a different closure"
+        )
+    if obligation_ir.policy_closure_digest != policy.digest:
+        raise ConstitutionalError(
+            "compile_campaign_program: obligation_ir.policy_closure_digest does not match the "
+            "supplied policy — the Obligation IR is bound to a different policy"
+        )
 
     task_ids: list[str] = []
     witnesses: list[TransformationWitness] = []
@@ -213,17 +237,33 @@ def compile_campaign_program(
 def reconcile_compiled_campaign(obligation_ir: ObligationIR, compiled: CompiledCampaign) -> None:
     """G2-07 acceptance: "Obligation-dropping/broken-witness transforms
     reject." Every obligation in the source IR must have exactly one
-    transformation witness and exactly one Proof Graph node; a witness or
-    node naming an obligation_id the IR does not contain is equally
-    rejected — fabricated coverage is as much a defect as missing
-    coverage. A witness bound to a real obligation_id but whose
-    `input_digest` does not match that obligation's actual content is a
-    genuinely *broken* witness (its claimed input was forged or stale) and
-    is rejected even though its obligation_id-level bookkeeping looks
-    correct — matching the same digest-content trust boundary the Trust
-    Table's own admission rows apply everywhere else."""
+    transformation witness and exactly one Proof Graph node — dropped
+    coverage, orphaned coverage, and *duplicate* coverage (two witnesses or
+    two Proof Graph nodes both claiming the same obligation_id, which a
+    plain set of obligation_ids would silently collapse and hide — round-2
+    review finding) are all rejected. `compiled.proof_graph.validate()` is
+    re-run here specifically because this function's whole purpose is to
+    verify a bundle that may have been reconstructed or tampered with after
+    compilation (as this module's own tests demonstrate via `dataclasses
+    .replace`) — `compile_campaign_program` validating its own freshly-built
+    graph once is not evidence about a bundle handed to this function
+    later. A witness bound to a real obligation_id but whose
+    `input_digest`, `output_digest`, `step_kind` or `rule_ref` does not
+    match what that obligation's real content and this compiler's own
+    task-derivation rule actually produce is a genuinely *broken* witness
+    — checking only `input_digest` (round 1) left a forged witness free to
+    claim an unrelated `output_digest`/`rule_ref` while keeping a correct
+    input, which the certificate's own `transformation_witnesses` field
+    (witness IDs only, not content digests) could not have caught either.
+    """
     ir_ids = {node.obligation_id for node in obligation_ir.nodes}
-    witness_ids = {w.obligation_id for w in compiled.witnesses}
+
+    witness_obligation_ids = [w.obligation_id for w in compiled.witnesses]
+    if len(witness_obligation_ids) != len(set(witness_obligation_ids)):
+        raise ConstitutionalError("reconcile_compiled_campaign: duplicate witness coverage for one obligation_id")
+    witness_ids = set(witness_obligation_ids)
+
+    compiled.proof_graph.validate()
     graph_ids = {n.obligation_id for n in compiled.proof_graph.nodes}
 
     dropped_witnesses = ir_ids - witness_ids
@@ -256,10 +296,27 @@ def reconcile_compiled_campaign(obligation_ir: ObligationIR, compiled: CompiledC
     for node in obligation_ir.nodes:
         witness = witnesses_by_obligation[node.obligation_id]
         expected_input_digest = canonical_digest(node.to_dict())
+        expected_task_id = f"TASK-{node.obligation_id}"
+        expected_output_digest = canonical_digest({"task_id": expected_task_id})
         if witness.input_digest != expected_input_digest:
             raise ConstitutionalError(
                 f"reconcile_compiled_campaign: witness {witness.witness_id} input_digest does not match "
                 f"obligation {node.obligation_id}'s real content — broken witness"
+            )
+        if witness.output_digest != expected_output_digest:
+            raise ConstitutionalError(
+                f"reconcile_compiled_campaign: witness {witness.witness_id} output_digest does not match "
+                f"the expected task derivation for {node.obligation_id} — broken witness"
+            )
+        if witness.step_kind != "obligation_to_task":
+            raise ConstitutionalError(
+                f"reconcile_compiled_campaign: witness {witness.witness_id} step_kind "
+                f"{witness.step_kind!r} does not match the expected transformation — broken witness"
+            )
+        if witness.rule_ref != TASK_DERIVATION_RULE_REF:
+            raise ConstitutionalError(
+                f"reconcile_compiled_campaign: witness {witness.witness_id} rule_ref {witness.rule_ref!r} "
+                f"does not match the expected transformation rule {TASK_DERIVATION_RULE_REF!r} — broken witness"
             )
         graph_node = graph_by_obligation[node.obligation_id]
         if graph_node.falsification_class != node.falsification_class:
@@ -340,18 +397,37 @@ def check_falsification_topology_baseline(baseline_graph: ProofGraph, candidate_
     allowance implies: zero permitted increase for CRITICAL/HIGH
     falsifiers. Revisit this the moment a real allowance mechanism exists
     to check against instead.
+
+    Priority is read from the *baseline* node, not the candidate's own
+    claim (round-2 review finding): the candidate is exactly the untrusted
+    input this function exists to check, so letting it decide — by simply
+    relabelling a baseline CRITICAL obligation as STANDARD — whether its
+    own depth increase gets checked at all would let it bypass the rule by
+    construction. A class change between baseline and candidate for the
+    same obligation_id is itself rejected outright, before any depth
+    comparison.
     """
-    baseline_ids = {n.obligation_id for n in baseline_graph.nodes}
+    baseline_by_id = {n.obligation_id: n for n in baseline_graph.nodes}
     candidate_by_id = {n.obligation_id: n for n in candidate_graph.nodes}
-    for obligation_id, node in candidate_by_id.items():
-        if obligation_id not in baseline_ids or node.falsification_class not in _HIGHER_PRIORITY_FALSIFICATION_CLASSES:
+    for obligation_id, baseline_node in baseline_by_id.items():
+        candidate_node = candidate_by_id.get(obligation_id)
+        if candidate_node is None:
+            continue  # obligation removed entirely in the candidate; no depth to compare
+        if candidate_node.falsification_class != baseline_node.falsification_class:
+            raise ConstitutionalError(
+                f"check_falsification_topology_baseline: obligation {obligation_id} falsification_class "
+                f"changed from {baseline_node.falsification_class.value} (baseline) to "
+                f"{candidate_node.falsification_class.value} (candidate) — a candidate must not "
+                "silently relabel a baseline obligation's priority"
+            )
+        if baseline_node.falsification_class not in _HIGHER_PRIORITY_FALSIFICATION_CLASSES:
             continue
         baseline_depth = compute_predecessor_depth(baseline_graph, obligation_id)
         candidate_depth = compute_predecessor_depth(candidate_graph, obligation_id)
         if candidate_depth > baseline_depth:
             raise ConstitutionalError(
                 f"check_falsification_topology_baseline: obligation {obligation_id} "
-                f"({node.falsification_class.value}) predecessor depth increased from "
+                f"({baseline_node.falsification_class.value}) predecessor depth increased from "
                 f"{baseline_depth} to {candidate_depth}; no frozen-policy allowance is defined, "
                 "so zero increase is permitted"
             )

@@ -74,9 +74,25 @@ def _valid_obligation_ir(
     *,
     obligation_class: ObligationClass = ObligationClass.SECURITY,
     falsification_class: FalsificationClass = FalsificationClass.STANDARD,
+    requirement_closure_digest: str | None = None,
+    classification_closure_digest: str | None = None,
+    policy_closure_digest: str | None = None,
 ) -> ObligationIR:
+    # Default digests are computed from freshly-built (but content-
+    # identical, hence identically-digested) closure/classification/policy
+    # objects, so an IR built this way is genuinely bound to whatever
+    # _valid_requirement_closure()/_valid_classification_closure()/
+    # _valid_policy() the compiler is separately called with. Overrides
+    # exist specifically so tests can construct a deliberately-mismatched
+    # IR (round-2 review finding: the compiler must reject that).
     node = ObligationIRNode("OB-1", "REQ-1", obligation_class, f"predicate-{obligation_class.value}", falsification_class)
-    return ObligationIR(1, "a" * 4, "b" * 4, "c" * 4, (node,))
+    return ObligationIR(
+        1,
+        requirement_closure_digest if requirement_closure_digest is not None else _valid_requirement_closure().digest,
+        classification_closure_digest if classification_closure_digest is not None else _valid_classification_closure().digest,
+        policy_closure_digest if policy_closure_digest is not None else _valid_policy().digest,
+        (node,),
+    )
 
 
 def _compile(**ir_kwargs) -> CompiledCampaign:
@@ -165,6 +181,79 @@ def test_g2_07_transformation_witness_requires_all_fields_nonempty() -> None:
         TransformationWitness("", "OB-1", "obligation_to_task", "a", "b", "rule").validate()
 
 
+def test_g2_07_compile_rejects_ir_unbound_to_supplied_requirement_closure() -> None:
+    # Round-2 review finding: individually-valid inputs from unrelated
+    # campaigns must not silently compile together.
+    ir = _valid_obligation_ir(requirement_closure_digest="wrong-digest" * 4)
+    with pytest.raises(ConstitutionalError, match="requirement_closure_digest does not match"):
+        compile_campaign_program(
+            _valid_requirement_closure(), _valid_classification_closure(), _valid_policy(), ir,
+            program_generation=1, certificate_generation=1, graph_generation=1,
+        )
+
+
+def test_g2_07_compile_rejects_ir_unbound_to_supplied_classification_closure() -> None:
+    ir = _valid_obligation_ir(classification_closure_digest="wrong-digest" * 4)
+    with pytest.raises(ConstitutionalError, match="classification_closure_digest does not match"):
+        compile_campaign_program(
+            _valid_requirement_closure(), _valid_classification_closure(), _valid_policy(), ir,
+            program_generation=1, certificate_generation=1, graph_generation=1,
+        )
+
+
+def test_g2_07_compile_rejects_ir_unbound_to_supplied_policy() -> None:
+    ir = _valid_obligation_ir(policy_closure_digest="wrong-digest" * 4)
+    with pytest.raises(ConstitutionalError, match="policy_closure_digest does not match"):
+        compile_campaign_program(
+            _valid_requirement_closure(), _valid_classification_closure(), _valid_policy(), ir,
+            program_generation=1, certificate_generation=1, graph_generation=1,
+        )
+
+
+def test_g2_07_compile_rejects_disconnected_obligation_via_known_requirement_ids() -> None:
+    # Round-2 fix: compile_campaign_program now passes known_requirement_ids
+    # through to ObligationIR.validate(), actually exercising G2-06's
+    # disconnected-obligation check rather than silently skipping it.
+    node = ObligationIRNode("OB-1", "REQ-GHOST", ObligationClass.SECURITY, "predicate-SECURITY", FalsificationClass.STANDARD)
+    ir = ObligationIR(
+        1, _valid_requirement_closure().digest, _valid_classification_closure().digest, _valid_policy().digest, (node,)
+    )
+    with pytest.raises(ConstitutionalError, match="disconnected obligation"):
+        compile_campaign_program(
+            _valid_requirement_closure(), _valid_classification_closure(), _valid_policy(), ir,
+            program_generation=1, certificate_generation=1, graph_generation=1,
+        )
+
+
+def test_g2_07_reconcile_detects_broken_witness_with_wrong_output_digest() -> None:
+    # Round-2 fix: a witness keeping a correct input_digest but claiming an
+    # unrelated output_digest previously passed reconciliation entirely.
+    ir = _valid_obligation_ir()
+    compiled = _compile()
+    forged = replace(compiled.witnesses[0], output_digest="not-the-real-output" * 3)
+    tampered = replace(compiled, witnesses=(forged,))
+    with pytest.raises(ConstitutionalError, match="output_digest does not match"):
+        reconcile_compiled_campaign(ir, tampered)
+
+
+def test_g2_07_reconcile_detects_broken_witness_with_wrong_rule_ref() -> None:
+    ir = _valid_obligation_ir()
+    compiled = _compile()
+    forged = replace(compiled.witnesses[0], rule_ref="some-other-rule-v1")
+    tampered = replace(compiled, witnesses=(forged,))
+    with pytest.raises(ConstitutionalError, match="rule_ref"):
+        reconcile_compiled_campaign(ir, tampered)
+
+
+def test_g2_07_reconcile_detects_broken_witness_with_wrong_step_kind() -> None:
+    ir = _valid_obligation_ir()
+    compiled = _compile()
+    forged = replace(compiled.witnesses[0], step_kind="something_else")
+    tampered = replace(compiled, witnesses=(forged,))
+    with pytest.raises(ConstitutionalError, match="step_kind"):
+        reconcile_compiled_campaign(ir, tampered)
+
+
 # ============================================================================
 # Reconciliation: obligation-dropping / broken-witness rejection
 # ============================================================================
@@ -240,12 +329,15 @@ def test_g2_07_reconcile_detects_proof_graph_node_with_wrong_falsification_class
         reconcile_compiled_campaign(ir, tampered)
 
 
-def test_g2_07_reconcile_detects_duplicate_witness_id() -> None:
+def test_g2_07_reconcile_detects_duplicate_witness_coverage_for_one_obligation() -> None:
+    # Round-2 fix: a plain set of obligation_ids would silently collapse
+    # two witnesses claiming the same obligation_id into one, hiding the
+    # conflict entirely rather than rejecting it.
     ir = _valid_obligation_ir()
     compiled = _compile()
-    duplicate = replace(compiled.witnesses[0], obligation_id="OB-1")
+    duplicate = replace(compiled.witnesses[0], witness_id="WIT-OB-1-DUPLICATE")
     tampered = replace(compiled, witnesses=compiled.witnesses + (duplicate,))
-    with pytest.raises(ConstitutionalError, match="duplicate witness_id"):
+    with pytest.raises(ConstitutionalError, match="duplicate witness coverage"):
         reconcile_compiled_campaign(ir, tampered)
 
 
@@ -363,3 +455,24 @@ def test_g2_07_falsification_topology_ignores_obligation_absent_from_baseline() 
         ProofGraphNode("OB-NEW", ProofState.UNSATISFIED, FalsificationClass.CRITICAL, (), ("OB-1",)),
     ))
     check_falsification_topology_baseline(baseline, candidate)
+
+
+def test_g2_07_falsification_topology_rejects_relabelling_baseline_critical_as_standard() -> None:
+    # Round-2 review finding: the exact bypass attack. A candidate that
+    # relabels a baseline CRITICAL obligation as STANDARD must not thereby
+    # exempt itself from the depth-increase check by controlling its own
+    # priority classification.
+    baseline = _graph((ProofGraphNode("OB-1", ProofState.UNSATISFIED, FalsificationClass.CRITICAL, (), ()),))
+    candidate = _graph((
+        ProofGraphNode("OB-1", ProofState.UNSATISFIED, FalsificationClass.STANDARD, (), ("OB-2",)),
+        ProofGraphNode("OB-2", ProofState.UNSATISFIED, FalsificationClass.STANDARD, (), ()),
+    ))
+    with pytest.raises(ConstitutionalError, match="falsification_class changed"):
+        check_falsification_topology_baseline(baseline, candidate)
+
+
+def test_g2_07_falsification_topology_rejects_any_class_relabel_even_without_depth_increase() -> None:
+    baseline = _graph((ProofGraphNode("OB-1", ProofState.UNSATISFIED, FalsificationClass.HIGH, (), ()),))
+    candidate = _graph((ProofGraphNode("OB-1", ProofState.UNSATISFIED, FalsificationClass.CRITICAL, (), ()),))
+    with pytest.raises(ConstitutionalError, match="falsification_class changed"):
+        check_falsification_topology_baseline(baseline, candidate)
