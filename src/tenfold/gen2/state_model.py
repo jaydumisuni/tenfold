@@ -252,6 +252,60 @@ def build_g2_10_state_model() -> StateModel:
 
 
 # ============================================================================
+# G2-11 production State Model extension (docs/08-gen2-roadmap.md's G2-11
+# deliverable: "Extend State Model with campaign/assignment/lease/fence/
+# resource/mutation-admission state.").
+# ============================================================================
+
+G2_11_REQUIRED_STATE_MODEL_FIELD_IDS: frozenset[str] = frozenset(
+    {
+        "dispatch_campaign_state_projection",
+        "dispatch_assignment_authority",
+        "dispatch_lease_generation",
+        "dispatch_fence_state",
+        "dispatch_resource_ownership",
+        "dispatch_mutation_admission",
+    }
+)
+
+
+def build_g2_11_state_model() -> StateModel:
+    """Extends the G2-10 State Model with G2-11's campaign/assignment/
+    lease/fence/resource/mutation-admission fields (G2-00 SS14-15;
+    `rust/dispatch_lease`)."""
+    return build_g2_10_state_model().extend(
+        (
+            StateModelField(
+                "dispatch_campaign_state_projection", AuthorityHolder.GEN1_PYTHON,
+                "Foreman.runtime.states / CampaignSnapshot.state_map()",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-11",
+            ),
+            StateModelField(
+                "dispatch_assignment_authority", AuthorityHolder.GEN1_PYTHON,
+                "persistence.AssignmentRef / facility.validate_live_task",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-11",
+            ),
+            StateModelField(
+                "dispatch_lease_generation", AuthorityHolder.GEN1_PYTHON, "ownership.LeaseRegistry (generation counter)",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-11",
+            ),
+            StateModelField(
+                "dispatch_fence_state", AuthorityHolder.GEN1_PYTHON, "ownership.WriteLease.fencing_token / .active",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-11",
+            ),
+            StateModelField(
+                "dispatch_resource_ownership", AuthorityHolder.GEN1_PYTHON, "ownership.WriteLease.resources",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-11",
+            ),
+            StateModelField(
+                "dispatch_mutation_admission", AuthorityHolder.GEN1_PYTHON, "facility.validate_live_task(require_lease=True)",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-11",
+            ),
+        )
+    )
+
+
+# ============================================================================
 # Failure-space scenario generator base (G2-00 §14.1: "Failure-space
 # qualification reports 1-wise, pairwise, 3-wise high-risk, transition and
 # forbidden-state coverage according to frozen risk policy. No mathematical

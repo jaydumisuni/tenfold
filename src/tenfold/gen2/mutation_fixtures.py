@@ -75,6 +75,10 @@ from .identity_generation import (
     reinstate_under_fresh_generation,
 )
 from .chronicle_bridge import ChronicleCliError, append_entry, check_checkpoint, check_tail_loss, open_chronicle
+from .dispatch_lease import gen1_check_mutation_admission, gen1_lease_acquire, sealed_task_dispatch_digest
+from tenfold.contracts import NodeState
+from tenfold.facility import FacilityError
+from tenfold.ownership import LeaseConflict, LeaseRegistry, WriteLease
 
 
 def _total_policy(**overrides) -> ConstitutionalPolicySet:
@@ -452,6 +456,43 @@ def _g2_10_checkpoint_forged_generation_kill_check() -> None:
     check_checkpoint(
         checkpoint_sequence=5, checkpoint_generation=2, head_digest="forged",
         local_head_generation=1, local_head_sequence=5, local_head_digest="real",
+    )
+
+
+def _g2_11_lease_conflict_kill_check() -> None:
+    # G2-11 acceptance: "mutation/fencing mutants pass." A lease acquire
+    # attempt whose surfaces overlap an existing active lease in the same
+    # namespace must be rejected by the real Gen-1 LeaseRegistry -- exact
+    # G2-00 SS15 semantic-conflict-enforcement scenario.
+    registry = LeaseRegistry()
+    gen1_lease_acquire(
+        registry, lease_id="L1", campaign_id="camp-1", campaign_generation=1, epoch=1,
+        owner_lane="lane-1", namespace="ns", surfaces=("a/b",),
+    )
+    gen1_lease_acquire(
+        registry, lease_id="L2", campaign_id="camp-1", campaign_generation=1, epoch=1,
+        owner_lane="lane-2", namespace="ns", surfaces=("a/b/c",),
+    )
+
+
+def _g2_11_fencing_kill_check() -> None:
+    # G2-11 acceptance: "mutation/fencing mutants pass." A mutation
+    # admission claim carrying a stale lease fencing token (wrong
+    # generation) must be rejected by the real Gen-1 validate_live_task.
+    lease = WriteLease(
+        lease_id="L1", campaign_id="camp-1", campaign_generation=1, epoch=1, generation=1,
+        owner_lane="assign-1", namespace="ns", surfaces=("a/b",),
+    )
+    digest = sealed_task_dispatch_digest(
+        campaign_id="camp-1", campaign_generation=1, foreman_epoch=1, assignment_id="assign-1",
+        task_id="task-1", node_id="node-1", attempt=1, lease_id="L1", lease_epoch=1, lease_generation=999,
+    )
+    gen1_check_mutation_admission(
+        campaign_id="camp-1", campaign_generation=1, foreman_epoch=1, assignment_id="assign-1",
+        task_id="task-1", node_id="node-1", attempt=1, lease_id="L1", lease_epoch=1, lease_generation=999,
+        required_resource=None, live_campaign_generation=1, live_foreman_epoch=1,
+        live_node_state=NodeState.RUNNING, live_assignment_dispatch_digest=digest,
+        live_assignment_status="active", live_leases=(lease,),
     )
 
 
@@ -950,6 +991,31 @@ def build_initial_mutation_suite() -> MutationSuite:
             "chronicle",
             _g2_10_checkpoint_forged_generation_kill_check,
             ChronicleCliError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G11-LEASECONFLICT-001",
+            MutationCategory.BOUNDARY_INDEPENDENCE_FAILURE,
+            "A lease acquire attempt whose surfaces overlap an existing active lease in the same "
+            "namespace is rejected by the real Gen-1 tenfold.ownership.LeaseRegistry -- G2-00 SS15 "
+            "semantic conflict enforcement.",
+            "G2-00 SS15; G2-11",
+            "dispatch_lease",
+            _g2_11_lease_conflict_kill_check,
+            LeaseConflict,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G11-FENCING-001",
+            MutationCategory.GENERATION_FENCING_VIOLATION,
+            "A mutation admission claim carrying a stale lease fencing token (wrong generation) is "
+            "rejected by the real Gen-1 tenfold.facility.validate_live_task.",
+            "G2-00 SS14-15; G2-11",
+            "dispatch_lease",
+            _g2_11_fencing_kill_check,
+            FacilityError,
         )
     )
 
