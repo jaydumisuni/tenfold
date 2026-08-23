@@ -196,7 +196,17 @@ impl ObligationIRNode {
 }
 
 impl ObligationIR {
-    pub fn validate(&self) -> Result<(), ObligationIRError> {
+    /// `known_requirement_ids`, when supplied, is the set of requirement_id
+    /// values the bound Requirement Closure actually contains. Without it,
+    /// only structural well-formedness of `requirement_id` (non-empty
+    /// string) is checked — matching this crate's own `decode_canonical`,
+    /// which has no closure context available at bare-decode time. With
+    /// it, a node naming a requirement_id absent from that set is rejected
+    /// as a disconnected obligation (G2-00 §4.1's `obligation_ir` Trust
+    /// Table row, added at G2-03: `required_negative_fixture` "disconnected
+    /// obligation" — "the semantic meaning of a typed obligation is bound
+    /// by the closures that produced it").
+    pub fn validate(&self, known_requirement_ids: Option<&HashSet<String>>) -> Result<(), ObligationIRError> {
         if self.ir_generation == 0 {
             return Err(ObligationIRError::Semantic("ir_generation must be a positive integer".into()));
         }
@@ -221,6 +231,14 @@ impl ObligationIR {
                     node.obligation_id
                 )));
             }
+            if let Some(known) = known_requirement_ids {
+                if !known.contains(&node.requirement_id) {
+                    return Err(ObligationIRError::Semantic(format!(
+                        "node {} requirement_id {:?} is not bound to any requirement in the closure — disconnected obligation",
+                        node.obligation_id, node.requirement_id
+                    )));
+                }
+            }
         }
         Ok(())
     }
@@ -230,12 +248,15 @@ impl ObligationIR {
 /// duplicate keys, reject unknown/missing fields and wrong types (via
 /// `#[serde(deny_unknown_fields)]` plus `serde_json`'s own strict typing),
 /// then run semantic validation. No code path returns `Ok` having skipped
-/// any of the three.
-pub fn decode_canonical(text: &str) -> Result<ObligationIR, ObligationIRError> {
+/// any of the three. `known_requirement_ids`: see `ObligationIR::validate`.
+pub fn decode_canonical(
+    text: &str,
+    known_requirement_ids: Option<&HashSet<String>>,
+) -> Result<ObligationIR, ObligationIRError> {
     reject_duplicate_keys(text)?;
     let ir: ObligationIR =
         serde_json::from_str(text).map_err(|e| ObligationIRError::Decode(e.to_string()))?;
-    ir.validate()?;
+    ir.validate(known_requirement_ids)?;
     Ok(ir)
 }
 
@@ -261,7 +282,7 @@ mod tests {
 
     #[test]
     fn decodes_a_well_formed_obligation_ir() {
-        let ir = decode_canonical(VALID).expect("valid document should decode");
+        let ir = decode_canonical(VALID, None).expect("valid document should decode");
         assert_eq!(ir.ir_generation, 1);
         assert_eq!(ir.nodes.len(), 1);
         assert_eq!(ir.nodes[0].obligation_class, ObligationClass::SECURITY);
@@ -269,9 +290,9 @@ mod tests {
 
     #[test]
     fn canonical_re_encoding_round_trips_and_sorts_keys() {
-        let ir = decode_canonical(VALID).expect("valid document should decode");
+        let ir = decode_canonical(VALID, None).expect("valid document should decode");
         let re_encoded = encode_canonical(&ir).expect("re-encode should succeed");
-        let re_decoded = decode_canonical(&re_encoded).expect("re-encoded text should decode");
+        let re_decoded = decode_canonical(&re_encoded, None).expect("re-encoded text should decode");
         assert_eq!(re_decoded.ir_generation, ir.ir_generation);
         // Keys sorted alphabetically: classification_ < ir_generation < nodes < policy_ < requirement_
         let first_key_pos = re_encoded.find("\"classification_closure_digest\"").unwrap();
@@ -282,7 +303,7 @@ mod tests {
     #[test]
     fn rejects_duplicate_object_key() {
         let text = r#"{"ir_generation":1,"ir_generation":2,"requirement_closure_digest":"a","classification_closure_digest":"b","policy_closure_digest":"c","nodes":[]}"#;
-        let err = decode_canonical(text).unwrap_err();
+        let err = decode_canonical(text, None).unwrap_err();
         match err {
             ObligationIRError::Decode(msg) => assert!(msg.contains("duplicate object key")),
             other => panic!("expected Decode error, got {other:?}"),
@@ -292,94 +313,126 @@ mod tests {
     #[test]
     fn rejects_duplicate_key_in_nested_node_object() {
         let text = r#"{"ir_generation":1,"requirement_closure_digest":"a","classification_closure_digest":"b","policy_closure_digest":"c","nodes":[{"obligation_id":"OB-1","obligation_id":"OB-2","requirement_id":"R","obligation_class":"SECURITY","proof_predicate":"p","falsification_class":"CRITICAL"}]}"#;
-        let err = decode_canonical(text).unwrap_err();
+        let err = decode_canonical(text, None).unwrap_err();
         assert!(matches!(err, ObligationIRError::Decode(_)));
     }
 
     #[test]
     fn rejects_unknown_field() {
         let text = r#"{"ir_generation":1,"requirement_closure_digest":"a","classification_closure_digest":"b","policy_closure_digest":"c","nodes":[],"not_a_real_field":true}"#;
-        assert!(decode_canonical(text).is_err());
+        assert!(decode_canonical(text, None).is_err());
     }
 
     #[test]
     fn rejects_missing_field() {
         let text = r#"{"ir_generation":1,"requirement_closure_digest":"a","classification_closure_digest":"b","nodes":[]}"#;
-        assert!(decode_canonical(text).is_err());
+        assert!(decode_canonical(text, None).is_err());
     }
 
     #[test]
     fn rejects_wrong_type_for_ir_generation() {
         let text = r#"{"ir_generation":"one","requirement_closure_digest":"a","classification_closure_digest":"b","policy_closure_digest":"c","nodes":[]}"#;
-        assert!(decode_canonical(text).is_err());
+        assert!(decode_canonical(text, None).is_err());
     }
 
     #[test]
     fn rejects_trailing_comma() {
         let text = r#"{"ir_generation":1,"requirement_closure_digest":"a","classification_closure_digest":"b","policy_closure_digest":"c","nodes":[],}"#;
-        assert!(decode_canonical(text).is_err());
+        assert!(decode_canonical(text, None).is_err());
     }
 
     #[test]
     fn rejects_unquoted_keys() {
         let text = r#"{ir_generation:1,"requirement_closure_digest":"a","classification_closure_digest":"b","policy_closure_digest":"c","nodes":[]}"#;
-        assert!(decode_canonical(text).is_err());
+        assert!(decode_canonical(text, None).is_err());
     }
 
     #[test]
     fn rejects_single_quoted_strings() {
         let text = "{'ir_generation':1,'requirement_closure_digest':'a','classification_closure_digest':'b','policy_closure_digest':'c','nodes':[]}";
-        assert!(decode_canonical(text).is_err());
+        assert!(decode_canonical(text, None).is_err());
     }
 
     #[test]
     fn rejects_undefined_literal() {
         let text = r#"{"ir_generation":undefined,"requirement_closure_digest":"a","classification_closure_digest":"b","policy_closure_digest":"c","nodes":[]}"#;
-        assert!(decode_canonical(text).is_err());
+        assert!(decode_canonical(text, None).is_err());
     }
 
     #[test]
     fn rejects_leading_zero_number() {
         let text = r#"{"ir_generation":01,"requirement_closure_digest":"a","classification_closure_digest":"b","policy_closure_digest":"c","nodes":[]}"#;
-        assert!(decode_canonical(text).is_err());
+        assert!(decode_canonical(text, None).is_err());
     }
 
     #[test]
     fn rejects_nan_constant() {
         let text = r#"{"ir_generation":NaN,"requirement_closure_digest":"a","classification_closure_digest":"b","policy_closure_digest":"c","nodes":[]}"#;
-        assert!(decode_canonical(text).is_err());
+        assert!(decode_canonical(text, None).is_err());
     }
 
     #[test]
     fn rejects_unterminated_string() {
         let text = r#"{"ir_generation":1,"requirement_closure_digest":"a,"classification_closure_digest":"b","policy_closure_digest":"c","nodes":[]}"#;
-        assert!(decode_canonical(text).is_err());
+        assert!(decode_canonical(text, None).is_err());
     }
 
     #[test]
     fn rejects_zero_generation() {
         let text = r#"{"ir_generation":0,"requirement_closure_digest":"a","classification_closure_digest":"b","policy_closure_digest":"c","nodes":[{"obligation_id":"OB-1","requirement_id":"REQ-1","obligation_class":"SECURITY","proof_predicate":"p","falsification_class":"CRITICAL"}]}"#;
-        let err = decode_canonical(text).unwrap_err();
+        let err = decode_canonical(text, None).unwrap_err();
         assert!(matches!(err, ObligationIRError::Semantic(_)));
     }
 
     #[test]
     fn rejects_empty_nodes() {
         let text = r#"{"ir_generation":1,"requirement_closure_digest":"a","classification_closure_digest":"b","policy_closure_digest":"c","nodes":[]}"#;
-        let err = decode_canonical(text).unwrap_err();
+        let err = decode_canonical(text, None).unwrap_err();
         assert!(matches!(err, ObligationIRError::Semantic(_)));
     }
 
     #[test]
     fn rejects_duplicate_obligation_id_across_distinct_nodes() {
         let text = r#"{"ir_generation":1,"requirement_closure_digest":"a","classification_closure_digest":"b","policy_closure_digest":"c","nodes":[{"obligation_id":"OB-1","requirement_id":"REQ-1","obligation_class":"SECURITY","proof_predicate":"p","falsification_class":"CRITICAL"},{"obligation_id":"OB-1","requirement_id":"REQ-2","obligation_class":"MUTATION","proof_predicate":"p2","falsification_class":"HIGH"}]}"#;
-        let err = decode_canonical(text).unwrap_err();
+        let err = decode_canonical(text, None).unwrap_err();
         assert!(matches!(err, ObligationIRError::Semantic(_)));
     }
 
     #[test]
     fn rejects_invalid_obligation_class_enum_value() {
         let text = r#"{"ir_generation":1,"requirement_closure_digest":"a","classification_closure_digest":"b","policy_closure_digest":"c","nodes":[{"obligation_id":"OB-1","requirement_id":"REQ-1","obligation_class":"NOT_A_REAL_CLASS","proof_predicate":"p","falsification_class":"CRITICAL"}]}"#;
-        assert!(decode_canonical(text).is_err());
+        assert!(decode_canonical(text, None).is_err());
+    }
+
+    #[test]
+    fn accepts_connected_obligation_when_known_requirement_ids_supplied() {
+        // The obligation_ir Trust Table row's own promised negative fixture
+        // (G2-00 SS4.1, added G2-03) has a positive counterpart here: a
+        // correctly-bound obligation must still be accepted, not rejected
+        // by mere presence of a known_requirement_ids set.
+        let known: HashSet<String> = ["REQ-1".to_string()].into_iter().collect();
+        let ir = decode_canonical(VALID, Some(&known)).expect("REQ-1 is a known requirement_id");
+        assert_eq!(ir.nodes[0].requirement_id, "REQ-1");
+    }
+
+    #[test]
+    fn rejects_obligation_bound_to_unknown_requirement() {
+        let known: HashSet<String> = ["REQ-OTHER".to_string()].into_iter().collect();
+        let err = decode_canonical(VALID, Some(&known)).unwrap_err();
+        match err {
+            ObligationIRError::Semantic(msg) => assert!(msg.contains("disconnected obligation")),
+            other => panic!("expected Semantic error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_ir_generation_above_u64_bound() {
+        // Round-2 fix: retained as a permanent cross-language fixture
+        // (2**64, one past u64::MAX) -- the exact value that previously
+        // diverged between Rust (rejected: overflow) and Python (accepted:
+        // arbitrary-precision int) before both sides enforced the same
+        // bound.
+        let text = r#"{"ir_generation":18446744073709551616,"requirement_closure_digest":"a","classification_closure_digest":"b","policy_closure_digest":"c","nodes":[{"obligation_id":"OB-1","requirement_id":"REQ-1","obligation_class":"SECURITY","proof_predicate":"p","falsification_class":"CRITICAL"}]}"#;
+        assert!(decode_canonical(text, None).is_err());
     }
 }

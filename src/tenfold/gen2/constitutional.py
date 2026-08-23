@@ -1185,6 +1185,13 @@ class PolicyClosureManifest:
 # ============================================================================
 
 
+# G2-06's Rust decoder (rust/obligation_ir) represents ir_generation as a
+# u64; Python's arbitrary-precision int has no natural equivalent bound.
+# Enforced explicitly so all three ObligationIR decoders agree on the same
+# accepted domain (G2-00 SS7.1).
+_MAX_U64 = (1 << 64) - 1
+
+
 @dataclass(frozen=True)
 class ObligationIRNode:
     """One typed semantic obligation a requirement compiled into (G2-00
@@ -1248,8 +1255,25 @@ class ObligationIR:
         }
     )
 
-    def validate(self, *, policy: ConstitutionalPolicySet | None = None) -> None:
+    def validate(
+        self,
+        *,
+        policy: ConstitutionalPolicySet | None = None,
+        known_requirement_ids: frozenset[str] | None = None,
+    ) -> None:
         _positive_int(self.ir_generation, "ir_generation", "ObligationIR")
+        if self.ir_generation > _MAX_U64:
+            # G2-00 SS7.1's canonical-encoding agreement requires all three
+            # independent decoders (Python producer, independent verifier,
+            # Rust) to accept the same domain. Rust's ir_generation is a u64
+            # and rejects anything above 2**64-1 during deserialization;
+            # Python's arbitrary-precision int would otherwise silently
+            # accept a value Rust cannot represent, which is exactly the
+            # kind of decoder disagreement G2-06's acceptance bar ("all
+            # decoders agree semantically") forbids.
+            raise ConstitutionalError(
+                f"ObligationIR.ir_generation: must not exceed the u64 bound {_MAX_U64} (cross-decoder agreement)"
+            )
         _nonempty_str(self.requirement_closure_digest, "requirement_closure_digest", "ObligationIR")
         _nonempty_str(self.classification_closure_digest, "classification_closure_digest", "ObligationIR")
         _nonempty_str(self.policy_closure_digest, "policy_closure_digest", "ObligationIR")
@@ -1261,6 +1285,19 @@ class ObligationIR:
             if node.obligation_id in ids:
                 raise ConstitutionalError(f"ObligationIR: duplicate obligation_id {node.obligation_id}")
             ids.add(node.obligation_id)
+            if known_requirement_ids is not None and node.requirement_id not in known_requirement_ids:
+                # G2-00 SS4.1's obligation_ir Trust Table row (added G2-03):
+                # "the semantic meaning of a typed obligation is bound by the
+                # closures that produced it" — required_negative_fixture
+                # "disconnected obligation". An obligation naming a
+                # requirement_id absent from the bound Requirement Closure
+                # is exactly that: a typed obligation with no real semantic
+                # binding, which must reject rather than pass through on a
+                # merely-non-empty-string check.
+                raise ConstitutionalError(
+                    f"ObligationIR: node {node.obligation_id} requirement_id {node.requirement_id!r} is not "
+                    "bound to any requirement in the closure — disconnected obligation"
+                )
             if policy is not None:
                 expected_falsification = policy.obligation_class_to_falsification_class.get(node.obligation_class)
                 if expected_falsification is None:

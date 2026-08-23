@@ -11,3 +11,7 @@ serde_json = "1"
 [lib]
 name = "obligation_ir"
 path = "src/lib.rs"
+
+[[bin]]
+name = "obligation_ir_cli"
+path = "src/bin/obligation_ir_cli.rs"

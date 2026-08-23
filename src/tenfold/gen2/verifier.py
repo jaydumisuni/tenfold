@@ -733,11 +733,21 @@ _INDEPENDENT_OBLIGATION_CLASSES = frozenset(
 # G2-00 SS11.1's falsification-priority partial order.
 _INDEPENDENT_FALSIFICATION_CLASSES = frozenset({"CRITICAL", "HIGH", "STANDARD", "LOW", "DEFERRED"})
 
+# Independently re-derived copy of constitutional.py's _MAX_U64: Rust's
+# ir_generation is a u64, so a value Python's arbitrary-precision int would
+# otherwise accept above 2**64-1 is a real cross-decoder disagreement
+# (G2-00 SS7.1), not merely a style preference.
+_INDEPENDENT_MAX_U64 = (1 << 64) - 1
 
-def independent_verify_obligation_ir(raw: Any) -> list[str]:
+
+def independent_verify_obligation_ir(raw: Any, *, known_requirement_ids: frozenset[str] | None = None) -> list[str]:
     """Independently re-verify an ObligationIR-shaped candidate (G2-00 SS7):
-    closed-schema well-formedness at every level, a positive ir_generation,
-    non-empty digest fields, non-empty nodes, no duplicate obligation_id,
+    closed-schema well-formedness at every level, an ir_generation that is
+    both a positive integer and within the u64 bound the Rust decoder
+    enforces, non-empty digest fields, non-empty nodes, no duplicate
+    obligation_id, every node's requirement_id bound to a real requirement
+    when `known_requirement_ids` is supplied (G2-00 SS4.1's obligation_ir
+    Trust Table row: required_negative_fixture "disconnected obligation"),
     and every node's obligation_class/falsification_class is a member of
     the independently re-derived (not imported) closed enums. Returns the
     list of defects found; empty means this independent check found
@@ -751,6 +761,8 @@ def independent_verify_obligation_ir(raw: Any) -> list[str]:
 
     if not isinstance(raw["ir_generation"], int) or isinstance(raw["ir_generation"], bool) or raw["ir_generation"] < 1:
         defects.append("ir_generation must be a positive integer")
+    elif raw["ir_generation"] > _INDEPENDENT_MAX_U64:
+        defects.append(f"ir_generation must not exceed the u64 bound {_INDEPENDENT_MAX_U64} (cross-decoder agreement)")
     for field in ("requirement_closure_digest", "classification_closure_digest", "policy_closure_digest"):
         if not isinstance(raw[field], str) or not raw[field].strip():
             defects.append(f"{field} must be a non-empty string")
@@ -774,6 +786,11 @@ def independent_verify_obligation_ir(raw: Any) -> list[str]:
             obligation_ids.append(node["obligation_id"])
         if not isinstance(node["requirement_id"], str) or not node["requirement_id"].strip():
             defects.append(f"node {node['obligation_id']!r}: requirement_id must be a non-empty string")
+        elif known_requirement_ids is not None and node["requirement_id"] not in known_requirement_ids:
+            defects.append(
+                f"node {node['obligation_id']!r}: requirement_id {node['requirement_id']!r} is not bound to "
+                "any requirement in the closure — disconnected obligation"
+            )
         if not isinstance(node["proof_predicate"], str) or not node["proof_predicate"].strip():
             defects.append(f"node {node['obligation_id']!r}: proof_predicate must be a non-empty string")
         # isinstance-guarded before the `in` check: an adversarial encoding
