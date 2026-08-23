@@ -52,6 +52,12 @@ from .constitutional import (
 )
 from .reference import ReferenceError
 from .mutation_suite import MutationCategory, MutationFixture, MutationSuite
+from .closure_runtime import (
+    ClassificationMergeRecord,
+    merge_classification_entries,
+    reconcile_requirement_closure,
+    record_policy_escape,
+)
 
 
 def _total_policy(**overrides) -> ConstitutionalPolicySet:
@@ -225,6 +231,38 @@ def _classification_lineage_kill_check() -> None:
     # SS6.2) is itself an omission of required classification evidence.
     entry = ClassificationEntry("REQ-1", "alice", (RequirementClass.BEHAVIOUR,), (), None)
     ClassificationClosure(1, "d" * 64, (entry,), False).validate()
+
+
+def _g2_05_path_c_omission_kill_check() -> None:
+    # G2-05 / G2-00 SS6.1: a high-risk requirement whose independent paths
+    # agree completely (zero disagreement) must have a recorded Path C
+    # omission challenge before the closure reconciles — agreement alone is
+    # not evidence of completeness.
+    req = Requirement("REQ-1", "text", "authority@ref", (RequirementClass.BEHAVIOUR,), 1)
+    entry_a = CandidateLedgerEntry("C-A", "REQ-1", "alice", "manual", "v1", 1, "d" * 64, CandidatePathDisposition.ACCEPTED)
+    entry_b = CandidateLedgerEntry("C-B", "REQ-1", "bob", "automated", "v2", 1, "d" * 64, CandidatePathDisposition.ACCEPTED)
+    ledger = CandidateLedger("REQ-1", (entry_a, entry_b))
+    manifest = RequirementClosureManifest(1, "s" * 64, (req,), (ledger,), "manual", ("alice", "bob"))
+    reconcile_requirement_closure(manifest, high_risk_requirement_ids=frozenset({"REQ-1"}), path_c_challenges=())
+
+
+def _g2_05_merge_lineage_tamper_kill_check() -> None:
+    # G2-05 / G2-00 SS6.2: a classification merge must prove lineage
+    # preservation against the closure's own real entries, not trust the
+    # caller's claimed lineage_entries.
+    real_entry = ClassificationEntry("REQ-1", "alice", (RequirementClass.BEHAVIOUR,), (), None)
+    other_entry = ClassificationEntry("REQ-2", "bob", (RequirementClass.SECURITY,), (), None)
+    closure = ClassificationClosure(1, "d" * 64, (real_entry, other_entry), True)
+    tampered_entry = ClassificationEntry("REQ-1", "alice", (RequirementClass.ARCHITECTURE,), (), None)
+    merge = ClassificationMergeRecord("REQ-MERGED", ("REQ-1", "REQ-2"), (tampered_entry, other_entry))
+    merge_classification_entries(closure, merge)
+
+
+def _g2_05_policy_escape_blast_radius_kill_check() -> None:
+    # G2-05 / G2-00 SS6.7: a POLICY_ESCAPE with no Campaign Programs bound
+    # to the affected Policy Generation must reject, and the blast radius
+    # must be mechanically computed rather than hand-supplied.
+    record_policy_escape("ESC-1", 99, "retrospective-probe", {"P-1": 1, "P-2": 2})
 
 
 def build_initial_mutation_suite() -> MutationSuite:
@@ -539,6 +577,45 @@ def build_initial_mutation_suite() -> MutationSuite:
             "G2-00 SS11.1",
             "obligation_ir",
             _falsification_topology_kill_check,
+            ConstitutionalError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G05-PATHC-001",
+            MutationCategory.EXPECTED_SET_FAILURE,
+            "A high-risk requirement whose independent paths agree completely (zero disagreement) "
+            "reconciles with no recorded Path C omission challenge.",
+            "G2-00 SS6.1 (Path C); G2-05",
+            "requirement_closure",
+            _g2_05_path_c_omission_kill_check,
+            ConstitutionalError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G05-MERGE-001",
+            MutationCategory.BOUNDARY_INDEPENDENCE_FAILURE,
+            "A classification merge/dedup supplies lineage_entries that do not match the closure's "
+            "own real entries for the merged requirements, attempting to satisfy lineage preservation "
+            "by an attribute the caller supplies rather than the protected boundary (the closure's "
+            "actual recorded entries).",
+            "G2-00 SS6.2; G2-05",
+            "classification_closure",
+            _g2_05_merge_lineage_tamper_kill_check,
+            ConstitutionalError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G05-BLASTRADIUS-001",
+            MutationCategory.REQUIREMENT_CLASS_POLICY_OMISSION,
+            "A POLICY_ESCAPE is recorded for a Policy Generation with no Campaign Programs bound to "
+            "it, exercised through the mechanical blast-radius enumeration engine rather than a "
+            "hand-supplied program list.",
+            "G2-00 SS6.7; G2-05",
+            "constitutional_policy",
+            _g2_05_policy_escape_blast_radius_kill_check,
             ConstitutionalError,
         )
     )

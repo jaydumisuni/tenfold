@@ -89,6 +89,22 @@ from .mutation_suite import (
     REQUIRED_MUTATION_CATEGORIES,
 )
 from .mutation_fixtures import build_initial_mutation_suite
+from .closure_runtime import (
+    ClassificationMergeRecord,
+    EscapeRateReport,
+    PathCChallenge,
+    PathCDisposition,
+    RetrospectiveProbeRecord,
+    RetrospectiveProbeRegistry,
+    RetrospectiveProbeStatus,
+    compute_escape_rate_report,
+    enumerate_policy_escape_blast_radius,
+    has_common_cause_risk,
+    merge_classification_entries,
+    reconcile_requirement_closure,
+    record_policy_escape,
+    requires_path_c_challenge,
+)
 
 __all__ = [
     "ArtifactBinding",
@@ -167,4 +183,18 @@ __all__ = [
     "MutationSuite",
     "REQUIRED_MUTATION_CATEGORIES",
     "build_initial_mutation_suite",
+    "ClassificationMergeRecord",
+    "EscapeRateReport",
+    "PathCChallenge",
+    "PathCDisposition",
+    "RetrospectiveProbeRecord",
+    "RetrospectiveProbeRegistry",
+    "RetrospectiveProbeStatus",
+    "compute_escape_rate_report",
+    "enumerate_policy_escape_blast_radius",
+    "has_common_cause_risk",
+    "merge_classification_entries",
+    "reconcile_requirement_closure",
+    "record_policy_escape",
+    "requires_path_c_challenge",
 ]
