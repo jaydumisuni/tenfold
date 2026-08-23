@@ -1,19 +1,33 @@
 """Facility Capability ABI, read-only/sandbox gate (G2-00 SS9.1, G2-14).
 
-There is no Gen-1 analog for Facility qualification (Gen-1 has no adapter
-qualification concept). This module is this milestone's own authoritative
+There is no Gen-1 analog for Facility *qualification* (the ABI/harness
+this milestone builds) -- that part is this milestone's own authoritative
 Python source, mirrored by the independent Rust re-derivation in
-`rust/facility` for the admission/critical-gate check only -- the
-adversarial Facility Property Qualification Harness itself (this module's
-`LocalSandboxFacility`/`FacilityPropertyQualificationHarness`) carries no
+`rust/facility` for the admission/critical-gate check only (the
+adversarial Facility Property Qualification Harness itself, this module's
+`LocalSandboxFacility`/`FacilityPropertyQualificationHarness`, carries no
 Rust ownership under G2-00 SS4, matching "Python may own: ... simulation
-and analysis".
+and analysis").
+
+Gen-1 does already have a real Facility execution-authority path,
+`tenfold.facility.validate_live_task` (task authority seal, campaign
+generation/Foreman-epoch fencing, durable assignment binding, lease
+fencing when `require_lease=True`). G2-14's own acceptance bar ("read-
+only wrapping preserves Gen1 semantics") requires this milestone to wrap
+-- not re-derive -- that real function for the read-only admission path
+the critical gate actually permits; `gen1_wrap_read_only_facility_task`
+below is that thin wrapper (`require_lease=False`, fixed).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+
+from tenfold.contracts import NodeState, TaskPacket
+from tenfold.facility import CampaignAuthorityStore, LiveTaskAuthority
+from tenfold.facility import validate_live_task as _gen1_validate_live_task
+from tenfold.persistence import AssignmentRef, CampaignSnapshot
 
 
 class FacilityError(ValueError):
@@ -138,15 +152,18 @@ class FacilityContract:
 
     def can_emit_authoritative_non_occurrence(self) -> bool:
         """G2-14 acceptance: "unqualified non-occurrence signal cannot
-        yield FAILED_NON_OCCURRENCE_PROVEN." Validates the contract first
-        (self-caught before push, matching the discipline G2-12's round-2
-        `compute_proof_verdict` fix established): without this, a
-        structurally malformed record -- e.g. QUALIFIED_WITH_BOUND with no
-        bound_description -- would still report `is_qualified()` True and
-        let a malformed declaration answer authoritatively, diverging from
-        the real Rust kernel's CLI wrapper, which always validates first.
+        yield FAILED_NON_OCCURRENCE_PROVEN." Validates the contract and
+        applies the critical gate first (round-2 review finding): without
+        the critical-gate check, a REAL_MUTATING contract with every
+        property genuinely qualified would still report an authoritative
+        non-occurrence result via this path even though the same contract
+        is rejected outright by the `validate` admission path -- the
+        critical gate ("REAL MUTATING FACILITY AUTHORITY = DISABLED")
+        must hold on every path that returns an authoritative result, not
+        only structural validation.
         """
         self.validate()
+        check_critical_gate(self)
         return self.is_property_qualified(FacilityProperty.NON_OCCURRENCE_SIGNAL)
 
 
@@ -161,6 +178,112 @@ def check_critical_gate(contract: FacilityContract) -> None:
             f"FacilityContract {contract.facility_id}: REAL_MUTATING io_class is disabled until G2-18 is PROVEN "
             "(G2-14 critical gate) -- only READ_ONLY/SYNTHETIC_MOCK/DISPOSABLE_SANDBOX are permitted"
         )
+
+
+# ============================================================================
+# Read-only wrapping of Gen-1's real Facility execution-authority path
+# (round-2 review finding: G2-14 acceptance, verbatim, "read-only
+# wrapping preserves Gen1 semantics"). `gen1_wrap_read_only_facility_task`
+# literally invokes the real `tenfold.facility.validate_live_task` with
+# `require_lease=False` fixed -- never a re-derivation of its admission
+# checks (task authority seal, stale campaign generation, stale Foreman
+# epoch, missing/invalid durable assignment, forged dispatch digest,
+# stale/invalid lease binding on an otherwise-readable task).
+# ============================================================================
+
+
+def gen1_wrap_read_only_facility_task(
+    task: TaskPacket,
+    authority_store: CampaignAuthorityStore,
+    *,
+    capability: str | None = None,
+    permission: str | None = None,
+    foreman_epoch: int | None = None,
+) -> LiveTaskAuthority:
+    """The read-only admission path the G2-14 critical gate actually
+    permits: `require_lease=False` is fixed, matching "Allowed only read-
+    only, synthetic/mock, or disposable sandbox mutation" -- this wrapper
+    never grants mutable/leased authority."""
+    return _gen1_validate_live_task(task, authority_store, capability=capability, permission=permission, foreman_epoch=foreman_epoch, require_lease=False)
+
+
+class _ReadOnlyStubAuthorityStore:
+    def __init__(self, snapshot: CampaignSnapshot) -> None:
+        self._snapshot = snapshot
+
+    def read(self, campaign_id: str) -> CampaignSnapshot:
+        return self._snapshot
+
+
+def gen1_check_read_only_facility_admission(
+    *,
+    campaign_id: str,
+    campaign_generation: int,
+    foreman_epoch: int,
+    assignment_id: str,
+    task_id: str,
+    node_id: str,
+    attempt: int,
+    live_campaign_generation: int,
+    live_foreman_epoch: int,
+    live_node_state: NodeState | None,
+    live_assignment_dispatch_digest: str | None,
+    live_assignment_status: str,
+) -> LiveTaskAuthority:
+    """Literally invokes `gen1_wrap_read_only_facility_task` (and so the
+    real Gen-1 `validate_live_task(require_lease=False)`) against a
+    genuinely self-sealed `TaskPacket` and a real `CampaignSnapshot` --
+    the differential-testing convenience this milestone's test corpus
+    exercises, mirroring the pattern G2-11's `gen1_check_mutation_
+    admission` (`tenfold.gen2.dispatch_lease`) already established.
+    """
+    task = TaskPacket(
+        task_id=task_id,
+        campaign_id=campaign_id,
+        campaign_generation=campaign_generation,
+        node_id=node_id,
+        assignment_id=assignment_id,
+        attempt=attempt,
+        objective="g2-14-read-only",
+        scope=(),
+        capabilities=(),
+        permissions=(),
+        evidence_obligations=(),
+        stop_conditions=(),
+        reporting_officer="g2-14",
+        source_binding="g2-14-read-only",
+        foreman_epoch=foreman_epoch,
+    ).sealed()
+
+    node_states = () if live_node_state is None else ((node_id, live_node_state.value),)
+    assignments = ()
+    if live_assignment_dispatch_digest is not None:
+        assignments = (
+            AssignmentRef(
+                assignment_id=assignment_id,
+                task_id=task_id,
+                node_id=node_id,
+                attempt=attempt,
+                status=live_assignment_status,
+                dispatch_digest=live_assignment_dispatch_digest,
+            ),
+        )
+
+    snapshot = CampaignSnapshot(
+        campaign_id=campaign_id,
+        campaign_generation=live_campaign_generation,
+        campaign_digest="0" * 64,
+        blueprint_generation=1,
+        blueprint_digest="0" * 64,
+        matrix_generation=1,
+        matrix_digest="0" * 64,
+        campaign_payload="{}",
+        foreman_epoch=live_foreman_epoch,
+        node_states=node_states,
+        assignments=assignments,
+        leases=(),
+    )
+    return gen1_wrap_read_only_facility_task(task, _ReadOnlyStubAuthorityStore(snapshot))
 
 
 # ============================================================================
@@ -190,11 +313,22 @@ class LocalSandboxFacility:
     generation: int = 1
     _committed: dict[str, str] = field(default_factory=dict)
     _execution_count: dict[str, int] = field(default_factory=dict)
+    # Round-2 review finding: a distinct log entry per genuinely NEW
+    # effect, separate from `_committed`'s final-state view -- comparing
+    # only final state cannot distinguish "the second call was safely a
+    # no-op" from "the second call double-applied the same effect and
+    # happened to overwrite with an identical value." A key repeating the
+    # exact same (key, value) pair genuinely idempotently does not append
+    # here a second time; any other repeat (even one that happens to
+    # settle on the same final value through a different path) would.
+    effect_log: list[tuple[str, str]] = field(default_factory=list)
 
     def execute(self, key: str, value: str, *, generation: int) -> str:
         if generation != self.generation:
             raise StaleGenerationRejected(f"stale generation {generation}, current is {self.generation}")
         self._execution_count[key] = self._execution_count.get(key, 0) + 1
+        if self._committed.get(key) != value:
+            self.effect_log.append((key, value))
         self._committed[key] = value
         return f"ack:{key}:{self._execution_count[key]}"
 
@@ -230,11 +364,21 @@ class FacilityPropertyQualificationHarness:
         self.facility = facility
 
     def run_duplicate_key_scenario(self) -> SandboxScenarioResult:
+        # Round-2 review finding: the original check only compared final
+        # committed state, which is trivially true regardless of whether
+        # the duplicate call double-applied a real effect -- a facility
+        # that appends an event, increments an external counter, or
+        # otherwise double-applies its effect before landing on the same
+        # final value would previously still pass. This now inspects
+        # `effect_log` -- a distinct record per genuinely new effect --
+        # so a duplicate call that re-applies the same effect a second
+        # time is detected as non-idempotent, not just state-equal.
         self.facility.execute("k1", "v1", generation=self.facility.generation)
         self.facility.execute("k1", "v1", generation=self.facility.generation)
-        idempotent = self.facility._execution_count.get("k1") == 2 and self.facility._committed.get("k1") == "v1"
+        distinct_effects = sum(1 for k, _v in self.facility.effect_log if k == "k1")
+        idempotent = distinct_effects == 1 and self.facility._committed.get("k1") == "v1"
         state = QualificationState.QUALIFIED if idempotent else QualificationState.UNQUALIFIED
-        return SandboxScenarioResult("duplicate-key", FacilityProperty.DUPLICATE_KEY_BEHAVIOR, state, ("execute-twice-same-key",), f"execution_count={self.facility._execution_count.get('k1')}")
+        return SandboxScenarioResult("duplicate-key", FacilityProperty.DUPLICATE_KEY_BEHAVIOR, state, ("execute-twice-same-key",), f"distinct_effects={distinct_effects}")
 
     def run_stale_generation_scenario(self) -> SandboxScenarioResult:
         stale = self.facility.generation
@@ -269,11 +413,15 @@ class FacilityPropertyQualificationHarness:
         # before any ACK observation occurs at all -- the effect is real
         # committed state; a genuinely idempotent facility must still
         # allow a safe re-execution afterward without double-effect.
+        # Round-2 review finding: checked via `effect_log` (a distinct
+        # entry per genuinely new effect), not merely final committed
+        # state, for the same reason as the duplicate-key scenario above.
         self.facility.execute("k5", "v5", generation=self.facility.generation)
         self.facility.execute("k5", "v5", generation=self.facility.generation)
-        safe = self.facility._committed.get("k5") == "v5" and self.facility._execution_count.get("k5") == 2
+        distinct_effects = sum(1 for k, _v in self.facility.effect_log if k == "k5")
+        safe = distinct_effects == 1 and self.facility._committed.get("k5") == "v5"
         state = QualificationState.QUALIFIED if safe else QualificationState.UNQUALIFIED
-        return SandboxScenarioResult("crash-before-ack", FacilityProperty.COMMIT_ACK_SEMANTICS, state, ("post-crash-safe-reexecution",), f"safe={safe}")
+        return SandboxScenarioResult("crash-before-ack", FacilityProperty.COMMIT_ACK_SEMANTICS, state, ("post-crash-safe-reexecution",), f"distinct_effects={distinct_effects}")
 
     def qualify_declared_scenarios(self) -> tuple[PropertyQualificationRecord, ...]:
         results = (

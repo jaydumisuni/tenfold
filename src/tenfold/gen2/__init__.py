@@ -250,6 +250,8 @@ from .facility import (
     SandboxScenarioResult,
     StaleGenerationRejected,
     check_critical_gate,
+    gen1_check_read_only_facility_admission,
+    gen1_wrap_read_only_facility_task,
 )
 from .facility_bridge import (
     FacilityCliBuildError,
@@ -474,6 +476,8 @@ __all__ = [
     "SandboxScenarioResult",
     "StaleGenerationRejected",
     "check_critical_gate",
+    "gen1_check_read_only_facility_admission",
+    "gen1_wrap_read_only_facility_task",
     "FacilityCliBuildError",
     "FacilityCliError",
     "rust_can_emit_authoritative_non_occurrence",

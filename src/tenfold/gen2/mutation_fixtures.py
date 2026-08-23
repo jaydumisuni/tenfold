@@ -1157,6 +1157,32 @@ def _g2_14_unqualified_non_occurrence_kill_check() -> None:
     raise UnqualifiedNonOccurrenceCorrectlyRejected("an unqualified NON_OCCURRENCE_SIGNAL cannot yield an authoritative non-occurrence result in both Gen1 and Rust")
 
 
+class CriticalGateBypassCorrectlyRejected(Exception):
+    """Fixture-only sentinel (see `PartialProofCorrectlyRejected` above for
+    the rationale), for G2-14's round-2 review finding: the critical gate
+    must hold on every admission path that returns an authoritative
+    result, not only `validate`."""
+
+
+def _g2_14_critical_gate_bypass_kill_check() -> None:
+    # Round-2 review finding: a REAL_MUTATING contract with every property
+    # genuinely qualified must still be rejected by
+    # can_emit_authoritative_non_occurrence itself, not silently answer
+    # True just because it takes a different admission path than
+    # `validate`.
+    contract_dict = _facility_contract_dict(io_class="REAL_MUTATING")
+    try:
+        rust_can_emit_authoritative_non_occurrence(contract_dict)
+    except FacilityCliError:
+        pass
+    else:
+        raise AssertionError("rust facility kernel incorrectly answered an authoritative non-occurrence result for a REAL_MUTATING contract")
+
+    gen1_records = tuple(PropertyQualificationRecord(FacilityProperty(r["property"]), QualificationState(r["state"]), tuple(r["evidence_refs"]), r["bound_description"]) for r in _all_qualified_property_records())
+    contract = FacilityContract("fac-1", 1, FacilityIOClass.REAL_MUTATING, FacilityAdapterBoundary.LOCAL_FACILITY, "test-effect", "authority@ref", gen1_records, ("ev-declaration",))
+    contract.can_emit_authoritative_non_occurrence()
+
+
 def build_initial_mutation_suite() -> MutationSuite:
     suite = MutationSuite()
 
@@ -1922,6 +1948,21 @@ def build_initial_mutation_suite() -> MutationSuite:
             "facility_declaration",
             _g2_14_unqualified_non_occurrence_kill_check,
             UnqualifiedNonOccurrenceCorrectlyRejected,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G14-GATEBYPASS-001",
+            MutationCategory.EFFECT_CONTAINMENT,
+            "A REAL_MUTATING FacilityContract with every property genuinely qualified is still "
+            "rejected by can_emit_authoritative_non_occurrence itself (not only the validate "
+            "admission path) in both the real compiled Rust facility kernel and real Gen-1 -- the "
+            "critical gate holds on every admission path that returns an authoritative result "
+            "(round-2 review finding).",
+            "G2-14 critical gate",
+            "facility_declaration",
+            _g2_14_critical_gate_bypass_kill_check,
+            Gen2FacilityError,
         )
     )
 

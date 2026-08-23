@@ -7,20 +7,26 @@ Gen1 semantics; real mutation mechanically blocked; no declaration becomes
 authoritative without falsification evidence; unqualified non-occurrence
 signal cannot yield FAILED_NON_OCCURRENCE_PROVEN."
 
-There is no Gen-1 analog for Facility qualification. Every differential
-test below compares the real Python re-derivation (`tenfold.gen2.facility`)
-against the real compiled Rust re-derivation (via
-`tenfold.gen2.facility_bridge`'s CLI bridge), never a second hand-authored
-Python stand-in for either side. The adversarial Facility Property
-Qualification Harness (`LocalSandboxFacility`/
+There is no Gen-1 analog for Facility *qualification*; every differential
+test in that part below compares the real Python re-derivation
+(`tenfold.gen2.facility`) against the real compiled Rust re-derivation
+(via `tenfold.gen2.facility_bridge`'s CLI bridge), never a second hand-
+authored Python stand-in for either side. The adversarial Facility
+Property Qualification Harness (`LocalSandboxFacility`/
 `FacilityPropertyQualificationHarness`) is exercised directly against real
-(if synthetic) sandbox behavior, never asserted.
+(if synthetic) sandbox behavior, never asserted. Gen-1 *does* have a real
+Facility execution-authority path (`tenfold.facility.validate_live_task`);
+the "read-only wrapping preserves Gen1 semantics" tests below literally
+invoke it via `gen1_check_read_only_facility_admission`, never a
+re-derivation.
 """
 
 from __future__ import annotations
 
 import pytest
 
+from tenfold.facility import FacilityError as Gen1FacilityError
+from tenfold.contracts import NodeState, TaskPacket
 from tenfold.gen2.facility import (
     FacilityAdapterBoundary,
     FacilityContract,
@@ -33,6 +39,7 @@ from tenfold.gen2.facility import (
     QualificationState,
     RealMutatingFacilityAuthorityDisabled,
     StaleGenerationRejected,
+    gen1_check_read_only_facility_admission,
     check_critical_gate,
 )
 from tenfold.gen2.facility_bridge import (
@@ -207,6 +214,20 @@ def test_g2_14_gen1_rust_parity_non_real_mutating_accepted(io_class: FacilityIOC
     rust_validate_facility_contract(_contract_dict(io_class=io_class.value))
 
 
+def test_g2_14_gen1_rust_parity_critical_gate_holds_on_the_non_occurrence_admission_path_too() -> None:
+    """Round-2 review finding: the critical gate must be enforced on every
+    admission path that returns an authoritative result, not only
+    `validate`. A REAL_MUTATING contract with every property genuinely
+    qualified must still be rejected by `can_emit_authoritative_non_occurrence`
+    itself, not silently answer `True`."""
+    contract = _contract(io_class=FacilityIOClass.REAL_MUTATING)
+    with pytest.raises(RealMutatingFacilityAuthorityDisabled):
+        contract.can_emit_authoritative_non_occurrence()
+
+    with pytest.raises(FacilityCliError):
+        rust_can_emit_authoritative_non_occurrence(_contract_dict(io_class="REAL_MUTATING"))
+
+
 # ============================================================================
 # Differential corpus: "unqualified non-occurrence signal cannot yield
 # FAILED_NON_OCCURRENCE_PROVEN" (verbatim acceptance bar).
@@ -283,6 +304,104 @@ def test_g2_14_local_sandbox_facility_rejects_stale_generation_execute() -> None
     facility.bump_generation()
     with pytest.raises(StaleGenerationRejected):
         facility.execute("k1", "v1", generation=1)
+
+
+def test_g2_14_harness_detects_a_facility_that_double_applies_the_same_effect() -> None:
+    """Round-2 review finding: the original duplicate-key check only
+    compared final committed state, which is trivially true regardless of
+    whether the duplicate call double-applied a real effect. A facility
+    that logs a new effect on every call -- even a repeat with the same
+    key/value -- must now be reported UNQUALIFIED, not QUALIFIED."""
+
+    class NonIdempotentFacility(LocalSandboxFacility):
+        def execute(self, key: str, value: str, *, generation: int) -> str:
+            if generation != self.generation:
+                raise StaleGenerationRejected(f"stale generation {generation}, current is {self.generation}")
+            self._execution_count[key] = self._execution_count.get(key, 0) + 1
+            self.effect_log.append((key, value))  # BROKEN: logs every call, even exact repeats
+            self._committed[key] = value
+            return f"ack:{key}:{self._execution_count[key]}"
+
+    harness = FacilityPropertyQualificationHarness(NonIdempotentFacility())
+    duplicate_key_result = harness.run_duplicate_key_scenario()
+    assert duplicate_key_result.state == QualificationState.UNQUALIFIED
+
+    harness2 = FacilityPropertyQualificationHarness(NonIdempotentFacility())
+    crash_result = harness2.run_crash_before_ack_scenario()
+    assert crash_result.state == QualificationState.UNQUALIFIED
+
+
+# ============================================================================
+# Round-2 review finding: "read-only wrapping preserves Gen1 semantics"
+# means literally wrapping the real Gen-1
+# tenfold.facility.validate_live_task(require_lease=False), not a
+# standalone Gen-2 schema with no connection to Gen-1's own admission
+# semantics.
+# ============================================================================
+
+
+def _read_only_scenario(**overrides) -> dict:
+    base = dict(
+        campaign_id="camp-1", campaign_generation=1, foreman_epoch=1,
+        assignment_id="assign-1", task_id="task-1", node_id="node-1", attempt=1,
+        live_campaign_generation=1, live_foreman_epoch=1, live_node_state=NodeState.READY,
+        live_assignment_dispatch_digest=None, live_assignment_status="active",
+    )
+    base.update(overrides)
+    return base
+
+
+def _sealed_dispatch_digest(scenario: dict) -> str:
+    task = TaskPacket(
+        task_id=scenario["task_id"], campaign_id=scenario["campaign_id"], campaign_generation=scenario["campaign_generation"],
+        node_id=scenario["node_id"], assignment_id=scenario["assignment_id"], attempt=scenario["attempt"],
+        objective="g2-14-read-only", scope=(), capabilities=(), permissions=(), evidence_obligations=(), stop_conditions=(),
+        reporting_officer="g2-14", source_binding="g2-14-read-only", foreman_epoch=scenario["foreman_epoch"],
+    ).sealed()
+    return task.dispatch_digest
+
+
+def test_g2_14_gen1_read_only_wrapper_accepts_a_genuinely_live_readable_task() -> None:
+    scenario = _read_only_scenario()
+    scenario["live_assignment_dispatch_digest"] = _sealed_dispatch_digest(scenario)
+    gen1_check_read_only_facility_admission(**scenario)
+
+
+def test_g2_14_gen1_read_only_wrapper_rejects_stale_campaign_generation() -> None:
+    scenario = _read_only_scenario()
+    scenario["live_assignment_dispatch_digest"] = _sealed_dispatch_digest(scenario)
+    scenario["live_campaign_generation"] = 2
+    with pytest.raises(Gen1FacilityError):
+        gen1_check_read_only_facility_admission(**scenario)
+
+
+def test_g2_14_gen1_read_only_wrapper_rejects_stale_foreman_epoch() -> None:
+    scenario = _read_only_scenario()
+    scenario["live_assignment_dispatch_digest"] = _sealed_dispatch_digest(scenario)
+    scenario["live_foreman_epoch"] = 2
+    with pytest.raises(Gen1FacilityError):
+        gen1_check_read_only_facility_admission(**scenario)
+
+
+def test_g2_14_gen1_read_only_wrapper_rejects_a_missing_durable_assignment() -> None:
+    scenario = _read_only_scenario()  # live_assignment_dispatch_digest stays None
+    with pytest.raises(Gen1FacilityError):
+        gen1_check_read_only_facility_admission(**scenario)
+
+
+def test_g2_14_gen1_read_only_wrapper_rejects_a_forged_dispatch_digest() -> None:
+    scenario = _read_only_scenario()
+    scenario["live_assignment_dispatch_digest"] = "forged-digest"
+    with pytest.raises(Gen1FacilityError):
+        gen1_check_read_only_facility_admission(**scenario)
+
+
+def test_g2_14_gen1_read_only_wrapper_rejects_a_non_executable_node_state() -> None:
+    scenario = _read_only_scenario()
+    scenario["live_assignment_dispatch_digest"] = _sealed_dispatch_digest(scenario)
+    scenario["live_node_state"] = NodeState.FAILED
+    with pytest.raises(Gen1FacilityError):
+        gen1_check_read_only_facility_admission(**scenario)
 
 
 # ============================================================================

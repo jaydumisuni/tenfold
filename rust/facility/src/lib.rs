@@ -207,14 +207,18 @@ impl FacilityContract {
     }
 
     /// G2-14 acceptance: "unqualified non-occurrence signal cannot yield
-    /// FAILED_NON_OCCURRENCE_PROVEN." Validates the contract first
-    /// (self-caught before push, matching the discipline G2-12's round-2
-    /// `compute_proof_verdict` fix established): without this, a
-    /// structurally malformed record -- e.g. QUALIFIED_WITH_BOUND with no
-    /// bound_description -- would still report `is_qualified()` true and
-    /// let a malformed declaration answer authoritatively.
+    /// FAILED_NON_OCCURRENCE_PROVEN." Validates the contract and applies
+    /// the critical gate first (round-2 review finding): without the
+    /// critical-gate check, a REAL_MUTATING contract with every property
+    /// genuinely qualified would still report an authoritative non-
+    /// occurrence result via this path even though the same contract is
+    /// rejected outright by the `validate` admission path -- the critical
+    /// gate ("REAL MUTATING FACILITY AUTHORITY = DISABLED") must hold on
+    /// every path that returns an authoritative result, not only
+    /// structural validation.
     pub fn can_emit_authoritative_non_occurrence(&self) -> Result<bool, FacilityError> {
         self.validate()?;
+        check_critical_gate(self)?;
         Ok(self.is_property_qualified(FacilityProperty::NON_OCCURRENCE_SIGNAL))
     }
 }
@@ -415,5 +419,14 @@ mod tests {
         records.push(unqualified_record(FacilityProperty::NON_OCCURRENCE_SIGNAL));
         let unqualified = contract(FacilityIOClass::READ_ONLY, records);
         assert!(!admit_can_emit_authoritative_non_occurrence(&admitted_table(), &unqualified).unwrap());
+    }
+
+    #[test]
+    fn admit_can_emit_authoritative_non_occurrence_rejects_real_mutating_even_when_fully_qualified() {
+        // Round-2 review finding: the critical gate must hold on every
+        // admission path that returns an authoritative result, not only
+        // `validate`/`admit_validate_facility_contract`.
+        let c = contract(FacilityIOClass::REAL_MUTATING, all_qualified_records());
+        assert!(admit_can_emit_authoritative_non_occurrence(&admitted_table(), &c).is_err());
     }
 }
