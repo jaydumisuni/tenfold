@@ -139,6 +139,8 @@ from .execution_context import (
     AmbientAuthorityInventory,
     ExecutionAuthorityState,
     HighRiskUnboundedExecutionRejected,
+    ProbeResult,
+    ProbeStatus,
     UnadmittedAuthorityReachable,
     check_high_risk_execution_admission,
     check_no_unadmitted_authority,
@@ -1236,6 +1238,20 @@ def _g2_15_high_risk_unbounded_kill_check() -> None:
     check_high_risk_execution_admission(state)
 
 
+def _g2_15_partial_axis_probing_kill_check() -> None:
+    # Round-2 review finding: an inventory that only genuinely probed ONE
+    # of the three required axes (held/network/local) -- leaving the
+    # other two entirely unprobed -- must classify UNBOUNDED, not
+    # silently ISOLATED just because the one probed axis came back
+    # clean. G2-15 acceptance, verbatim: "...across held/network/local
+    # axes."
+    partial_inventory = AmbientAuthorityInventory((ProbeResult("X", "d", ProbeStatus.ADMITTED_ABSENT, "ev"),), (), ())
+    state = classify_execution_authority_state(partial_inventory)
+    if state != ExecutionAuthorityState.UNBOUNDED:
+        raise AssertionError(f"an inventory with two entirely unprobed axes incorrectly classified as {state}, expected UNBOUNDED")
+    check_high_risk_execution_admission(state)
+
+
 def build_initial_mutation_suite() -> MutationSuite:
     suite = MutationSuite()
 
@@ -1520,6 +1536,20 @@ def build_initial_mutation_suite() -> MutationSuite:
             "G2-00 SS9.2; G2-15",
             None,
             _g2_15_high_risk_unbounded_kill_check,
+            HighRiskUnboundedExecutionRejected,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-AMBIENT-005",
+            MutationCategory.AMBIENT_HELD_NETWORK_LOCAL_AUTHORITY,
+            "An inventory that only genuinely probed one of the three required axes (leaving the "
+            "other two entirely unprobed) classifies UNBOUNDED, not silently ISOLATED just "
+            "because the one probed axis came back clean, via the real "
+            "classify_execution_authority_state (round-2 review finding, G2-15).",
+            "G2-00 SS9.2; G2-15",
+            None,
+            _g2_15_partial_axis_probing_kill_check,
             HighRiskUnboundedExecutionRejected,
         )
     )

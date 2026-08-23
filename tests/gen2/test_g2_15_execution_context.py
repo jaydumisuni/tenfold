@@ -77,22 +77,22 @@ _ALL_REQUIRED_FIELD_IDS = (
 
 def test_g2_15_probe_held_authority_against_the_real_process_environment() -> None:
     results = probe_held_authority()
-    assert len(results) == 9
+    assert len(results) == 18  # 9 env-var indicators + 9 default-credential-file indicators (round-2)
     for r in results:
         r.validate()
-        assert r.status in (ProbeStatus.ADMITTED_ABSENT, ProbeStatus.REACHABLE)
+        assert r.status in (ProbeStatus.ADMITTED_ABSENT, ProbeStatus.REACHABLE, ProbeStatus.INDETERMINATE)
 
 
 def test_g2_15_probe_local_positional_authority_against_the_real_filesystem() -> None:
     results = probe_local_positional_authority()
-    assert len(results) == 3
+    assert len(results) == 10  # round-2: expanded from 3 to 10 (containerd/podman/CRI-O/k8s/device indicators)
     for r in results:
         r.validate()
 
 
 def test_g2_15_probe_network_positional_authority_against_a_real_bounded_connection_attempt() -> None:
     results = probe_network_positional_authority(timeout=0.5)
-    assert len(results) == 1
+    assert len(results) == 3  # round-2: IMDS + 2 general-egress positive controls
     for r in results:
         r.validate()
         assert r.status in (ProbeStatus.ADMITTED_ABSENT, ProbeStatus.REACHABLE, ProbeStatus.INDETERMINATE)
@@ -162,27 +162,55 @@ def test_g2_15_check_no_unadmitted_authority_accepts_a_fully_clean_inventory() -
     check_no_unadmitted_authority(inventory)
 
 
+def test_g2_15_check_no_unadmitted_authority_accepts_a_reachable_indicator_that_is_explicitly_admitted() -> None:
+    """Round-2 review finding: a reachable indicator that was explicitly
+    declared and approved (e.g. the interim Root's own scoped credential)
+    must not be rejected just because it is reachable."""
+    held = probe_held_authority(environ={"GITHUB_TOKEN": "fake-token"})
+    inventory = AmbientAuthorityInventory(held, (), ())
+    check_no_unadmitted_authority(inventory, admitted_indicators=frozenset({"GITHUB_TOKEN"}))
+
+
+def test_g2_15_check_no_unadmitted_authority_still_rejects_a_reachable_indicator_outside_the_admission_set() -> None:
+    held = probe_held_authority(environ={"GITHUB_TOKEN": "fake-token"})
+    inventory = AmbientAuthorityInventory(held, (), ())
+    with pytest.raises(UnadmittedAuthorityReachable):
+        check_no_unadmitted_authority(inventory, admitted_indicators=frozenset({"NPM_TOKEN"}))
+
+
 # ============================================================================
 # Execution authority state classification.
 # ============================================================================
+
+
+_ADMITTED_ABSENT = ProbeResult("axis-placeholder", "d", ProbeStatus.ADMITTED_ABSENT, "ev")
 
 
 def test_g2_15_classify_empty_inventory_as_unbounded() -> None:
     assert classify_execution_authority_state(AmbientAuthorityInventory((), (), ())) == ExecutionAuthorityState.UNBOUNDED
 
 
-def test_g2_15_classify_all_admitted_absent_as_isolated() -> None:
+def test_g2_15_classify_partially_probed_inventory_as_unbounded() -> None:
+    """Round-2 review finding: an inventory that only probed ONE of the
+    three required axes (the other two entirely empty) must classify
+    UNBOUNDED, not silently ISOLATED just because the one probed axis
+    came back clean."""
     inventory = AmbientAuthorityInventory((ProbeResult("X", "d", ProbeStatus.ADMITTED_ABSENT, "ev"),), (), ())
+    assert classify_execution_authority_state(inventory) == ExecutionAuthorityState.UNBOUNDED
+
+
+def test_g2_15_classify_all_admitted_absent_as_isolated() -> None:
+    inventory = AmbientAuthorityInventory((ProbeResult("X", "d", ProbeStatus.ADMITTED_ABSENT, "ev"),), (_ADMITTED_ABSENT,), (_ADMITTED_ABSENT,))
     assert classify_execution_authority_state(inventory) == ExecutionAuthorityState.ISOLATED
 
 
 def test_g2_15_classify_any_reachable_as_enumerated() -> None:
-    inventory = AmbientAuthorityInventory((ProbeResult("X", "d", ProbeStatus.REACHABLE, "ev"),), (), ())
+    inventory = AmbientAuthorityInventory((ProbeResult("X", "d", ProbeStatus.REACHABLE, "ev"),), (_ADMITTED_ABSENT,), (_ADMITTED_ABSENT,))
     assert classify_execution_authority_state(inventory) == ExecutionAuthorityState.ENUMERATED
 
 
 def test_g2_15_classify_any_indeterminate_as_partially_enumerable() -> None:
-    inventory = AmbientAuthorityInventory((ProbeResult("X", "d", ProbeStatus.INDETERMINATE, "ev"),), (), ())
+    inventory = AmbientAuthorityInventory((ProbeResult("X", "d", ProbeStatus.INDETERMINATE, "ev"),), (_ADMITTED_ABSENT,), (_ADMITTED_ABSENT,))
     assert classify_execution_authority_state(inventory) == ExecutionAuthorityState.PARTIALLY_ENUMERABLE
 
 
@@ -193,7 +221,7 @@ def test_g2_15_classify_indeterminate_outranks_reachable() -> None:
     inventory = AmbientAuthorityInventory(
         (ProbeResult("X", "d", ProbeStatus.REACHABLE, "ev"),),
         (ProbeResult("Y", "d", ProbeStatus.INDETERMINATE, "ev"),),
-        (),
+        (_ADMITTED_ABSENT,),
     )
     assert classify_execution_authority_state(inventory) == ExecutionAuthorityState.PARTIALLY_ENUMERABLE
 
@@ -222,6 +250,16 @@ def test_g2_15_ambient_authority_digest_is_stable_for_identical_inventories() ->
 def test_g2_15_ambient_authority_digest_differs_when_a_status_changes() -> None:
     inv_a = AmbientAuthorityInventory((ProbeResult("X", "d", ProbeStatus.ADMITTED_ABSENT, "ev"),), (), ())
     inv_b = AmbientAuthorityInventory((ProbeResult("X", "d", ProbeStatus.REACHABLE, "ev"),), (), ())
+    assert inv_a.digest() != inv_b.digest()
+
+
+def test_g2_15_ambient_authority_digest_differs_when_only_the_evidence_ref_changes() -> None:
+    """Round-2 review finding: replacing or rebinding the evidence backing
+    an otherwise-identical probe result must change the digest -- the
+    digest is meant to bind the full probe inventory, not just the
+    indicator/status pairs."""
+    inv_a = AmbientAuthorityInventory((ProbeResult("X", "d", ProbeStatus.ADMITTED_ABSENT, "ev-1"),), (), ())
+    inv_b = AmbientAuthorityInventory((ProbeResult("X", "d", ProbeStatus.ADMITTED_ABSENT, "ev-2"),), (), ())
     assert inv_a.digest() != inv_b.digest()
 
 
