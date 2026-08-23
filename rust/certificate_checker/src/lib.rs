@@ -167,6 +167,17 @@ impl CompilationCertificate {
                 "transformation_witnesses must be non-empty (proves HOW transformation occurred)".into(),
             ));
         }
+        // Round-2 review finding: a non-empty Vec containing only "" (or
+        // any blank string) previously passed, since only the collection's
+        // own emptiness was checked, never each element's.
+        if self.transformation_witnesses.iter().any(|w| w.trim().is_empty()) {
+            return Err(CertificateCheckerError::Semantic(
+                "transformation_witnesses must not contain an empty witness ID".into(),
+            ));
+        }
+        if self.transformation_witnesses.len() != self.transformation_witnesses.iter().collect::<HashSet<_>>().len() {
+            return Err(CertificateCheckerError::Semantic("transformation_witnesses must not contain duplicates".into()));
+        }
         Ok(())
     }
 }
@@ -177,6 +188,46 @@ pub fn decode_certificate(text: &str) -> Result<CompilationCertificate, Certific
         serde_json::from_str(text).map_err(|e| CertificateCheckerError::Decode(e.to_string()))?;
     certificate.validate()?;
     Ok(certificate)
+}
+
+/// `decode_certificate`/`CompilationCertificate::validate()` can only check
+/// what a bare certificate text contains in isolation (non-empty, no blank
+/// or duplicate witness IDs) — it has no external context to check those
+/// IDs *against*. This function is the reconciliation step G2-08's own
+/// acceptance bar requires: given the actual set of witness_id values a
+/// real transformation-witness chain produced (from
+/// `tenfold.gen2.campaign_compiler.TransformationWitness` on the Python
+/// side, or an equivalent Rust source once one exists), reject a
+/// certificate whose claimed `transformation_witnesses` set does not match
+/// exactly — neither a forged/unbacked witness ID nor a real witness
+/// missing from the certificate's claim.
+///
+/// KNOWN LIMITATION, disclosed rather than silently assumed solved: this
+/// checks witness-*identity* set equality only, not witness *content*
+/// (input/output digests, rule_ref) the way
+/// `tenfold.gen2.campaign_compiler.reconcile_compiled_campaign` does on the
+/// Python side — that would require a Rust `TransformationWitness` type
+/// and an Obligation-IR-bound reconciliation this milestone does not yet
+/// port. Revisit once G2-08 (or a later milestone) needs deeper witness
+/// content verification in Rust specifically.
+pub fn reconcile_certificate_witnesses(
+    certificate: &CompilationCertificate,
+    real_witness_ids: &[String],
+) -> Result<(), CertificateCheckerError> {
+    let claimed: HashSet<&str> = certificate.transformation_witnesses.iter().map(String::as_str).collect();
+    let real: HashSet<&str> = real_witness_ids.iter().map(String::as_str).collect();
+    let missing: Vec<&&str> = real.difference(&claimed).collect();
+    let forged: Vec<&&str> = claimed.difference(&real).collect();
+    if !missing.is_empty() || !forged.is_empty() {
+        let mut missing_sorted: Vec<&str> = missing.into_iter().copied().collect();
+        missing_sorted.sort();
+        let mut forged_sorted: Vec<&str> = forged.into_iter().copied().collect();
+        forged_sorted.sort();
+        return Err(CertificateCheckerError::Semantic(format!(
+            "reconcile_certificate_witnesses: certificate witness set does not match the real witness chain — missing {missing_sorted:?}, forged/unbacked {forged_sorted:?}"
+        )));
+    }
+    Ok(())
 }
 
 // ============================================================================
@@ -200,28 +251,44 @@ pub struct CoverageReport {
 }
 
 /// Independently checks that every obligation in `obligation_ir` has a
-/// corresponding task in `task_ids`. Missing coverage for a
-/// MUTATION/SECURITY/RECOVERY-classed obligation is reported separately
-/// (`missing_structurally_floored_obligation_ids`) since G2-08's own
-/// acceptance bar specifically names security/recovery omission.
+/// corresponding task in `task_ids`, and — the round-2 review finding —
+/// that every task in `task_ids` corresponds to a real obligation. Checking
+/// only `expected - actual` (dropped coverage) and never `actual -
+/// expected` let a Campaign Program carry an extra, unauthorized task with
+/// no source obligation at all: real dropped-obligation coverage plus a
+/// silently-accepted manufactured task with no constitutional authority
+/// behind it. Missing coverage for a MUTATION/SECURITY/RECOVERY-classed
+/// obligation is reported separately (`missing_structurally_floored_obligation_ids`)
+/// since G2-08's own acceptance bar specifically names security/recovery
+/// omission.
 pub fn check_typed_coverage(obligation_ir: &ObligationIR, task_ids: &[String]) -> Result<(), CertificateCheckerError> {
-    let task_id_set: HashSet<&str> = task_ids.iter().map(String::as_str).collect();
+    let expected_task_ids: HashSet<String> = obligation_ir.nodes.iter().map(|n| expected_task_id(&n.obligation_id)).collect();
+    let actual_task_ids: HashSet<&str> = task_ids.iter().map(String::as_str).collect();
+
     let mut missing: Vec<String> = Vec::new();
     let mut missing_floored: Vec<String> = Vec::new();
     for node in &obligation_ir.nodes {
         let expected = expected_task_id(&node.obligation_id);
-        if !task_id_set.contains(expected.as_str()) {
+        if !actual_task_ids.contains(expected.as_str()) {
             missing.push(node.obligation_id.clone());
             if matches!(node.obligation_class, ObligationClass::MUTATION | ObligationClass::SECURITY | ObligationClass::RECOVERY) {
                 missing_floored.push(node.obligation_id.clone());
             }
         }
     }
-    if !missing.is_empty() {
+    let mut orphaned: Vec<&str> = actual_task_ids
+        .iter()
+        .filter(|t| !expected_task_ids.contains(**t))
+        .copied()
+        .collect();
+
+    if !missing.is_empty() || !orphaned.is_empty() {
         missing.sort();
         missing_floored.sort();
+        orphaned.sort();
         return Err(CertificateCheckerError::Semantic(format!(
-            "check_typed_coverage: final program omits obligation(s) {missing:?}; structurally-floored omission(s): {missing_floored:?}"
+            "check_typed_coverage: final program omits obligation(s) {missing:?} (structurally-floored: {missing_floored:?}); \
+             final program carries task(s) with no source obligation (manufactured work): {orphaned:?}"
         )));
     }
     Ok(())
@@ -251,31 +318,55 @@ pub enum RequirementClass {
     PROMOTION,
 }
 
-fn structural_floor_obligation_class(rc: RequirementClass) -> Option<ObligationClass> {
-    match rc {
-        RequirementClass::MUTATION => Some(ObligationClass::MUTATION),
-        RequirementClass::SECURITY => Some(ObligationClass::SECURITY),
-        RequirementClass::RECOVERY => Some(ObligationClass::RECOVERY),
-        _ => None,
+/// G2-00 SS6.3's three mechanically-observable structural facts ("external
+/// mutation", "credential-bearing execution", "irreversible effects"),
+/// deliberately a *separate* type from `RequirementClass` (round-2 review
+/// finding): round 1 took Classification Closure's own `RequirementClass`
+/// labels as this check's trigger, which is circular — the entire point of
+/// a structural floor is to catch a requirement *misclassified* as, say,
+/// BEHAVIOUR when it is actually mutating external state, and a check keyed
+/// on the classification it is meant to independently audit can never see
+/// that misclassification. Using a distinct type makes it a compile error
+/// to pass Classification's raw labels through unchanged; a caller must
+/// take a deliberate translation step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StructuralFact {
+    ExternalMutation,
+    CredentialBearingExecution,
+    IrreversibleEffect,
+}
+
+fn structural_floor_obligation_class(fact: StructuralFact) -> ObligationClass {
+    match fact {
+        StructuralFact::ExternalMutation => ObligationClass::MUTATION,
+        StructuralFact::CredentialBearingExecution => ObligationClass::SECURITY,
+        StructuralFact::IrreversibleEffect => ObligationClass::RECOVERY,
     }
 }
 
-/// `requirement_classes` maps requirement_id -> the classes it carries
-/// (from Classification Closure, supplied by the caller — this crate does
-/// not itself decode Requirement/Classification Closure artifacts; G2-05
-/// already owns that). Checks that every requirement carrying a
-/// structurally-floored class has at least one obligation of the matching
-/// class among the obligations bound to it in `obligation_ir`.
+/// `requirement_structural_facts` maps requirement_id -> the mechanically-
+/// observable structural facts that actually apply to it. Checks that
+/// every requirement carrying a structural fact has at least one obligation
+/// of the matching class among the obligations bound to it in
+/// `obligation_ir`.
 ///
-/// KNOWN LIMITATION, disclosed rather than silently assumed solved: this
-/// function is only as complete as the `requirement_classes` map it is
-/// given — it cannot itself detect that the map is missing a real
-/// requirement (an empty map passes vacuously). Completeness of that map
-/// is the caller's responsibility until this crate independently decodes
-/// Classification Closure artifacts itself, which is not this milestone's
-/// scope.
+/// KNOWN LIMITATION, disclosed rather than silently assumed solved: no
+/// runtime anywhere in this codebase yet independently *observes* external
+/// mutation, credential use, or irreversibility (that is Facility
+/// capability/effect-census scope, G2-14+) — until one exists, whatever the
+/// caller supplies here is necessarily *some* derivation, quite possibly
+/// still ultimately sourced from Classification Closure's own judgment
+/// call. The type separation above stops this function from silently
+/// treating that judgment call as if it were independently observed, and
+/// forces a caller to make the translation an explicit, visible step, but
+/// it cannot manufacture a mechanical observation that does not exist yet.
+/// This function's own completeness is bounded by whatever
+/// `requirement_structural_facts` genuinely contains (an empty map passes
+/// vacuously) — see also `check_structural_floors`'s sibling limitation for
+/// `requirement_classes` mapping completeness, which applies identically
+/// here.
 pub fn check_structural_floors(
-    requirement_classes: &HashMap<String, HashSet<RequirementClass>>,
+    requirement_structural_facts: &HashMap<String, HashSet<StructuralFact>>,
     obligation_ir: &ObligationIR,
 ) -> Result<(), CertificateCheckerError> {
     let mut obligation_classes_by_requirement: HashMap<&str, HashSet<ObligationClass>> = HashMap::new();
@@ -287,16 +378,14 @@ pub fn check_structural_floors(
     }
 
     let mut violations: Vec<String> = Vec::new();
-    for (requirement_id, classes) in requirement_classes {
-        for &rc in classes {
-            let Some(required_obligation_class) = structural_floor_obligation_class(rc) else {
-                continue;
-            };
+    for (requirement_id, facts) in requirement_structural_facts {
+        for &fact in facts {
+            let required_obligation_class = structural_floor_obligation_class(fact);
             let has_it = obligation_classes_by_requirement
                 .get(requirement_id.as_str())
                 .is_some_and(|set| set.contains(&required_obligation_class));
             if !has_it {
-                violations.push(format!("{requirement_id} ({rc:?} requires {required_obligation_class:?})"));
+                violations.push(format!("{requirement_id} ({fact:?} requires {required_obligation_class:?})"));
             }
         }
     }
@@ -327,40 +416,64 @@ pub fn check_structural_floors(
 /// totality checking silently stops covering the new variant — there is no
 /// compiler error to catch that omission. Revisit if/when this becomes a
 /// real maintenance burden.
+const ALL_REQUIREMENT_CLASSES: [RequirementClass; 8] = [
+    RequirementClass::ARCHITECTURE,
+    RequirementClass::BEHAVIOUR,
+    RequirementClass::MUTATION,
+    RequirementClass::SECURITY,
+    RequirementClass::RECOVERY,
+    RequirementClass::EVIDENCE,
+    RequirementClass::ASSURANCE,
+    RequirementClass::PROMOTION,
+];
+
+const ALL_OBLIGATION_CLASSES: [ObligationClass; 8] = [
+    ObligationClass::ARCHITECTURE,
+    ObligationClass::BEHAVIOUR,
+    ObligationClass::MUTATION,
+    ObligationClass::SECURITY,
+    ObligationClass::RECOVERY,
+    ObligationClass::EVIDENCE,
+    ObligationClass::ASSURANCE,
+    ObligationClass::PROMOTION,
+];
+
+/// G2-00 SS6.5's exact five families: `RequirementClass -> ObligationClasses`,
+/// `ObligationClass -> Proof/EventPredicates`, `ObligationClass ->
+/// FalsificationClass`, `Assurance Matrix -> AssuranceRouting` (keyed by
+/// ObligationClass, per `tenfold.gen2.constitutional.ConstitutionalPolicySet
+/// .obligation_class_to_assurance_routing`), `Requirement/Classification ->
+/// AmbiguityImpactDomains`. Round-2 review finding: the round-1 version of
+/// this function checked only the first two families' totality — a policy
+/// could declare itself total while omitting proof-predicate, assurance-
+/// routing, or ambiguity-impact rows entirely, none of which this checker
+/// would have noticed.
 pub fn check_policy_totality(
-    requirement_class_rows: &HashMap<RequirementClass, Vec<ObligationClass>>,
-    obligation_class_falsification_rows: &HashMap<ObligationClass, obligation_ir::FalsificationClass>,
+    requirement_class_to_obligation_classes: &HashMap<RequirementClass, Vec<ObligationClass>>,
+    obligation_class_to_proof_event_predicates: &HashMap<ObligationClass, Vec<String>>,
+    obligation_class_to_falsification_class: &HashMap<ObligationClass, obligation_ir::FalsificationClass>,
+    obligation_class_to_assurance_routing: &HashMap<ObligationClass, Vec<String>>,
+    requirement_classification_to_ambiguity_impact_domains: &HashMap<RequirementClass, Vec<AmbiguityImpactDomain>>,
 ) -> Result<(), CertificateCheckerError> {
-    let all_requirement_classes = [
-        RequirementClass::ARCHITECTURE,
-        RequirementClass::BEHAVIOUR,
-        RequirementClass::MUTATION,
-        RequirementClass::SECURITY,
-        RequirementClass::RECOVERY,
-        RequirementClass::EVIDENCE,
-        RequirementClass::ASSURANCE,
-        RequirementClass::PROMOTION,
-    ];
     let mut missing: Vec<String> = Vec::new();
-    for rc in all_requirement_classes {
-        let has_row = requirement_class_rows.get(&rc).is_some_and(|v| !v.is_empty());
-        if !has_row {
-            missing.push(format!("{rc:?}"));
+
+    for rc in ALL_REQUIREMENT_CLASSES {
+        if !requirement_class_to_obligation_classes.get(&rc).is_some_and(|v| !v.is_empty()) {
+            missing.push(format!("requirement_class_to_obligation_classes[{rc:?}]"));
+        }
+        if !requirement_classification_to_ambiguity_impact_domains.get(&rc).is_some_and(|v| !v.is_empty()) {
+            missing.push(format!("requirement_classification_to_ambiguity_impact_domains[{rc:?}]"));
         }
     }
-    let all_obligation_classes = [
-        ObligationClass::ARCHITECTURE,
-        ObligationClass::BEHAVIOUR,
-        ObligationClass::MUTATION,
-        ObligationClass::SECURITY,
-        ObligationClass::RECOVERY,
-        ObligationClass::EVIDENCE,
-        ObligationClass::ASSURANCE,
-        ObligationClass::PROMOTION,
-    ];
-    for oc in all_obligation_classes {
-        if !obligation_class_falsification_rows.contains_key(&oc) {
-            missing.push(format!("falsification_class[{oc:?}]"));
+    for oc in ALL_OBLIGATION_CLASSES {
+        if !obligation_class_to_proof_event_predicates.get(&oc).is_some_and(|v| !v.is_empty()) {
+            missing.push(format!("obligation_class_to_proof_event_predicates[{oc:?}]"));
+        }
+        if !obligation_class_to_falsification_class.contains_key(&oc) {
+            missing.push(format!("obligation_class_to_falsification_class[{oc:?}]"));
+        }
+        if !obligation_class_to_assurance_routing.get(&oc).is_some_and(|v| !v.is_empty()) {
+            missing.push(format!("obligation_class_to_assurance_routing[{oc:?}]"));
         }
     }
     if !missing.is_empty() {
@@ -463,9 +576,19 @@ pub fn blocking_set(
     let mut result: HashSet<AmbiguityImpactDomain> = HashSet::new();
     for &rc in affected_classes {
         match impact_map.get(&rc) {
+            // Round-2 review finding: a present key mapped to an empty set
+            // must reject exactly like a missing key — G2-00 SS6.4's
+            // "missing mapping is REJECT, never an empty blocking set"
+            // applies equally to a row that exists but was populated
+            // empty.
             None => {
                 return Err(CertificateCheckerError::Semantic(format!(
                     "blocking_set: no AmbiguityImpactDomain mapping for class {rc:?}"
+                )));
+            }
+            Some(domains) if domains.is_empty() => {
+                return Err(CertificateCheckerError::Semantic(format!(
+                    "blocking_set: empty AmbiguityImpactDomain mapping for class {rc:?} (treated as missing)"
                 )));
             }
             Some(domains) => result.extend(domains.iter().copied()),
@@ -515,6 +638,47 @@ mod tests {
         assert!(decode_certificate(text).is_err());
     }
 
+    #[test]
+    fn rejects_certificate_with_blank_witness_id() {
+        // Round-2 review finding: a Vec containing only "" is non-empty as
+        // a collection, so round 1's check (collection emptiness only)
+        // passed it.
+        let text = r#"{"certificate_generation":1,"requirement_closure_digest":"a","classification_closure_digest":"b","policy_generation":1,"policy_closure_digest":"c","obligation_ir_digest":"d","transformation_witnesses":[""],"mutation_domain_derivation_digest":"e","proof_graph_derivation_digest":"f","assurance_routing_digest":"g","campaign_program_digest":"h"}"#;
+        let err = decode_certificate(text).unwrap_err();
+        assert!(matches!(err, CertificateCheckerError::Semantic(_)));
+    }
+
+    #[test]
+    fn rejects_certificate_with_duplicate_witness_ids() {
+        let text = r#"{"certificate_generation":1,"requirement_closure_digest":"a","classification_closure_digest":"b","policy_generation":1,"policy_closure_digest":"c","obligation_ir_digest":"d","transformation_witnesses":["WIT-1","WIT-1"],"mutation_domain_derivation_digest":"e","proof_graph_derivation_digest":"f","assurance_routing_digest":"g","campaign_program_digest":"h"}"#;
+        let err = decode_certificate(text).unwrap_err();
+        assert!(matches!(err, CertificateCheckerError::Semantic(_)));
+    }
+
+    #[test]
+    fn reconcile_certificate_witnesses_accepts_exact_match() {
+        let cert = decode_certificate(VALID_CERT).expect("valid certificate should decode");
+        reconcile_certificate_witnesses(&cert, &["WIT-1".to_string()]).expect("exact match should pass");
+    }
+
+    #[test]
+    fn reconcile_certificate_witnesses_rejects_forged_unbacked_witness() {
+        // The exact round-2 review scenario: a certificate claiming a
+        // witness ID with no real witness behind it.
+        let cert = decode_certificate(VALID_CERT).expect("valid certificate should decode");
+        let err = reconcile_certificate_witnesses(&cert, &[]).unwrap_err();
+        let CertificateCheckerError::Semantic(msg) = err else { panic!("expected Semantic error") };
+        assert!(msg.contains("forged"));
+    }
+
+    #[test]
+    fn reconcile_certificate_witnesses_rejects_missing_real_witness() {
+        let cert = decode_certificate(VALID_CERT).expect("valid certificate should decode");
+        let err = reconcile_certificate_witnesses(&cert, &["WIT-1".to_string(), "WIT-2".to_string()]).unwrap_err();
+        let CertificateCheckerError::Semantic(msg) = err else { panic!("expected Semantic error") };
+        assert!(msg.contains("missing"));
+    }
+
     // ---- typed end-state coverage checker ----
 
     fn ir_with_one_node(obligation_class: ObligationClass) -> ObligationIR {
@@ -555,78 +719,99 @@ mod tests {
         assert!(msg.contains("OB-1"));
     }
 
+    #[test]
+    fn typed_coverage_rejects_orphaned_task_with_no_source_obligation() {
+        // Round-2 review finding: EXPECTED ⊆ ACTUAL is not enough -- an
+        // extra task with no backing obligation is manufactured work with
+        // no constitutional authority.
+        let ir = ir_with_one_node(ObligationClass::SECURITY);
+        let err = check_typed_coverage(&ir, &["TASK-OB-1".to_string(), "TASK-GHOST".to_string()]).unwrap_err();
+        let CertificateCheckerError::Semantic(msg) = err else { panic!("expected Semantic error") };
+        assert!(msg.contains("manufactured work"));
+        assert!(msg.contains("TASK-GHOST"));
+    }
+
     // ---- structural class floors ----
 
     #[test]
     fn structural_floors_accepts_requirement_with_matching_obligation() {
         let ir = ir_with_one_node(ObligationClass::SECURITY);
-        let mut classes = HashMap::new();
-        classes.insert("REQ-1".to_string(), HashSet::from([RequirementClass::SECURITY]));
-        check_structural_floors(&classes, &ir).expect("matching obligation should satisfy the floor");
+        let mut facts = HashMap::new();
+        facts.insert("REQ-1".to_string(), HashSet::from([StructuralFact::CredentialBearingExecution]));
+        check_structural_floors(&facts, &ir).expect("matching obligation should satisfy the floor");
     }
 
     #[test]
     fn structural_floors_rejects_requirement_missing_matching_obligation() {
-        // REQ-1 is classed SECURITY but its only compiled obligation is
+        // REQ-1 is credential-bearing but its only compiled obligation is
         // BEHAVIOUR -- an over-reach the structural floor must catch.
         let ir = ir_with_one_node(ObligationClass::BEHAVIOUR);
-        let mut classes = HashMap::new();
-        classes.insert("REQ-1".to_string(), HashSet::from([RequirementClass::SECURITY]));
-        let err = check_structural_floors(&classes, &ir).unwrap_err();
+        let mut facts = HashMap::new();
+        facts.insert("REQ-1".to_string(), HashSet::from([StructuralFact::CredentialBearingExecution]));
+        let err = check_structural_floors(&facts, &ir).unwrap_err();
         assert!(matches!(err, CertificateCheckerError::Semantic(_)));
     }
 
     #[test]
-    fn structural_floors_ignores_non_floored_classes() {
+    fn structural_floors_catches_misclassification_a_requirement_class_based_check_would_miss() {
+        // The exact round-2 review scenario: a requirement carrying no
+        // MUTATION/SECURITY/RECOVERY RequirementClass label at all (say,
+        // BEHAVIOUR) can still genuinely be credential-bearing in fact.
+        // Because StructuralFact is independent of RequirementClass, this
+        // is still caught.
         let ir = ir_with_one_node(ObligationClass::BEHAVIOUR);
-        let mut classes = HashMap::new();
-        classes.insert("REQ-1".to_string(), HashSet::from([RequirementClass::BEHAVIOUR]));
-        check_structural_floors(&classes, &ir).expect("BEHAVIOUR is not a structurally-floored class");
+        let mut facts = HashMap::new();
+        facts.insert("REQ-1".to_string(), HashSet::from([StructuralFact::CredentialBearingExecution]));
+        let err = check_structural_floors(&facts, &ir).unwrap_err();
+        assert!(matches!(err, CertificateCheckerError::Semantic(_)));
+    }
+
+    #[test]
+    fn structural_floors_passes_when_requirement_carries_no_structural_fact() {
+        let ir = ir_with_one_node(ObligationClass::BEHAVIOUR);
+        let facts: HashMap<String, HashSet<StructuralFact>> = HashMap::new();
+        check_structural_floors(&facts, &ir).expect("no structural facts means nothing to floor-check");
     }
 
     // ---- policy totality checker ----
 
     fn total_requirement_rows() -> HashMap<RequirementClass, Vec<ObligationClass>> {
-        [
-            (RequirementClass::ARCHITECTURE, vec![ObligationClass::ARCHITECTURE]),
-            (RequirementClass::BEHAVIOUR, vec![ObligationClass::BEHAVIOUR]),
-            (RequirementClass::MUTATION, vec![ObligationClass::MUTATION]),
-            (RequirementClass::SECURITY, vec![ObligationClass::SECURITY]),
-            (RequirementClass::RECOVERY, vec![ObligationClass::RECOVERY]),
-            (RequirementClass::EVIDENCE, vec![ObligationClass::EVIDENCE]),
-            (RequirementClass::ASSURANCE, vec![ObligationClass::ASSURANCE]),
-            (RequirementClass::PROMOTION, vec![ObligationClass::PROMOTION]),
-        ]
-        .into_iter()
-        .collect()
+        ALL_REQUIREMENT_CLASSES.into_iter().map(|rc| (rc, vec![ObligationClass::ARCHITECTURE])).collect()
+    }
+
+    fn total_predicate_rows() -> HashMap<ObligationClass, Vec<String>> {
+        ALL_OBLIGATION_CLASSES.into_iter().map(|oc| (oc, vec!["predicate".to_string()])).collect()
     }
 
     fn total_falsification_rows() -> HashMap<ObligationClass, FalsificationClass> {
-        [
-            (ObligationClass::ARCHITECTURE, FalsificationClass::STANDARD),
-            (ObligationClass::BEHAVIOUR, FalsificationClass::STANDARD),
-            (ObligationClass::MUTATION, FalsificationClass::STANDARD),
-            (ObligationClass::SECURITY, FalsificationClass::STANDARD),
-            (ObligationClass::RECOVERY, FalsificationClass::STANDARD),
-            (ObligationClass::EVIDENCE, FalsificationClass::STANDARD),
-            (ObligationClass::ASSURANCE, FalsificationClass::STANDARD),
-            (ObligationClass::PROMOTION, FalsificationClass::STANDARD),
-        ]
-        .into_iter()
-        .collect()
+        ALL_OBLIGATION_CLASSES.into_iter().map(|oc| (oc, FalsificationClass::STANDARD)).collect()
+    }
+
+    fn total_assurance_rows() -> HashMap<ObligationClass, Vec<String>> {
+        ALL_OBLIGATION_CLASSES.into_iter().map(|oc| (oc, vec!["independent_authority_review".to_string()])).collect()
+    }
+
+    fn total_ambiguity_rows() -> HashMap<RequirementClass, Vec<AmbiguityImpactDomain>> {
+        ALL_REQUIREMENT_CLASSES.into_iter().map(|rc| (rc, vec![AmbiguityImpactDomain::ACCEPTANCE])).collect()
     }
 
     #[test]
     fn policy_totality_accepts_fully_total_rows() {
-        check_policy_totality(&total_requirement_rows(), &total_falsification_rows())
-            .expect("total rosters should pass");
+        check_policy_totality(
+            &total_requirement_rows(),
+            &total_predicate_rows(),
+            &total_falsification_rows(),
+            &total_assurance_rows(),
+            &total_ambiguity_rows(),
+        )
+        .expect("total rosters should pass");
     }
 
     #[test]
     fn policy_totality_rejects_missing_requirement_class_row() {
         let mut rows = total_requirement_rows();
         rows.remove(&RequirementClass::SECURITY);
-        let err = check_policy_totality(&rows, &total_falsification_rows()).unwrap_err();
+        let err = check_policy_totality(&rows, &total_predicate_rows(), &total_falsification_rows(), &total_assurance_rows(), &total_ambiguity_rows()).unwrap_err();
         assert!(matches!(err, CertificateCheckerError::Semantic(_)));
     }
 
@@ -634,7 +819,7 @@ mod tests {
     fn policy_totality_rejects_empty_requirement_class_row() {
         let mut rows = total_requirement_rows();
         rows.insert(RequirementClass::SECURITY, vec![]);
-        let err = check_policy_totality(&rows, &total_falsification_rows()).unwrap_err();
+        let err = check_policy_totality(&rows, &total_predicate_rows(), &total_falsification_rows(), &total_assurance_rows(), &total_ambiguity_rows()).unwrap_err();
         assert!(matches!(err, CertificateCheckerError::Semantic(_)));
     }
 
@@ -642,8 +827,36 @@ mod tests {
     fn policy_totality_rejects_missing_falsification_row() {
         let mut rows = total_falsification_rows();
         rows.remove(&ObligationClass::MUTATION);
-        let err = check_policy_totality(&total_requirement_rows(), &rows).unwrap_err();
+        let err = check_policy_totality(&total_requirement_rows(), &total_predicate_rows(), &rows, &total_assurance_rows(), &total_ambiguity_rows()).unwrap_err();
         assert!(matches!(err, CertificateCheckerError::Semantic(_)));
+    }
+
+    #[test]
+    fn policy_totality_rejects_missing_proof_event_predicate_row() {
+        // Round-2 review finding: round 1 never checked this family at all.
+        let mut rows = total_predicate_rows();
+        rows.remove(&ObligationClass::SECURITY);
+        let err = check_policy_totality(&total_requirement_rows(), &rows, &total_falsification_rows(), &total_assurance_rows(), &total_ambiguity_rows()).unwrap_err();
+        let CertificateCheckerError::Semantic(msg) = err else { panic!("expected Semantic error") };
+        assert!(msg.contains("proof_event_predicates"));
+    }
+
+    #[test]
+    fn policy_totality_rejects_missing_assurance_routing_row() {
+        let mut rows = total_assurance_rows();
+        rows.remove(&ObligationClass::SECURITY);
+        let err = check_policy_totality(&total_requirement_rows(), &total_predicate_rows(), &total_falsification_rows(), &rows, &total_ambiguity_rows()).unwrap_err();
+        let CertificateCheckerError::Semantic(msg) = err else { panic!("expected Semantic error") };
+        assert!(msg.contains("assurance_routing"));
+    }
+
+    #[test]
+    fn policy_totality_rejects_missing_ambiguity_impact_row() {
+        let mut rows = total_ambiguity_rows();
+        rows.remove(&RequirementClass::SECURITY);
+        let err = check_policy_totality(&total_requirement_rows(), &total_predicate_rows(), &total_falsification_rows(), &total_assurance_rows(), &rows).unwrap_err();
+        let CertificateCheckerError::Semantic(msg) = err else { panic!("expected Semantic error") };
+        assert!(msg.contains("ambiguity_impact_domains"));
     }
 
     // ---- falsification predecessor-depth checker ----
@@ -730,5 +943,18 @@ mod tests {
         let map: HashMap<RequirementClass, HashSet<AmbiguityImpactDomain>> = HashMap::new();
         let err = blocking_set(&[RequirementClass::SECURITY], &map).unwrap_err();
         assert!(matches!(err, CertificateCheckerError::Semantic(_)));
+    }
+
+    #[test]
+    fn blocking_set_rejects_empty_mapping_rather_than_returning_empty() {
+        // Round-2 review finding: a present key mapped to an empty set
+        // previously returned an empty blocking set silently instead of
+        // rejecting, even though a present-but-empty row is exactly as
+        // uninformative as a missing one.
+        let mut map: HashMap<RequirementClass, HashSet<AmbiguityImpactDomain>> = HashMap::new();
+        map.insert(RequirementClass::SECURITY, HashSet::new());
+        let err = blocking_set(&[RequirementClass::SECURITY], &map).unwrap_err();
+        let CertificateCheckerError::Semantic(msg) = err else { panic!("expected Semantic error") };
+        assert!(msg.contains("empty"));
     }
 }

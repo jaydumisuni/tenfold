@@ -827,28 +827,38 @@ def independent_check_typed_coverage(raw: Any, task_ids: list[str]) -> list[str]
     verifier side: given an already-decoded ObligationIR-shaped `raw` and
     the Campaign Program's own `task_ids`, checks that every obligation has
     a corresponding task (`TASK-<obligation_id>`, the same compiler rule
-    `rust/certificate_checker` independently checks against). Returns the
-    list of defects found; empty means every obligation is covered. An
-    omitted MUTATION/SECURITY/RECOVERY-classed obligation is reported with
-    an explicit "structurally-floored" marker, matching this milestone's
-    own acceptance bar."""
+    `rust/certificate_checker` independently checks against) *and* that
+    every task corresponds to a real obligation — checking only the first
+    direction would accept a Campaign Program carrying an extra,
+    unauthorized task with no source obligation at all (manufactured work
+    with no constitutional authority behind it; the same gap
+    `rust/certificate_checker::check_typed_coverage` self-review found and
+    fixed on the Rust side). Returns the list of defects found; empty means
+    coverage matches exactly. An omitted MUTATION/SECURITY/RECOVERY-classed
+    obligation is reported with an explicit "structurally-floored" marker,
+    matching this milestone's own acceptance bar."""
     defects = independent_verify_obligation_ir(raw)
     if defects:
         return defects
 
-    task_id_set = set(task_ids)
+    expected_task_ids = {f"TASK-{node['obligation_id']}" for node in raw["nodes"]}
+    actual_task_ids = set(task_ids)
+
     missing: list[str] = []
     missing_floored: list[str] = []
     for node in raw["nodes"]:
         expected_task_id = f"TASK-{node['obligation_id']}"
-        if expected_task_id not in task_id_set:
+        if expected_task_id not in actual_task_ids:
             missing.append(node["obligation_id"])
             if node["obligation_class"] in _INDEPENDENT_STRUCTURALLY_FLOORED_CLASSES:
                 missing_floored.append(node["obligation_id"])
-    if missing:
+    orphaned = sorted(actual_task_ids - expected_task_ids)
+
+    if missing or orphaned:
         defects.append(
-            f"independent_check_typed_coverage: final program omits obligation(s) {sorted(missing)}; "
-            f"structurally-floored omission(s): {sorted(missing_floored)}"
+            f"independent_check_typed_coverage: final program omits obligation(s) {sorted(missing)} "
+            f"(structurally-floored: {sorted(missing_floored)}); "
+            f"final program carries task(s) with no source obligation (manufactured work): {orphaned}"
         )
     return defects
 

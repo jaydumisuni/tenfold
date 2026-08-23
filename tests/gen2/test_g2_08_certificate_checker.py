@@ -8,14 +8,16 @@ independently by Rust and verifier." The bulk of G2-08's real deliverables
 (certificate checker, structural class floors, policy totality checker,
 falsification predecessor-depth checker, mechanical ambiguity blocking) are
 Rust-only per the roadmap's own "Deliverables: Rust:" heading, and are
-exercised by `rust/certificate_checker`'s own 23 permanent unit tests. This
+exercised by `rust/certificate_checker`'s own permanent unit tests. This
 file covers the one deliverable the acceptance bar explicitly requires on
 *both* sides: the typed end-state obligation coverage checker, here as
 `tenfold.gen2.verifier.independent_check_typed_coverage` — independently
 re-derived from G2-00 SS7 (does not import
 `tenfold.gen2.constitutional`/`tenfold.gen2.closure_runtime`), demonstrating
 the same omitted-security/recovery-obligation scenario Rust's
-`check_typed_coverage` rejects is also rejected here."""
+`check_typed_coverage` rejects is also rejected here, and (round-2 review
+finding, fixed symmetrically on both sides) that an extra task with no
+source obligation is rejected too, not merely tolerated."""
 
 from __future__ import annotations
 
@@ -72,12 +74,21 @@ def test_g2_08_coverage_reports_non_floored_omission_without_the_floored_marker(
     raw = independent_decode_canonical_json(text)
     defects = independent_check_typed_coverage(raw, [])
     assert defects  # still a real defect: dropped coverage is always rejected
-    assert any("structurally-floored omission(s): []" in d for d in defects)
+    assert any("structurally-floored: []" in d for d in defects)
 
 
-def test_g2_08_coverage_ignores_unrelated_extra_task_ids() -> None:
+def test_g2_08_coverage_rejects_orphaned_task_with_no_source_obligation() -> None:
+    # Round-2 review finding: EXPECTED subset-of ACTUAL is not enough -- an
+    # extra task with no backing obligation is manufactured work with no
+    # constitutional authority, on both the Rust and verifier sides.
     raw = independent_decode_canonical_json(VALID)
-    assert independent_check_typed_coverage(raw, ["TASK-OB-1", "TASK-UNRELATED"]) == []
+    defects = independent_check_typed_coverage(raw, ["TASK-OB-1", "TASK-UNRELATED"])
+    assert any("manufactured work" in d and "TASK-UNRELATED" in d for d in defects)
+
+
+def test_g2_08_coverage_accepts_exact_task_match() -> None:
+    raw = independent_decode_canonical_json(VALID)
+    assert independent_check_typed_coverage(raw, ["TASK-OB-1"]) == []
 
 
 def test_g2_08_coverage_delegates_to_obligation_ir_verification_first() -> None:
