@@ -30,33 +30,34 @@ pub struct TrustTableRow {
     pub authority_generation: u64,
     pub required_negative_fixture: String,
     pub failure_result: String,
+    /// Whether `required_negative_fixture` has actually been exercised and
+    /// has genuinely killed the mutation it describes (tracked, for now, by
+    /// `tenfold.gen2.mutation_suite.MutationSuite.trust_table_coverage()`
+    /// against the real Python fixture registry). Recording a row is not
+    /// the same claim as recording that its required fixture passed —
+    /// `admit()` must refuse a row whose fixture has not (yet) been
+    /// qualified, not merely a missing row.
+    pub fixture_qualified: bool,
 }
 
 impl TrustTableRow {
-    pub fn new(
-        artifact_identity: impl Into<String>,
-        independently_checks: Vec<String>,
-        trusts_only: impl Into<String>,
-        trust_bounded_reason: impl Into<String>,
-        authority_generation: u64,
-        required_negative_fixture: impl Into<String>,
-        failure_result: impl Into<String>,
-    ) -> Self {
-        Self {
-            artifact_identity: artifact_identity.into(),
-            independently_checks,
-            trusts_only: trusts_only.into(),
-            trust_bounded_reason: trust_bounded_reason.into(),
-            authority_generation,
-            required_negative_fixture: required_negative_fixture.into(),
-            failure_result: failure_result.into(),
-        }
-    }
+    // Deliberately no positional `new()` constructor: eight fields
+    // (several `String`, one `bool`) is exactly the shape clippy's
+    // `too_many_arguments` warns about because it invites a silently
+    // transposed argument — a mistake that would be invisible in a Trust
+    // Table row's own well-formedness check. All fields are `pub`;
+    // callers use a named struct literal instead, which clippy is clean
+    // on and which makes a misordered field a compile error, not a
+    // runtime one.
 
     /// A row is well-formed only if every recorded field is genuinely
     /// present — an empty `independently_checks` or blank string anywhere
     /// means the row does not actually record what G2-00 §4.1 requires it
     /// to record, and is not distinguishable from a row nobody filled in.
+    /// This is deliberately independent of `fixture_qualified`: a row can
+    /// be well-formed metadata (every field honestly filled in) while its
+    /// fixture is still honestly unqualified — that is exactly the
+    /// `facility_declaration`/`evidence_packet` state today.
     pub fn is_well_formed(&self) -> bool {
         !self.artifact_identity.trim().is_empty()
             && !self.independently_checks.is_empty()
@@ -82,6 +83,13 @@ pub enum TrustTableError {
     /// Registering two rows for the same artifact identity is ambiguous:
     /// which trust boundary actually governs admission?
     DuplicateRow { artifact_identity: String },
+    /// A row exists and is well-formed, but its `required_negative_fixture`
+    /// has not been qualified (no fixture has genuinely killed the mutation
+    /// it describes). Row presence alone is not admission: an
+    /// authority-bearing artifact family whose negative fixture is still
+    /// `PENDING_IMPLEMENTATION` must be refused exactly like one with no
+    /// row at all.
+    UnqualifiedFixture { artifact_identity: String },
 }
 
 impl fmt::Display for TrustTableError {
@@ -95,6 +103,12 @@ impl fmt::Display for TrustTableError {
             }
             TrustTableError::DuplicateRow { artifact_identity } => {
                 write!(f, "duplicate Trust Table row for {artifact_identity:?}")
+            }
+            TrustTableError::UnqualifiedFixture { artifact_identity } => {
+                write!(
+                    f,
+                    "Trust Table row for {artifact_identity:?} has no qualified negative fixture: admission refused"
+                )
             }
         }
     }
@@ -135,13 +149,21 @@ impl TrustTable {
     }
 
     /// The fail-closed admission gate. No Trust Table row for the given
-    /// identity is the one outcome this crate exists to make impossible to
+    /// identity is one outcome this crate exists to make impossible to
     /// bypass: there is no code path that returns `Ok` without a
-    /// registered row backing it.
+    /// registered row backing it. A row whose negative fixture has not
+    /// been qualified yet is the other: row presence records that an
+    /// artifact family has been *named*, not that Rust has any evidence
+    /// its trust boundary actually holds.
     pub fn admit(&self, artifact_identity: &str) -> Result<&TrustTableRow, TrustTableError> {
-        self.rows
+        let row = self
+            .rows
             .get(artifact_identity)
-            .ok_or_else(|| TrustTableError::NoTrustTableRow { artifact_identity: artifact_identity.to_string() })
+            .ok_or_else(|| TrustTableError::NoTrustTableRow { artifact_identity: artifact_identity.to_string() })?;
+        if !row.fixture_qualified {
+            return Err(TrustTableError::UnqualifiedFixture { artifact_identity: artifact_identity.to_string() });
+        }
+        Ok(row)
     }
 
     pub fn len(&self) -> usize {
@@ -165,105 +187,116 @@ impl TrustTable {
 pub fn initial_trust_table() -> TrustTable {
     let mut table = TrustTable::new();
     let rows = [
-        TrustTableRow::new(
-            "raw_project_authority_binding",
-            vec!["identity".into(), "digest".into(), "generation".into(), "approved source".into()],
-            "semantic meaning at approved external authority boundary",
-            "semantic meaning cannot be mechanically re-derived by Rust; the approved external authority boundary is the only place that meaning is authoritatively assigned",
-            1,
-            "unauthorized/rebound source",
-            "reject",
-        ),
-        TrustTableRow::new(
-            "requirement_closure",
-            vec!["attesters".into(), "source digest".into(), "ledger binding".into(), "generation".into()],
-            "independently attested semantic closure",
-            "semantic closure over raw requirements is a human/attested judgment call Rust cannot mechanically re-derive, but attestation identity and ledger binding are independently checkable",
-            1,
-            "unauthorized attester / missing lineage",
-            "reject",
-        ),
-        TrustTableRow::new(
-            "classification_closure",
-            vec!["provenance".into(), "generation".into(), "disagreement-union".into(), "lineage".into()],
-            "independently attested semantic classification",
-            "the classification judgment itself is attested, but the union-under-disagreement rule and lineage/provenance are mechanically checkable",
-            1,
-            "weakened single-path class",
-            "reject",
-        ),
-        TrustTableRow::new(
-            "constitutional_policy",
-            vec!["digest".into(), "generation".into(), "totality".into(), "closure".into(), "mutation qualification".into()],
-            "qualified policy semantics",
-            "policy totality/closure/mutation-qualification are mechanically checkable; whether a given semantic policy choice is the *right* one is a qualified authoring decision, not something Rust re-derives",
-            1,
-            "missing/weakened row",
-            "reject",
-        ),
-        TrustTableRow::new(
-            "obligation_ir",
-            vec!["canonical structure".into(), "bindings".into()],
-            "closure-bound typed semantic meaning",
-            "structure and bindings are mechanically checkable; the semantic meaning of a typed obligation is bound by the closures that produced it, not independently re-derived here",
-            1,
-            "disconnected obligation",
-            "reject",
-        ),
-        TrustTableRow::new(
-            "campaign_program",
-            vec!["bindings".into(), "generation".into(), "structure".into()],
-            "no producer coverage claim",
-            "Rust independently recomputes final-program coverage (G2-00 SS7) rather than trusting the producer's own claim of what the program covers",
-            1,
-            "omitted obligation",
-            "reject",
-        ),
-        TrustTableRow::new(
-            "compilation_certificate_witnesses",
-            vec!["digests".into(), "witness structure/predicates".into(), "generations".into()],
-            "qualified transformation-rule semantics only within checked predicates",
-            "the certificate's witness chain proves *how* transformation occurred within predicates Rust can mechanically check; it is not trusted beyond what those predicates actually constrain",
-            1,
-            "forged/broken witness",
-            "reject",
-        ),
-        TrustTableRow::new(
-            "facility_declaration",
-            vec!["nothing authoritative before qualification".into()],
-            "individually qualified properties only",
-            "G2-00 SS9.1: a Facility declaration has no constitutional authority merely because the adapter/provider says it is true; only adversarially qualified properties may be trusted, and only up to their qualified bound",
-            1,
-            "unqualified property",
-            "non-authoritative",
-        ),
-        TrustTableRow::new(
-            "evidence_packet",
-            vec!["generation".into(), "provenance".into(), "detector/tool/input bindings".into()],
-            "qualified detector result inside admitted domain",
-            "the detector's own correctness is qualified separately; this row only trusts a qualified detector's result within the domain it was qualified for, at the exact generation it was produced",
-            1,
-            "stale/wrong-generation evidence",
-            "reject",
-        ),
-        TrustTableRow::new(
-            "external_assurance",
-            vec!["authority/generation".into(), "request/response digests".into(), "obligation binding".into()],
-            "external verdict at independently retained authority",
-            "G2-00 SS11.2: the verdict is trusted only as retained independently by the external authority itself, reconciled against the supplied copy — Gen 2 cannot manufacture external PASS by Chronicle assertion alone",
-            1,
-            "locally fabricated PASS",
-            "reject",
-        ),
-        TrustTableRow::new(
-            "runtime_obligation",
-            vec!["derivation predicate".into(), "generation".into(), "evidence binding".into()],
-            "frozen derivation semantics",
-            "the derivation predicate that produced this obligation is frozen policy, mechanically re-checkable; the obligation itself is trusted only as far as that frozen predicate actually derives it",
-            1,
-            "omitted required obligation",
-            "reject",
-        ),
+        TrustTableRow {
+            artifact_identity: "raw_project_authority_binding".into(),
+            independently_checks: vec!["identity".into(), "digest".into(), "generation".into(), "approved source".into()],
+            trusts_only: "semantic meaning at approved external authority boundary".into(),
+            trust_bounded_reason: "semantic meaning cannot be mechanically re-derived by Rust; the approved external authority boundary is the only place that meaning is authoritatively assigned".into(),
+            authority_generation: 1,
+            required_negative_fixture: "unauthorized/rebound source".into(),
+            failure_result: "reject".into(),
+            fixture_qualified: true,
+        },
+        TrustTableRow {
+            artifact_identity: "requirement_closure".into(),
+            independently_checks: vec!["attesters".into(), "source digest".into(), "ledger binding".into(), "generation".into()],
+            trusts_only: "independently attested semantic closure".into(),
+            trust_bounded_reason: "semantic closure over raw requirements is a human/attested judgment call Rust cannot mechanically re-derive, but attestation identity and ledger binding are independently checkable".into(),
+            authority_generation: 1,
+            required_negative_fixture: "unauthorized attester / missing lineage".into(),
+            failure_result: "reject".into(),
+            fixture_qualified: true,
+        },
+        TrustTableRow {
+            artifact_identity: "classification_closure".into(),
+            independently_checks: vec!["provenance".into(), "generation".into(), "disagreement-union".into(), "lineage".into()],
+            trusts_only: "independently attested semantic classification".into(),
+            trust_bounded_reason: "the classification judgment itself is attested, but the union-under-disagreement rule and lineage/provenance are mechanically checkable".into(),
+            authority_generation: 1,
+            required_negative_fixture: "weakened single-path class".into(),
+            failure_result: "reject".into(),
+            fixture_qualified: true,
+        },
+        TrustTableRow {
+            artifact_identity: "constitutional_policy".into(),
+            independently_checks: vec!["digest".into(), "generation".into(), "totality".into(), "closure".into(), "mutation qualification".into()],
+            trusts_only: "qualified policy semantics".into(),
+            trust_bounded_reason: "policy totality/closure/mutation-qualification are mechanically checkable; whether a given semantic policy choice is the *right* one is a qualified authoring decision, not something Rust re-derives".into(),
+            authority_generation: 1,
+            required_negative_fixture: "missing/weakened row".into(),
+            failure_result: "reject".into(),
+            fixture_qualified: true,
+        },
+        TrustTableRow {
+            artifact_identity: "obligation_ir".into(),
+            independently_checks: vec!["canonical structure".into(), "bindings".into()],
+            trusts_only: "closure-bound typed semantic meaning".into(),
+            trust_bounded_reason: "structure and bindings are mechanically checkable; the semantic meaning of a typed obligation is bound by the closures that produced it, not independently re-derived here".into(),
+            authority_generation: 1,
+            required_negative_fixture: "disconnected obligation".into(),
+            failure_result: "reject".into(),
+            fixture_qualified: true,
+        },
+        TrustTableRow {
+            artifact_identity: "campaign_program".into(),
+            independently_checks: vec!["bindings".into(), "generation".into(), "structure".into()],
+            trusts_only: "no producer coverage claim".into(),
+            trust_bounded_reason: "Rust independently recomputes final-program coverage (G2-00 SS7) rather than trusting the producer's own claim of what the program covers".into(),
+            authority_generation: 1,
+            required_negative_fixture: "omitted obligation".into(),
+            failure_result: "reject".into(),
+            fixture_qualified: true,
+        },
+        TrustTableRow {
+            artifact_identity: "compilation_certificate_witnesses".into(),
+            independently_checks: vec!["digests".into(), "witness structure/predicates".into(), "generations".into()],
+            trusts_only: "qualified transformation-rule semantics only within checked predicates".into(),
+            trust_bounded_reason: "the certificate's witness chain proves *how* transformation occurred within predicates Rust can mechanically check; it is not trusted beyond what those predicates actually constrain".into(),
+            authority_generation: 1,
+            required_negative_fixture: "forged/broken witness".into(),
+            failure_result: "reject".into(),
+            fixture_qualified: true,
+        },
+        TrustTableRow {
+            artifact_identity: "facility_declaration".into(),
+            independently_checks: vec!["nothing authoritative before qualification".into()],
+            trusts_only: "individually qualified properties only".into(),
+            trust_bounded_reason: "G2-00 SS9.1: a Facility declaration has no constitutional authority merely because the adapter/provider says it is true; only adversarially qualified properties may be trusted, and only up to their qualified bound".into(),
+            authority_generation: 1,
+            required_negative_fixture: "unqualified property".into(),
+            failure_result: "non-authoritative".into(),
+            fixture_qualified: false,
+        },
+        TrustTableRow {
+            artifact_identity: "evidence_packet".into(),
+            independently_checks: vec!["generation".into(), "provenance".into(), "detector/tool/input bindings".into()],
+            trusts_only: "qualified detector result inside admitted domain".into(),
+            trust_bounded_reason: "the detector's own correctness is qualified separately; this row only trusts a qualified detector's result within the domain it was qualified for, at the exact generation it was produced".into(),
+            authority_generation: 1,
+            required_negative_fixture: "stale/wrong-generation evidence".into(),
+            failure_result: "reject".into(),
+            fixture_qualified: false,
+        },
+        TrustTableRow {
+            artifact_identity: "external_assurance".into(),
+            independently_checks: vec!["authority/generation".into(), "request/response digests".into(), "obligation binding".into()],
+            trusts_only: "external verdict at independently retained authority".into(),
+            trust_bounded_reason: "G2-00 SS11.2: the verdict is trusted only as retained independently by the external authority itself, reconciled against the supplied copy — Gen 2 cannot manufacture external PASS by Chronicle assertion alone".into(),
+            authority_generation: 1,
+            required_negative_fixture: "locally fabricated PASS".into(),
+            failure_result: "reject".into(),
+            fixture_qualified: true,
+        },
+        TrustTableRow {
+            artifact_identity: "runtime_obligation".into(),
+            independently_checks: vec!["derivation predicate".into(), "generation".into(), "evidence binding".into()],
+            trusts_only: "frozen derivation semantics".into(),
+            trust_bounded_reason: "the derivation predicate that produced this obligation is frozen policy, mechanically re-checkable; the obligation itself is trusted only as far as that frozen predicate actually derives it".into(),
+            authority_generation: 1,
+            required_negative_fixture: "omitted required obligation".into(),
+            failure_result: "reject".into(),
+            fixture_qualified: true,
+        },
     ];
     for row in rows {
         table.extend(row).expect("initial_trust_table rows are well-formed and non-duplicate by construction");
@@ -289,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn admits_every_known_artifact_identity() {
+    fn admits_every_fixture_qualified_artifact_identity() {
         let table = initial_trust_table();
         for identity in [
             "raw_project_authority_binding",
@@ -299,12 +332,28 @@ mod tests {
             "obligation_ir",
             "campaign_program",
             "compilation_certificate_witnesses",
-            "facility_declaration",
-            "evidence_packet",
             "external_assurance",
             "runtime_obligation",
         ] {
             assert!(table.admit(identity).is_ok(), "expected {identity} to be admitted");
+        }
+    }
+
+    #[test]
+    fn fail_closed_admission_for_artifact_with_no_qualified_fixture() {
+        // A row's mere presence is not admission: facility_declaration and
+        // evidence_packet are real, well-formed Trust Table rows, but no
+        // fixture has genuinely killed the mutation either row's
+        // required_negative_fixture describes yet
+        // (tenfold.gen2.mutation_fixtures leaves both PENDING_IMPLEMENTATION
+        // honestly). admit() must refuse them exactly like a missing row.
+        let table = initial_trust_table();
+        for identity in ["facility_declaration", "evidence_packet"] {
+            assert_eq!(
+                table.admit(identity),
+                Err(TrustTableError::UnqualifiedFixture { artifact_identity: identity.to_string() }),
+                "expected {identity} to be refused for an unqualified fixture"
+            );
         }
     }
 
@@ -334,15 +383,16 @@ mod tests {
     #[test]
     fn extend_rejects_malformed_row_missing_trusts_only() {
         let mut table = TrustTable::new();
-        let row = TrustTableRow::new(
-            "new_family",
-            vec!["check-a".into()],
-            "", // malformed: empty trusts_only
-            "reason",
-            1,
-            "fixture",
-            "reject",
-        );
+        let row = TrustTableRow {
+            artifact_identity: "new_family".into(),
+            independently_checks: vec!["check-a".into()],
+            trusts_only: "".into(), // malformed: empty trusts_only
+            trust_bounded_reason: "reason".into(),
+            authority_generation: 1,
+            required_negative_fixture: "fixture".into(),
+            failure_result: "reject".into(),
+            fixture_qualified: false,
+        };
         let result = table.extend(row);
         assert_eq!(result, Err(TrustTableError::MalformedRow { artifact_identity: "new_family".to_string() }));
         // The malformed row must not have been admitted despite the error.
@@ -352,29 +402,48 @@ mod tests {
     #[test]
     fn extend_rejects_malformed_row_with_empty_independently_checks() {
         let mut table = TrustTable::new();
-        let row = TrustTableRow::new("new_family", vec![], "trusts", "reason", 1, "fixture", "reject");
+        let row = TrustTableRow {
+            artifact_identity: "new_family".into(),
+            independently_checks: vec![],
+            trusts_only: "trusts".into(),
+            trust_bounded_reason: "reason".into(),
+            authority_generation: 1,
+            required_negative_fixture: "fixture".into(),
+            failure_result: "reject".into(),
+            fixture_qualified: false,
+        };
         assert!(table.extend(row).is_err());
     }
 
     #[test]
     fn extend_rejects_malformed_row_with_zero_generation() {
         let mut table = TrustTable::new();
-        let row = TrustTableRow::new("new_family", vec!["c".into()], "trusts", "reason", 0, "fixture", "reject");
+        let row = TrustTableRow {
+            artifact_identity: "new_family".into(),
+            independently_checks: vec!["c".into()],
+            trusts_only: "trusts".into(),
+            trust_bounded_reason: "reason".into(),
+            authority_generation: 0,
+            required_negative_fixture: "fixture".into(),
+            failure_result: "reject".into(),
+            fixture_qualified: false,
+        };
         assert!(table.extend(row).is_err());
     }
 
     #[test]
     fn extend_rejects_duplicate_artifact_identity() {
         let mut table = initial_trust_table();
-        let duplicate = TrustTableRow::new(
-            "requirement_closure",
-            vec!["something-else".into()],
-            "trusts",
-            "reason",
-            2,
-            "fixture",
-            "reject",
-        );
+        let duplicate = TrustTableRow {
+            artifact_identity: "requirement_closure".into(),
+            independently_checks: vec!["something-else".into()],
+            trusts_only: "trusts".into(),
+            trust_bounded_reason: "reason".into(),
+            authority_generation: 2,
+            required_negative_fixture: "fixture".into(),
+            failure_result: "reject".into(),
+            fixture_qualified: true,
+        };
         let result = table.extend(duplicate);
         assert_eq!(result, Err(TrustTableError::DuplicateRow { artifact_identity: "requirement_closure".to_string() }));
         // The original row must be unaffected by the rejected duplicate.
@@ -390,18 +459,43 @@ mod tests {
         // new authority-bearing artifact family without touching the
         // initial 11.
         let mut table = initial_trust_table();
-        let row = TrustTableRow::new(
-            "chronicle_event",
-            vec!["sequence".into(), "generation".into(), "previous hash".into()],
-            "qualified writer identity within admitted generation",
-            "single-writer, fenced, hash-chained per G2-00 SS8.1",
-            1,
-            "stale writer / broken chain",
-            "reject",
-        );
+        let row = TrustTableRow {
+            artifact_identity: "chronicle_event".into(),
+            independently_checks: vec!["sequence".into(), "generation".into(), "previous hash".into()],
+            trusts_only: "qualified writer identity within admitted generation".into(),
+            trust_bounded_reason: "single-writer, fenced, hash-chained per G2-00 SS8.1".into(),
+            authority_generation: 1,
+            required_negative_fixture: "stale writer / broken chain".into(),
+            failure_result: "reject".into(),
+            fixture_qualified: true,
+        };
         assert!(table.extend(row).is_ok());
         assert_eq!(table.len(), 12);
         assert!(table.admit("chronicle_event").is_ok());
+    }
+
+    #[test]
+    fn extend_accepts_a_new_family_with_fixture_not_yet_qualified() {
+        // The extension path must also support the honest
+        // PENDING_IMPLEMENTATION state: a newly-added row can be well-formed
+        // metadata while its negative fixture has not been qualified yet,
+        // and admit() must refuse it for that reason specifically.
+        let mut table = initial_trust_table();
+        let row = TrustTableRow {
+            artifact_identity: "future_family".into(),
+            independently_checks: vec!["check".into()],
+            trusts_only: "trusts".into(),
+            trust_bounded_reason: "reason".into(),
+            authority_generation: 1,
+            required_negative_fixture: "future fixture".into(),
+            failure_result: "reject".into(),
+            fixture_qualified: false,
+        };
+        assert!(table.extend(row).is_ok());
+        assert_eq!(
+            table.admit("future_family"),
+            Err(TrustTableError::UnqualifiedFixture { artifact_identity: "future_family".to_string() })
+        );
     }
 
     #[test]

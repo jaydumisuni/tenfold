@@ -24,11 +24,11 @@ def test_g2_03_fixture_with_no_kill_check_is_pending() -> None:
     assert fixture.run() == FixtureStatus.PENDING_IMPLEMENTATION
 
 
-def test_g2_03_fixture_that_raises_is_killed() -> None:
+def test_g2_03_fixture_that_raises_expected_error_is_killed() -> None:
     def kill_check() -> None:
         raise ValueError("correctly rejected")
 
-    fixture = MutationFixture("F-1", MutationCategory.TF_00_INVARIANTS, "desc", "authority@ref", None, kill_check)
+    fixture = MutationFixture("F-1", MutationCategory.TF_00_INVARIANTS, "desc", "authority@ref", None, kill_check, ValueError)
     assert fixture.run() == FixtureStatus.KILLED
 
 
@@ -36,8 +36,26 @@ def test_g2_03_fixture_that_does_not_raise_survives() -> None:
     def kill_check() -> None:
         pass  # wrongly accepts the mutation
 
-    fixture = MutationFixture("F-1", MutationCategory.TF_00_INVARIANTS, "desc", "authority@ref", None, kill_check)
+    fixture = MutationFixture("F-1", MutationCategory.TF_00_INVARIANTS, "desc", "authority@ref", None, kill_check, ValueError)
     assert fixture.run() == FixtureStatus.SURVIVED
+
+
+def test_g2_03_fixture_that_raises_unexpected_error_fails_the_suite() -> None:
+    # The core round-2 review finding: a harness/environment bug (bad path,
+    # typo, unrelated exception) must not be silently recorded as a correct
+    # constitutional rejection just because *some* exception was raised.
+    def kill_check() -> None:
+        raise FileNotFoundError("unrelated harness bug")
+
+    fixture = MutationFixture("F-1", MutationCategory.TF_00_INVARIANTS, "desc", "authority@ref", None, kill_check, ValueError)
+    with pytest.raises(MutationError, match="not the declared expected_error"):
+        fixture.run()
+
+
+def test_g2_03_fixture_requires_expected_error_when_kill_check_present() -> None:
+    fixture = MutationFixture("F-1", MutationCategory.TF_00_INVARIANTS, "desc", "authority@ref", None, lambda: None)
+    with pytest.raises(MutationError, match="must declare expected_error"):
+        fixture.validate()
 
 
 def test_g2_03_fixture_requires_nonempty_id() -> None:
@@ -69,7 +87,7 @@ def test_g2_03_required_category_coverage_passes_with_all_categories() -> None:
 
 def test_g2_03_score_excludes_pending_from_denominator() -> None:
     suite = MutationSuite()
-    suite.register(MutationFixture("F-killed", MutationCategory.TF_00_INVARIANTS, "d", "a", None, lambda: (_ for _ in ()).throw(ValueError())))
+    suite.register(MutationFixture("F-killed", MutationCategory.TF_00_INVARIANTS, "d", "a", None, lambda: (_ for _ in ()).throw(ValueError()), ValueError))
     suite.register(MutationFixture("F-pending", MutationCategory.ROSTER_FAILURE, "d", "a", None, None))
     report = suite.score()
     assert report.total == 2
@@ -81,14 +99,14 @@ def test_g2_03_score_excludes_pending_from_denominator() -> None:
 
 def test_g2_03_require_no_surviving_required_mutants_raises_on_survivor() -> None:
     suite = MutationSuite()
-    suite.register(MutationFixture("F-1", MutationCategory.TF_00_INVARIANTS, "d", "a", None, lambda: None))
+    suite.register(MutationFixture("F-1", MutationCategory.TF_00_INVARIANTS, "d", "a", None, lambda: None, ValueError))
     with pytest.raises(MutationError, match="required mutant\\(s\\) survived"):
         suite.require_no_surviving_required_mutants()
 
 
 def test_g2_03_require_no_surviving_required_mutants_passes_when_all_killed_or_pending() -> None:
     suite = MutationSuite()
-    suite.register(MutationFixture("F-1", MutationCategory.TF_00_INVARIANTS, "d", "a", None, lambda: (_ for _ in ()).throw(ValueError())))
+    suite.register(MutationFixture("F-1", MutationCategory.TF_00_INVARIANTS, "d", "a", None, lambda: (_ for _ in ()).throw(ValueError()), ValueError))
     suite.register(MutationFixture("F-2", MutationCategory.ROSTER_FAILURE, "d", "a", None, None))
     suite.require_no_surviving_required_mutants()
 

@@ -31,6 +31,7 @@ from .constitutional import (
     ClassificationEntry,
     CompilationCertificate,
     ConstitutionalCampaignProgram,
+    ConstitutionalError,
     ConstitutionalPolicySet,
     FalsificationClass,
     ObligationClass,
@@ -49,6 +50,7 @@ from .constitutional import (
     ExternalAssuranceCopy,
     AssuranceCopySlot,
 )
+from .reference import ReferenceError
 from .mutation_suite import MutationCategory, MutationFixture, MutationSuite
 
 
@@ -237,6 +239,7 @@ def build_initial_mutation_suite() -> MutationSuite:
             "G2-00 SS4.1 Trust Table row: Raw Project Authority binding",
             "raw_project_authority_binding",
             _raw_project_authority_binding_kill_check,
+            ReferenceError,
         )
     )
     suite.register(
@@ -249,6 +252,7 @@ def build_initial_mutation_suite() -> MutationSuite:
             "G2-00 SS4.1 Trust Table row: Requirement Closure",
             "requirement_closure",
             _requirement_closure_kill_check,
+            ConstitutionalError,
         )
     )
     suite.register(
@@ -260,6 +264,7 @@ def build_initial_mutation_suite() -> MutationSuite:
             "G2-00 SS4.1 Trust Table row: Campaign Program",
             "campaign_program",
             _campaign_program_kill_check,
+            ConstitutionalError,
         )
     )
     suite.register(
@@ -271,6 +276,7 @@ def build_initial_mutation_suite() -> MutationSuite:
             "G2-00 SS4.1 Trust Table row: Compilation Certificate/Witnesses",
             "compilation_certificate_witnesses",
             _compilation_certificate_kill_check,
+            ConstitutionalError,
         )
     )
     suite.register(
@@ -282,6 +288,7 @@ def build_initial_mutation_suite() -> MutationSuite:
             "TF-00 SS3.4 (Foreman state machine); tenfold.foreman.ALLOWED_TRANSITIONS",
             None,
             _tf00_illegal_transition_kill_check,
+            ValueError,
         )
     )
     suite.register(
@@ -293,6 +300,7 @@ def build_initial_mutation_suite() -> MutationSuite:
             "G2-00 SS5.1 Independent Expected-Set Principle",
             "constitutional_policy",
             _expected_set_kill_check,
+            ConstitutionalError,
         )
     )
     suite.register(
@@ -304,6 +312,7 @@ def build_initial_mutation_suite() -> MutationSuite:
             "G2-00 SS5.2 Independent Roster Principle; G2-00 SS6.6",
             "constitutional_policy",
             _roster_kill_check,
+            ConstitutionalError,
         )
     )
     suite.register(
@@ -316,6 +325,7 @@ def build_initial_mutation_suite() -> MutationSuite:
             "G2-00 SS5.3 Boundary Independence Principle",
             "constitutional_policy",
             _boundary_independence_kill_check,
+            ConstitutionalError,
         )
     )
     suite.register(
@@ -375,6 +385,7 @@ def build_initial_mutation_suite() -> MutationSuite:
             "G2-00 SS6.5",
             "constitutional_policy",
             _requirement_class_policy_omission_kill_check,
+            ConstitutionalError,
         )
     )
     suite.register(
@@ -386,6 +397,7 @@ def build_initial_mutation_suite() -> MutationSuite:
             "G2-00 SS6.2",
             "classification_closure",
             _classification_lineage_kill_check,
+            ConstitutionalError,
         )
     )
     suite.register(
@@ -397,6 +409,7 @@ def build_initial_mutation_suite() -> MutationSuite:
             "G2-00 SS11.2",
             "external_assurance",
             _assurance_omission_kill_check,
+            ConstitutionalError,
         )
     )
     suite.register(
@@ -408,6 +421,7 @@ def build_initial_mutation_suite() -> MutationSuite:
             "G2-00 SS15",
             None,
             _generation_fencing_kill_check,
+            ConstitutionalError,
         )
     )
     suite.register(
@@ -432,6 +446,7 @@ def build_initial_mutation_suite() -> MutationSuite:
             "G2-00 SS8.1, SS8.3",
             "chronicle_event",
             _chronicle_chain_kill_check,
+            ConstitutionalError,
         )
     )
     suite.register(
@@ -443,6 +458,7 @@ def build_initial_mutation_suite() -> MutationSuite:
             "G2-00 SS15",
             "runtime_obligation",
             _runtime_obligation_omission_kill_check,
+            ConstitutionalError,
         )
     )
     suite.register(
@@ -511,6 +527,7 @@ def build_initial_mutation_suite() -> MutationSuite:
             "G2-00 SS11",
             "obligation_ir",
             _partial_proof_kill_check,
+            ConstitutionalError,
         )
     )
     suite.register(
@@ -522,6 +539,7 @@ def build_initial_mutation_suite() -> MutationSuite:
             "G2-00 SS11.1",
             "obligation_ir",
             _falsification_topology_kill_check,
+            ConstitutionalError,
         )
     )
 

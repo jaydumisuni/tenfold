@@ -96,6 +96,7 @@ class MutationFixture:
     authority_ref: str
     trust_table_artifact_identity: str | None
     kill_check: Callable[[], None] | None = field(default=None)
+    expected_error: type[BaseException] | None = field(default=None)
 
     def validate(self) -> None:
         if not self.fixture_id or not self.fixture_id.strip():
@@ -104,19 +105,37 @@ class MutationFixture:
             raise MutationError(f"MutationFixture {self.fixture_id}: description must be non-empty")
         if not self.authority_ref or not self.authority_ref.strip():
             raise MutationError(f"MutationFixture {self.fixture_id}: authority_ref must be non-empty")
+        if self.kill_check is not None and self.expected_error is None:
+            raise MutationError(
+                f"MutationFixture {self.fixture_id}: a fixture with a kill_check must declare "
+                "expected_error, so an unrelated bug (bad path, typo, harness failure) cannot "
+                "be silently recorded as a correct constitutional rejection"
+            )
 
     def run(self) -> FixtureStatus:
         """Actually execute the fixture. A killed mutant is one whose
-        kill_check raised (the mutation was correctly rejected); a
-        survived mutant is one whose kill_check returned normally (the
-        mutation was wrongly accepted) — this is a real, exercised result,
-        never an asserted one."""
+        kill_check raised exactly the declared expected_error (the mutation
+        was correctly rejected for the reason this fixture exists to prove);
+        a survived mutant is one whose kill_check returned normally (the
+        mutation was wrongly accepted) — both are real, exercised results,
+        never asserted ones. Any *other* exception (a bad relative path, a
+        typo, a harness/environment failure) is not a constitutional
+        rejection and must not be recorded as one — it propagates and fails
+        the suite loudly instead."""
         if self.kill_check is None:
             return FixtureStatus.PENDING_IMPLEMENTATION
+        assert self.expected_error is not None  # enforced by validate()
         try:
             self.kill_check()
-        except Exception:
+        except self.expected_error:
             return FixtureStatus.KILLED
+        except Exception as exc:
+            raise MutationError(
+                f"MutationFixture {self.fixture_id}: kill_check raised "
+                f"{type(exc).__name__} ({exc}), not the declared expected_error "
+                f"{self.expected_error.__name__} — this is a fixture/harness defect, "
+                "not evidence of a constitutional rejection"
+            ) from exc
         return FixtureStatus.SURVIVED
 
 
