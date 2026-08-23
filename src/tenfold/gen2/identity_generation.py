@@ -9,11 +9,19 @@ Two different parity strategies are used here, disclosed honestly:
 * Exact-state binding (``gen1_check_exact_state_binding``) directly
   invokes Gen-1's real, already-authoritative
   ``tenfold.recovery.validate_command`` / ``CommandFence`` /
-  ``tenfold.persistence.CampaignSnapshot`` — the strongest form of
-  parity available, since it is genuinely the same code path Gen-1 uses
-  today, not a re-derivation of it. The companion Rust primitive
+  ``tenfold.persistence.CampaignSnapshot`` for
+  ``campaign_id``/``foreman_epoch``/``revision`` — the strongest form
+  of parity available for those three fields, since it is genuinely the
+  same code path Gen-1 uses today. ``campaign_generation`` is *not*
+  checked by ``validate_command`` itself in Gen-1's real code; Gen-1
+  enforces it separately, at its own real call sites
+  (``facility.py``/``durability.py``/etc). This function composes both:
+  the real ``validate_command`` call plus a ``check_generation_not_stale``
+  call against ``campaign_generation``, genuinely representing Gen-1's
+  layered design rather than fabricating a single function Gen-1 does
+  not actually have. The companion Rust primitive
   (``identity_generation::check_exact_state_binding``) is an
-  independent re-derivation of the identical three-field comparison;
+  independent re-derivation of the identical four-field comparison;
   the two are checked for verdict agreement on a shared corpus in
   ``tests/gen2/test_g2_09_identity_generation.py``.
 * Stale-generation rejection and fresh-generation reinstatement have no
@@ -42,7 +50,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from tenfold.persistence import CampaignSnapshot
-from tenfold.recovery import CommandFence, validate_command
+from tenfold.recovery import CommandFence, StaleCommand, validate_command
 
 from .reference import InterimRootBinding
 
@@ -140,30 +148,45 @@ class AssignmentGeneration:
 def gen1_check_exact_state_binding(
     *,
     claim_campaign_id: str,
+    claim_campaign_generation: int,
     claim_foreman_epoch: int,
     claim_expected_revision: int,
     live_campaign_id: str,
+    live_campaign_generation: int,
     live_foreman_epoch: int,
     live_revision: int,
 ) -> None:
-    """Check exact-state binding by literally calling Gen-1's authoritative
-    ``tenfold.recovery.validate_command``.
+    """Check exact-state binding by composing two real Gen-1 mechanisms:
+    the authoritative ``tenfold.recovery.validate_command`` (which compares
+    ``campaign_id``/``foreman_epoch``/``revision``) with Gen-1's *separate*
+    ``campaign_generation`` exact-equality fencing, enforced not inside
+    ``validate_command`` but at its own real call sites
+    (``facility.py``/``durability.py``/``coupling.py``/etc — see the
+    module docstring).
+
+    Round-1 review finding: without the composed ``campaign_generation``
+    check, a claim against a ``campaign_id`` that has been reused/rebound
+    under a new campaign generation, whose epoch/revision happen to
+    coincide with the old incarnation's, would be silently accepted by
+    ``validate_command`` alone — that function was never designed to catch
+    cross-generation reuse of the same identity string on its own; Gen-1's
+    real layered design relies on the separate campaign_generation checks
+    for that.
 
     A minimal, otherwise-inert ``CampaignSnapshot`` is constructed to carry
-    the live identity/epoch/revision under test; the 5 remaining required
-    fields with no meaningful default (``campaign_generation``,
-    ``campaign_digest``, ``blueprint_generation``, ``blueprint_digest``,
-    ``matrix_generation``, ``matrix_digest``, ``campaign_payload``) are
-    filled with well-formed placeholders because ``validate_command`` never
-    reads them — it compares exactly ``campaign_id``, ``foreman_epoch`` and
-    ``revision`` against the fence, and nothing else.
+    the live identity/epoch/revision/generation under test; the 4 remaining
+    required fields with no meaningful default (``campaign_digest``,
+    ``blueprint_generation``, ``blueprint_digest``, ``matrix_generation``,
+    ``matrix_digest``, ``campaign_payload``) are filled with well-formed
+    placeholders because neither real check reads them.
 
     Raises ``tenfold.recovery.StaleCommand`` (Gen-1's own real exception
-    type) on any mismatch; returns ``None`` on acceptance.
+    type) on any mismatch, including the composed campaign_generation
+    check; returns ``None`` on acceptance.
     """
     snapshot = CampaignSnapshot(
         campaign_id=live_campaign_id,
-        campaign_generation=1,
+        campaign_generation=live_campaign_generation,
         campaign_digest="0" * 64,
         blueprint_generation=1,
         blueprint_digest="0" * 64,
@@ -179,6 +202,10 @@ def gen1_check_exact_state_binding(
         expected_revision=claim_expected_revision,
     )
     validate_command(snapshot, fence)
+    try:
+        check_generation_not_stale(claim_campaign_generation, live_campaign_generation)
+    except IdentityGenerationError as exc:
+        raise StaleCommand(f"stale campaign generation: {exc}") from exc
 
 
 # ============================================================================

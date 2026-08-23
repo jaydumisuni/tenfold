@@ -788,7 +788,7 @@ def build_initial_mutation_suite() -> MutationSuite:
             "'stale/duplicate-generation fixtures reject' acceptance bar) is rejected by the "
             "real exact-equality generation check.",
             "G2-00 SS15; G2-09",
-            None,
+            "identity_generation",
             _g2_09_stale_generation_kill_check,
             IdentityGenerationError,
         )
@@ -801,7 +801,7 @@ def build_initial_mutation_suite() -> MutationSuite:
             "an attempt to re-claim one of the specific generations it was built to never "
             "resurrect (the 'duplicate' shape of G2-09's acceptance bar) is rejected.",
             "G2-00 SS15; G2-09",
-            None,
+            "identity_generation",
             _g2_09_duplicate_generation_kill_check,
             IdentityGenerationError,
         )

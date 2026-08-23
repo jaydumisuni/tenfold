@@ -105,6 +105,90 @@ class StateModel:
 
 
 # ============================================================================
+# G2-09 production base State Model.
+#
+# Round-1 review finding: the only inventory of the actual G2-09
+# authority-bearing fields lived in a test-local helper, so
+# `check_coverage()` was checked against whatever the *caller* happened to
+# supply -- a milestone that forgot to register a field could equally
+# forget to demand it, and the check would trivially pass either way.
+#
+# `G2_09_REQUIRED_STATE_MODEL_FIELD_IDS` is a frozen, independently
+# authored roster (matching `mutation_suite.REQUIRED_MUTATION_CATEGORIES`'s
+# own pattern: derived from reading G2-09's authority text, not from
+# whatever `build_g2_09_base_state_model()` happens to register) so the two
+# lists can genuinely diverge and be caught diverging.
+# `build_g2_09_base_state_model()` is the production registration --
+# `tests/gen2/test_g2_09_identity_generation.py` checks it against the
+# frozen roster rather than building its own ad hoc field list.
+#
+# Residual, disclosed limit: this still cannot detect a wholly new
+# authority-bearing runtime field that nobody registered in *either* list --
+# no static/dynamic introspection of the codebase backs this roster. It
+# closes the specific gap of "coverage checked against its own registry,"
+# not the deeper problem of an unregistered field never being written down
+# anywhere at all.
+# ============================================================================
+
+G2_09_REQUIRED_STATE_MODEL_FIELD_IDS: frozenset[str] = frozenset(
+    {
+        "campaign_id",
+        "campaign_generation",
+        "foreman_epoch",
+        "campaign_revision",
+        "organization_generation",
+        "authority_generation",
+        "assignment_generation",
+        "authority_transfer_stage",
+    }
+)
+
+
+def build_g2_09_base_state_model() -> StateModel:
+    """The production Authoritative State Model base for G2-09 (G2-00 §14's
+    'Authoritative State Model base schema' deliverable)."""
+    return StateModel(fields=()).extend(
+        (
+            StateModelField(
+                "campaign_id", AuthorityHolder.GEN1_PYTHON,
+                "CampaignManifest.campaign_id / CommandFence.campaign_id",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-09",
+            ),
+            StateModelField(
+                "campaign_generation", AuthorityHolder.GEN1_PYTHON,
+                "CampaignSnapshot.campaign_generation",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-09",
+            ),
+            StateModelField(
+                "foreman_epoch", AuthorityHolder.GEN1_PYTHON, "CommandFence.foreman_epoch",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-09",
+            ),
+            StateModelField(
+                "campaign_revision", AuthorityHolder.GEN1_PYTHON, "CommandFence.expected_revision",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-09",
+            ),
+            StateModelField(
+                "organization_generation", AuthorityHolder.GEN1_PYTHON, "InterimRootBinding.generation",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-09",
+            ),
+            StateModelField(
+                "authority_generation", AuthorityHolder.GEN1_PYTHON,
+                "CommandFence.foreman_epoch (authority-generation tier)",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-09",
+            ),
+            StateModelField(
+                "assignment_generation", AuthorityHolder.GEN1_PYTHON, "WriteLease.generation",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-09",
+            ),
+            StateModelField(
+                "authority_transfer_stage", AuthorityHolder.GEN2_RUST, "AuthorityTransferStage",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-02",
+            ),
+        )
+    )
+
+
+# ============================================================================
 # Failure-space scenario generator base (G2-00 §14.1: "Failure-space
 # qualification reports 1-wise, pairwise, 3-wise high-risk, transition and
 # forbidden-state coverage according to frozen risk policy. No mathematical
@@ -200,7 +284,12 @@ def generate_pairwise(dimensions: tuple[FailureSpaceDimension, ...]) -> tuple[di
     scenarios: list[dict[str, str]] = []
 
     while uncovered:
-        anchor_i, anchor_j, anchor_vi, anchor_vj = next(iter(uncovered))
+        # Round-1 review finding: `next(iter(uncovered))` on a Python `set`
+        # depends on PYTHONHASHSEED (str hashing is salted by default), so
+        # the generated scenario sequence was not reproducible across
+        # processes even for identical frozen inputs. `min()` over the
+        # tuple's natural ordering is fully deterministic.
+        anchor_i, anchor_j, anchor_vi, anchor_vj = min(uncovered)
         assigned: dict[int, str] = {anchor_i: anchor_vi, anchor_j: anchor_vj}
 
         for idx, dim in enumerate(dimensions):

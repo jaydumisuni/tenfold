@@ -54,10 +54,14 @@ def rust_cli_binary() -> Path:
         timeout=180,
     )
     if result.returncode != 0:
-        pytest.skip(f"could not build obligation_ir_cli: {result.stderr}")
+        # Routine maintenance (found while fixing the identical gap in
+        # G2-09's own CLI fixture): skipping here would silently drop
+        # every cross-language differential case instead of failing the
+        # suite on a broken Rust build.
+        pytest.fail(f"could not build obligation_ir_cli: {result.stderr}")
     binary = REPO_ROOT / "rust" / "target" / "debug" / _CLI_BINARY_NAME
     if not binary.exists():
-        pytest.skip(f"obligation_ir_cli binary not found at {binary} after build")
+        pytest.fail(f"obligation_ir_cli binary not found at {binary} after build")
     return binary
 
 

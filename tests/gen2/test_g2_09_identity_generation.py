@@ -48,17 +48,16 @@ from tenfold.gen2.reference import (
     ReferenceError as Gen2ReferenceError,
 )
 from tenfold.gen2.state_model import (
-    AuthorityHolder,
     FailureSpaceCoverageReport,
     FailureSpaceDimension,
-    StateModel,
-    StateModelDisposition,
+    G2_09_REQUIRED_STATE_MODEL_FIELD_IDS,
     StateModelError,
-    StateModelField,
+    build_g2_09_base_state_model,
     check_standing_gate_d,
     generate_one_wise,
     generate_pairwise,
 )
+from tenfold.gen2.mutation_fixtures import build_initial_mutation_suite
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUST_MANIFEST = REPO_ROOT / "rust" / "identity_generation" / "Cargo.toml"
@@ -74,10 +73,15 @@ def rust_cli_binary() -> Path:
         timeout=180,
     )
     if result.returncode != 0:
-        pytest.skip(f"could not build identity_generation_cli: {result.stderr}")
+        # Round-1 review finding: skipping here silently drops every
+        # parameterized Gen1/Rust parity case (this milestone's explicit
+        # acceptance bar) instead of failing the suite -- a broken build
+        # would otherwise look like a passing run that simply exercised
+        # nothing.
+        pytest.fail(f"could not build identity_generation_cli: {result.stderr}")
     binary = REPO_ROOT / "rust" / "target" / "debug" / _CLI_BINARY_NAME
     if not binary.exists():
-        pytest.skip(f"identity_generation_cli binary not found at {binary} after build")
+        pytest.fail(f"identity_generation_cli binary not found at {binary} after build")
     return binary
 
 
@@ -92,9 +96,11 @@ def _gen1_accepts(payload: dict) -> bool:
     try:
         gen1_check_exact_state_binding(
             claim_campaign_id=payload["campaign_id"],
+            claim_campaign_generation=payload["campaign_generation"],
             claim_foreman_epoch=payload["foreman_epoch"],
             claim_expected_revision=payload["expected_revision"],
             live_campaign_id=payload["live_campaign_id"],
+            live_campaign_generation=payload["live_campaign_generation"],
             live_foreman_epoch=payload["live_foreman_epoch"],
             live_revision=payload["live_revision"],
         )
@@ -104,14 +110,18 @@ def _gen1_accepts(payload: dict) -> bool:
 
 
 _STATE_BINDING_CORPUS = (
-    {"campaign_id": "camp-1", "foreman_epoch": 3, "expected_revision": 42, "live_campaign_id": "camp-1", "live_foreman_epoch": 3, "live_revision": 42},
-    {"campaign_id": "camp-1", "foreman_epoch": 2, "expected_revision": 42, "live_campaign_id": "camp-1", "live_foreman_epoch": 3, "live_revision": 42},
-    {"campaign_id": "camp-1", "foreman_epoch": 4, "expected_revision": 42, "live_campaign_id": "camp-1", "live_foreman_epoch": 3, "live_revision": 42},
-    {"campaign_id": "camp-1", "foreman_epoch": 3, "expected_revision": 41, "live_campaign_id": "camp-1", "live_foreman_epoch": 3, "live_revision": 42},
-    {"campaign_id": "camp-1", "foreman_epoch": 3, "expected_revision": 43, "live_campaign_id": "camp-1", "live_foreman_epoch": 3, "live_revision": 42},
-    {"campaign_id": "camp-2", "foreman_epoch": 3, "expected_revision": 42, "live_campaign_id": "camp-1", "live_foreman_epoch": 3, "live_revision": 42},
-    {"campaign_id": "camp-1", "foreman_epoch": 0, "expected_revision": 0, "live_campaign_id": "camp-1", "live_foreman_epoch": 0, "live_revision": 0},
-    {"campaign_id": "", "foreman_epoch": 1, "expected_revision": 1, "live_campaign_id": "", "live_foreman_epoch": 1, "live_revision": 1},
+    {"campaign_id": "camp-1", "campaign_generation": 1, "foreman_epoch": 3, "expected_revision": 42, "live_campaign_id": "camp-1", "live_campaign_generation": 1, "live_foreman_epoch": 3, "live_revision": 42},
+    {"campaign_id": "camp-1", "campaign_generation": 1, "foreman_epoch": 2, "expected_revision": 42, "live_campaign_id": "camp-1", "live_campaign_generation": 1, "live_foreman_epoch": 3, "live_revision": 42},
+    {"campaign_id": "camp-1", "campaign_generation": 1, "foreman_epoch": 4, "expected_revision": 42, "live_campaign_id": "camp-1", "live_campaign_generation": 1, "live_foreman_epoch": 3, "live_revision": 42},
+    {"campaign_id": "camp-1", "campaign_generation": 1, "foreman_epoch": 3, "expected_revision": 41, "live_campaign_id": "camp-1", "live_campaign_generation": 1, "live_foreman_epoch": 3, "live_revision": 42},
+    {"campaign_id": "camp-1", "campaign_generation": 1, "foreman_epoch": 3, "expected_revision": 43, "live_campaign_id": "camp-1", "live_campaign_generation": 1, "live_foreman_epoch": 3, "live_revision": 42},
+    {"campaign_id": "camp-2", "campaign_generation": 1, "foreman_epoch": 3, "expected_revision": 42, "live_campaign_id": "camp-1", "live_campaign_generation": 1, "live_foreman_epoch": 3, "live_revision": 42},
+    {"campaign_id": "camp-1", "campaign_generation": 1, "foreman_epoch": 0, "expected_revision": 0, "live_campaign_id": "camp-1", "live_campaign_generation": 1, "live_foreman_epoch": 0, "live_revision": 0},
+    {"campaign_id": "", "campaign_generation": 1, "foreman_epoch": 1, "expected_revision": 1, "live_campaign_id": "", "live_campaign_generation": 1, "live_foreman_epoch": 1, "live_revision": 1},
+    # The round-1 review's exact scenario: campaign_id/epoch/revision all
+    # match, but the claim is bound to a stale (reused/rebound) generation.
+    {"campaign_id": "camp-1", "campaign_generation": 1, "foreman_epoch": 3, "expected_revision": 42, "live_campaign_id": "camp-1", "live_campaign_generation": 2, "live_foreman_epoch": 3, "live_revision": 42},
+    {"campaign_id": "camp-1", "campaign_generation": 2, "foreman_epoch": 3, "expected_revision": 42, "live_campaign_id": "camp-1", "live_campaign_generation": 1, "live_foreman_epoch": 3, "live_revision": 42},
 )
 
 
@@ -124,8 +134,8 @@ def test_g2_09_gen1_rust_parity_on_exact_state_binding_corpus(rust_cli_binary: P
 
 def test_g2_09_gen1_check_accepts_matching_claim() -> None:
     gen1_check_exact_state_binding(
-        claim_campaign_id="camp-1", claim_foreman_epoch=3, claim_expected_revision=42,
-        live_campaign_id="camp-1", live_foreman_epoch=3, live_revision=42,
+        claim_campaign_id="camp-1", claim_campaign_generation=1, claim_foreman_epoch=3, claim_expected_revision=42,
+        live_campaign_id="camp-1", live_campaign_generation=1, live_foreman_epoch=3, live_revision=42,
     )
 
 
@@ -134,17 +144,31 @@ def test_g2_09_gen1_check_accepts_matching_claim() -> None:
     [
         ("claim_foreman_epoch", "live_foreman_epoch", 2, 3),
         ("claim_expected_revision", "live_revision", 41, 42),
+        ("claim_campaign_generation", "live_campaign_generation", 1, 2),
     ],
 )
 def test_g2_09_gen1_check_rejects_stale_claims(claim_field: str, live_field: str, claim: int, live: int) -> None:
     kwargs = {
-        "claim_campaign_id": "camp-1", "claim_foreman_epoch": 3, "claim_expected_revision": 42,
-        "live_campaign_id": "camp-1", "live_foreman_epoch": 3, "live_revision": 42,
+        "claim_campaign_id": "camp-1", "claim_campaign_generation": 1, "claim_foreman_epoch": 3, "claim_expected_revision": 42,
+        "live_campaign_id": "camp-1", "live_campaign_generation": 1, "live_foreman_epoch": 3, "live_revision": 42,
     }
     kwargs[claim_field] = claim
     kwargs[live_field] = live
     with pytest.raises(StaleCommand):
         gen1_check_exact_state_binding(**kwargs)
+
+
+def test_g2_09_gen1_check_rejects_stale_campaign_generation_with_matching_id_epoch_revision() -> None:
+    """Round-1 review finding's exact scenario: campaign_id, foreman_epoch
+    and expected_revision all match a live incarnation of the campaign,
+    but the claim is bound to a different (stale/reused) campaign
+    generation -- this must still be rejected, composing Gen-1's real
+    validate_command with its separate campaign_generation fencing."""
+    with pytest.raises(StaleCommand, match="stale campaign generation"):
+        gen1_check_exact_state_binding(
+            claim_campaign_id="camp-1", claim_campaign_generation=1, claim_foreman_epoch=3, claim_expected_revision=42,
+            live_campaign_id="camp-1", live_campaign_generation=2, live_foreman_epoch=3, live_revision=42,
+        )
 
 
 # ============================================================================
@@ -269,33 +293,30 @@ def test_g2_09_reinstatement_rejects_reuse_via_duplicate_generation_fixture() ->
 # ============================================================================
 
 
-def _g2_09_state_model_fields() -> tuple[StateModelField, ...]:
-    return (
-        StateModelField("campaign_id", AuthorityHolder.GEN1_PYTHON, "CampaignManifest.campaign_id", StateModelDisposition.RUNTIME_MAPPED, "G2-09"),
-        StateModelField("foreman_epoch", AuthorityHolder.GEN1_PYTHON, "CommandFence.foreman_epoch", StateModelDisposition.RUNTIME_MAPPED, "G2-09"),
-        StateModelField("campaign_revision", AuthorityHolder.GEN1_PYTHON, "CommandFence.expected_revision", StateModelDisposition.RUNTIME_MAPPED, "G2-09"),
-        StateModelField("organization_generation", AuthorityHolder.GEN1_PYTHON, "InterimRootBinding.generation", StateModelDisposition.RUNTIME_MAPPED, "G2-09"),
-        StateModelField("assignment_generation", AuthorityHolder.GEN1_PYTHON, "WriteLease.generation", StateModelDisposition.RUNTIME_MAPPED, "G2-09"),
-        StateModelField("authority_transfer_stage", AuthorityHolder.GEN2_RUST, "AuthorityTransferStage", StateModelDisposition.RUNTIME_MAPPED, "G2-02"),
-    )
+def test_g2_09_base_state_model_covers_the_independent_required_roster() -> None:
+    # Round-1 review finding: the coverage check is only meaningful if the
+    # required-field roster is sourced independently of the model's own
+    # registration call. G2_09_REQUIRED_STATE_MODEL_FIELD_IDS is a
+    # separately authored frozen constant (state_model.py), not derived
+    # from build_g2_09_base_state_model()'s own field list.
+    model = build_g2_09_base_state_model()
+    model.check_coverage(G2_09_REQUIRED_STATE_MODEL_FIELD_IDS)
 
 
-def test_g2_09_state_model_extend_and_coverage() -> None:
-    model = StateModel(fields=()).extend(_g2_09_state_model_fields())
-    model.check_coverage(frozenset({"campaign_id", "foreman_epoch", "organization_generation"}))
+def test_g2_09_base_state_model_field_ids_exactly_match_required_roster() -> None:
+    assert build_g2_09_base_state_model().field_ids() == G2_09_REQUIRED_STATE_MODEL_FIELD_IDS
 
 
 def test_g2_09_state_model_coverage_failure_on_missing_field() -> None:
-    model = StateModel(fields=()).extend(_g2_09_state_model_fields())
+    model = build_g2_09_base_state_model()
     with pytest.raises(StateModelError, match="STATE_MODEL_COVERAGE_FAILURE"):
         model.check_coverage(frozenset({"campaign_id", "never_registered_field"}))
 
 
 def test_g2_09_state_model_rejects_duplicate_field_id() -> None:
-    fields = _g2_09_state_model_fields()
-    model = StateModel(fields=()).extend(fields)
+    model = build_g2_09_base_state_model()
     with pytest.raises(StateModelError):
-        model.extend((fields[0],))
+        model.extend((model.fields[0],))
 
 
 def test_g2_09_one_wise_covers_every_value() -> None:
@@ -334,6 +355,24 @@ def test_g2_09_pairwise_covers_every_pair_across_shapes(n_dims: int, n_values: i
         assert set(scenario.keys()) == {d.dimension_id for d in dims}
 
 
+def test_g2_09_pairwise_generation_is_deterministic_across_repeated_calls() -> None:
+    """Round-1 review finding: the original anchor selection used
+    `next(iter(a_python_set))`, whose iteration order depends on
+    PYTHONHASHSEED -- so identical frozen inputs could produce different
+    covering arrays (and hence different qualification-evidence digests)
+    across processes. Repeated calls in this process must now agree
+    exactly, and the underlying fix (a deterministic `min()` pick) removes
+    the source of that variance entirely."""
+    dims = (
+        FailureSpaceDimension("epoch_freshness", ("FRESH", "STALE", "FORWARD_DATED")),
+        FailureSpaceDimension("revision_freshness", ("FRESH", "STALE")),
+        FailureSpaceDimension("campaign_identity_match", ("MATCH", "MISMATCH")),
+    )
+    first = generate_pairwise(dims)
+    second = generate_pairwise(dims)
+    assert first == second
+
+
 def test_g2_09_dimension_rejects_fewer_than_two_values() -> None:
     with pytest.raises(StateModelError):
         FailureSpaceDimension("only_one", ("A",)).validate()
@@ -345,7 +384,7 @@ def test_g2_09_dimension_rejects_duplicate_values() -> None:
 
 
 def test_g2_09_standing_gate_d_passes_when_all_conditions_met() -> None:
-    model = StateModel(fields=()).extend(_g2_09_state_model_fields())
+    model = build_g2_09_base_state_model()
     dims = (
         FailureSpaceDimension("epoch_freshness", ("FRESH", "STALE")),
         FailureSpaceDimension("revision_freshness", ("FRESH", "STALE")),
@@ -354,8 +393,18 @@ def test_g2_09_standing_gate_d_passes_when_all_conditions_met() -> None:
     check_standing_gate_d(model, frozenset({"campaign_id", "foreman_epoch"}), report, dims)
 
 
+def test_g2_09_standing_gate_d_passes_against_the_production_required_roster() -> None:
+    model = build_g2_09_base_state_model()
+    dims = (
+        FailureSpaceDimension("epoch_freshness", ("FRESH", "STALE")),
+        FailureSpaceDimension("revision_freshness", ("FRESH", "STALE")),
+    )
+    report = FailureSpaceCoverageReport(one_wise=(), pairwise=generate_pairwise(dims), dimension_ids=tuple(d.dimension_id for d in dims))
+    check_standing_gate_d(model, G2_09_REQUIRED_STATE_MODEL_FIELD_IDS, report, dims)
+
+
 def test_g2_09_standing_gate_d_fails_on_missing_state_model_field() -> None:
-    model = StateModel(fields=()).extend(_g2_09_state_model_fields())
+    model = build_g2_09_base_state_model()
     dims = (
         FailureSpaceDimension("epoch_freshness", ("FRESH", "STALE")),
         FailureSpaceDimension("revision_freshness", ("FRESH", "STALE")),
@@ -366,7 +415,7 @@ def test_g2_09_standing_gate_d_fails_on_missing_state_model_field() -> None:
 
 
 def test_g2_09_standing_gate_d_fails_on_empty_pairwise_report() -> None:
-    model = StateModel(fields=()).extend(_g2_09_state_model_fields())
+    model = build_g2_09_base_state_model()
     dims = (FailureSpaceDimension("a", ("A", "B")), FailureSpaceDimension("b", ("C", "D")))
     empty_report = FailureSpaceCoverageReport(one_wise=(), pairwise=(), dimension_ids=())
     with pytest.raises(StateModelError, match="STANDING_GATE_D_FAILURE"):
@@ -376,7 +425,7 @@ def test_g2_09_standing_gate_d_fails_on_empty_pairwise_report() -> None:
 def test_g2_09_standing_gate_d_fails_when_pairwise_report_does_not_actually_cover_dimensions() -> None:
     """A report built from unrelated scenarios must not satisfy the gate
     merely because it is non-empty."""
-    model = StateModel(fields=()).extend(_g2_09_state_model_fields())
+    model = build_g2_09_base_state_model()
     dims = (
         FailureSpaceDimension("epoch_freshness", ("FRESH", "STALE", "FORWARD_DATED")),
         FailureSpaceDimension("revision_freshness", ("FRESH", "STALE")),
@@ -388,3 +437,16 @@ def test_g2_09_standing_gate_d_fails_when_pairwise_report_does_not_actually_cove
     )
     with pytest.raises(StateModelError, match="STANDING_GATE_D_FAILURE"):
         check_standing_gate_d(model, frozenset({"campaign_id"}), incomplete_report, dims)
+
+
+# ============================================================================
+# Trust Table binding (round-1 review finding: identity_generation had no
+# Trust Table row; the Rust side now carries one -- rust/identity_generation
+# -- and these two fixtures are its bound negative fixtures)
+# ============================================================================
+
+
+def test_g2_09_mutation_fixtures_bind_the_identity_generation_trust_table_row() -> None:
+    suite = build_initial_mutation_suite()
+    uncovered = suite.trust_table_coverage(frozenset({"identity_generation"}))
+    assert uncovered == frozenset()
