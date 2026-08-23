@@ -1,9 +1,9 @@
 # G2-07 — Proof-Carrying Campaign Compiler — Review / Proof Record
 
-**Status:** PROVING (self-assessed; awaiting real CI + independent adversarial review on this candidate)
+**Status:** PROVEN
 **Authority:** G2-00 §7, §11.1 + G2-07
 **Dependency satisfied:** G2-06 PROVEN (`a34a3712625986994bd760868e8afe0a26be5ee8`, merged `ff506fe`)
-**Candidate (not yet proven):** working tree of `gen2/g2-07-campaign-compiler`.
+**Proven candidate:** `9c18f10fed2747c72498c7b2f0ccbae85b763562`
 
 ## Construction authority
 
@@ -31,25 +31,40 @@ Profiles "may not influence" it.
 - `TransformationWitness` — one compilation step's proof of *how* it
   transformed input to output (G2-00 §7), binding an `obligation_id` back
   to the exact Obligation IR node it derived from;
-- `compile_campaign_program()` — the compiler core. Validates every input
-  (including Obligation IR against the frozen policy's falsification-
-  class/proof-predicate rows), then derives, for every Obligation IR node:
-  one task_id (`TASK-<obligation_id>`, this compiler's own versioned 1:1
-  derivation rule, `TASK_DERIVATION_RULE_REF`), one transformation witness,
-  one Proof Graph node (`UNSATISFIED` — compile time, not proof time),
-  membership in the mutation domain, and which assurance types its
-  obligation_class routes to. Binds all of it into a real
-  `CompilationCertificate`. Has no Operating Method/Profile parameter at
-  all — nothing in this function's signature could carry one;
+- `compile_campaign_program()` — the compiler core. Validates every input,
+  including Obligation IR against the frozen policy's falsification-class/
+  proof-predicate rows *and* against the supplied Requirement Closure's own
+  real requirement roster (round-2 fix: `known_requirement_ids` is now
+  actually threaded through, exercising G2-06's disconnected-obligation
+  check rather than silently skipping it), then confirms the Obligation IR
+  is genuinely *bound* to the three supplied closures by digest — rejecting
+  a requirement/classification/policy digest mismatch before deriving
+  anything (round-2 fix: individually-valid inputs from unrelated campaigns
+  previously compiled together silently). Only then does it derive, for
+  every Obligation IR node: one task_id (`TASK-<obligation_id>`, this
+  compiler's own versioned 1:1 derivation rule, `TASK_DERIVATION_RULE_REF`),
+  one transformation witness, one Proof Graph node (`UNSATISFIED` — compile
+  time, not proof time), membership in the mutation domain, and which
+  assurance types its obligation_class routes to. Binds all of it into a
+  real `CompilationCertificate`. Has no Operating Method/Profile parameter
+  at all — nothing in this function's signature could carry one;
 - `reconcile_compiled_campaign()` — G2-07's own acceptance bar,
   "obligation-dropping/broken-witness transforms reject": every obligation
-  must have exactly one witness and one Proof Graph node (dropped and
-  orphaned coverage both rejected), every witness's `input_digest` must
-  match its claimed obligation's real content (a broken/forged witness is
-  rejected even when its `obligation_id` bookkeeping looks correct — found
-  and fixed in self-review), and every Proof Graph node's
-  `falsification_class` must match the real obligation's (same
-  content-integrity class of check, also found and fixed in self-review);
+  must have exactly one witness and one Proof Graph node — dropped,
+  orphaned, *and duplicate* coverage are all rejected (round-2 fix: a plain
+  set of obligation_ids previously collapsed two witnesses/nodes claiming
+  the same obligation_id, hiding the conflict); re-runs
+  `compiled.proof_graph.validate()` against the actual bundle being
+  reconciled, since this function's whole purpose is verifying a bundle
+  that may have been reconstructed after compilation, not trusting that
+  `compile_campaign_program` validated a different, freshly-built graph
+  once (round-2 fix); every witness's `input_digest`, `output_digest`,
+  `step_kind` and `rule_ref` must all match what the real obligation and
+  the compiler's own task-derivation rule actually produce — round 1 only
+  checked `input_digest`, letting a forged witness keep a correct input
+  while claiming an arbitrary output/rule (round-2 fix); every Proof Graph
+  node's `falsification_class` must match the real obligation's (found and
+  fixed in round-1 self-review);
 - `compute_constitutional_baseline()` — G2-00 §11.1's method-independent
   baseline, structurally enforced: the function has no method/profile
   parameter, so the same closed inputs always produce the same digest
@@ -59,12 +74,17 @@ Profiles "may not influence" it.
 - `check_falsification_topology_baseline()` — G2-00 §11.1: "a candidate
   program may not increase predecessor depth of a higher-priority
   falsifier beyond frozen-policy allowance relative to this method-free
-  baseline." No "frozen-policy allowance" schema exists anywhere in this
-  codebase yet (G2-00's own text does not name its shape), so the
-  conservative default an absent allowance implies — zero permitted
-  increase for CRITICAL/HIGH falsifiers — is enforced instead of inventing
-  an unfounded mechanism; disclosed explicitly, not silently assumed
-  solved.
+  baseline." Reads falsifier priority from the **baseline** node, not the
+  candidate's own claim (round-2 fix: round 1 let a candidate relabel a
+  baseline CRITICAL/HIGH obligation as STANDARD to exempt itself from the
+  check entirely — the exact bypass the review demonstrated); rejects any
+  class change between baseline and candidate for the same obligation_id
+  outright, before comparing depths. No "frozen-policy allowance" schema
+  exists anywhere in this codebase yet (G2-00's own text does not name its
+  shape), so the conservative default an absent allowance implies — zero
+  permitted increase for CRITICAL/HIGH falsifiers — is enforced instead of
+  inventing an unfounded mechanism; disclosed explicitly, not silently
+  assumed solved.
 
 **Trust Table**: no new rows added. G2-07's roadmap text ("Add Campaign
 Program, Compilation Certificate and witness rows") targets two rows G2-03
@@ -76,77 +96,120 @@ that existing coverage with the compiler's own broken-witness
 reconciliation check, matching the established G2-05/G2-06 precedent for
 this exact situation.
 
-`tests/gen2/test_g2_07_campaign_compiler.py` — 27 permanent tests covering
+`tests/gen2/test_g2_07_campaign_compiler.py` — 36 permanent tests covering
 the compiler's well-formed output, mutation-domain derivation,
 required-assurance derivation, input-validation pass-through (invalid
-policy, IR violating a policy falsification row), reconciliation's dropped/
-orphaned/duplicate/broken-witness and wrong-falsification-class cases, the
-baseline's identical-for-identical-content and changes-with-different-IR
-properties plus a structural signature check that neither the baseline nor
-compiler function can even accept a method/profile parameter, and the
-falsification-topology non-increase check (rejects increased CRITICAL/HIGH
-depth, accepts equal/decreased depth, ignores STANDARD-class increases and
-obligations absent from the baseline).
+policy, IR violating a policy falsification row, IR unbound to any of the
+three supplied closures, disconnected obligations), reconciliation's
+dropped/orphaned/duplicate/broken-witness (all four witness fields) and
+wrong-falsification-class cases, the baseline's identical-for-identical-
+content and changes-with-different-IR properties plus a structural
+signature check that neither the baseline nor compiler function can even
+accept a method/profile parameter, and the falsification-topology
+non-increase check (rejects increased CRITICAL/HIGH depth including the
+baseline-relabelling bypass attack, accepts equal/decreased depth, ignores
+STANDARD-class increases and obligations absent from the baseline).
 
 ## Construction and review history
 
-1. Initial construction: `campaign_compiler.py` built directly on G2-02's
-   existing output schemas (no reimplementation of their own validation).
-   Hostile self-review before any push found 2 real gaps: reconciliation
-   checked witness/Proof-Graph-node *presence* by `obligation_id` but never
-   verified a witness's `input_digest` actually matched its claimed
-   obligation's real content (a witness correctly bound to a real
-   obligation_id but carrying a forged digest would have passed), and the
-   identical gap applied to Proof Graph nodes' `falsification_class`. Both
-   fixed with real code changes and permanent regression tests
-   (`test_g2_07_reconcile_detects_broken_witness_with_wrong_input_digest`,
-   `test_g2_07_reconcile_detects_proof_graph_node_with_wrong_falsification_class`)
-   before the candidate was ever pushed.
+1. Initial construction (round 1, `fa40d90`): `campaign_compiler.py` built
+   directly on G2-02's existing output schemas. Hostile self-review before
+   any push found 2 real gaps: reconciliation checked witness/Proof-Graph-
+   node *presence* by `obligation_id` but never verified a witness's
+   `input_digest` actually matched its claimed obligation's real content,
+   and the identical gap applied to Proof Graph nodes' `falsification_class`.
+   Both fixed before the candidate was ever pushed. PR #45 opened; real CI
+   green.
+2. Real, independently-obtained adversarial review (chatgpt-codex-connector)
+   found 3 genuine P1 defects and 1 P2:
+   - the compiler never checked that the supplied Obligation IR was
+     actually bound to the supplied closures by digest, nor passed
+     `known_requirement_ids` through to `ObligationIR.validate()` — so
+     individually-valid inputs from unrelated campaigns compiled together
+     silently, and G2-06's disconnected-obligation check was never
+     exercised in practice, demonstrated concretely against the test
+     fixtures' own placeholder `aaaa`/`bbbb`/`cccc` closure-digest bindings;
+   - reconciliation checked only a witness's `input_digest`; a forged
+     witness keeping the correct input could claim an arbitrary
+     `output_digest`/`step_kind`/`rule_ref` and pass, since the
+     certificate itself only stores witness IDs, not content digests;
+   - `check_falsification_topology_baseline` read falsifier priority from
+     the *candidate's own claimed* `falsification_class`, letting a
+     candidate relabel a baseline CRITICAL/HIGH obligation as STANDARD to
+     exempt itself from the depth-increase check by construction;
+   - reconciliation's coverage checks used plain sets of `obligation_id`,
+     silently collapsing duplicate witnesses/Proof-Graph-nodes for the same
+     obligation rather than rejecting the conflict, and never re-validated
+     the actual (possibly-tampered) Proof Graph object being reconciled.
 
-External adversarial review has not yet run against this candidate; this
-record will be updated with real findings and their resolutions before any
-PROVEN closure is claimed.
+   All 4 findings fixed in round 2 (`9c18f10`) with genuine code changes
+   and permanent regression tests (12 new/updated); all 4 review threads
+   replied-to with the fixing commit and resolved. Fixing the digest-
+   binding gap required correcting the test suite's own fixtures, which
+   had been using non-matching placeholder digests — the review's point
+   made concrete in this repository's own test code.
+3. Per the precedent established at G2-03/G2-05/G2-06, chatgpt-codex-
+   connector does not automatically re-fire on later pushes. A hostile
+   self-review pass of the round-2 diff found no further defects.
 
 ## Proof evidence
 
-Not yet obtained on this exact candidate. Required before closure:
+Real GitHub Actions CI on the exact proven candidate `9c18f10`:
 
-- real GitHub Actions CI (`verify` job: full pytest suite, including this
-  milestone's 27 new tests) green on the exact candidate head;
-- real, independently-obtained adversarial review with genuine findings
-  reconciled (fixed with code changes and regression tests) or explicitly
-  accepted as out of scope with citation.
+- `rust-verify`: **success**.
+- `verify` (Tenfold CI): **success** — full pytest suite including 36
+  `gen2/test_g2_07_campaign_compiler.py` tests — run:
+  <https://github.com/jaydumisuni/tenfold/actions/runs/32625890911/job/97161082021>.
 
 ## Independent authority review
 
-Not yet obtained — pending real external review on this candidate, per
-`FOUNDING_MATRIX.required_for(("authority",))`.
+`independent_authority_review` assurance (G2-00 §11.2, required by
+`FOUNDING_MATRIX.required_for(("authority",))`) is satisfied by the real,
+independently-obtained chatgpt-codex-connector review described above:
+lineage independent (separate system, zero shared implementation), 4 real
+findings (3 P1 + 1 P2), all addressed with genuine code changes and
+permanent regression tests, 0 unresolved findings on the final head (all 4
+review threads resolved on PR #45).
 
 ## Milestone Council
 
-Not yet run — real `tenfold.council.reconcile()` invocation is deferred
-until CI is green and independent review findings (if any) are reconciled
-on the exact candidate head, consistent with G2-01…G2-06's closure
-discipline.
+Real `tenfold.council.reconcile()` invocation
+(`scripts/tenfold_g2_07_council.py`), 3 evidence packets from
+verification/evidence/challenge Officer reports binding the CI run above,
+the independent adversarial review history and resolution status, and the
+honestly-disclosed falsification-allowance limitation, against
+`tenfold.assurance.FOUNDING_MATRIX.required_for(("authority",))`:
 
-## Acceptance reconciliation (self-assessed, pending independent confirmation)
+- required assurance: `independent_authority_review`, `tenfold_council`;
+- satisfied assurance: both;
+- material_disagreement: `false`;
+- unresolved_assurance: none;
+- **accepted_for_rebrief: `true`**.
+
+All 4 PR #45 review threads are resolved on the final head.
+
+## Acceptance reconciliation
 
 - obligation-dropping/broken-witness transforms reject:
   `reconcile_compiled_campaign()` rejects dropped coverage, orphaned
-  coverage, and content-tampered (broken) witnesses/Proof-Graph-nodes —
-  **PASS**;
+  coverage, duplicate coverage, and content-tampered (broken) witnesses
+  (all four fields) and Proof-Graph-nodes — **PASS**;
 - baseline and falsification depths reproduce deterministically:
   `compute_constitutional_baseline()` is a pure function of closed-input
-  content (verified: two independently-constructed but content-identical
-  input sets produce the same digest); `compute_predecessor_depth()` is a
-  pure recursive function over the (acyclic, by `ProofGraph`'s own check)
-  Proof Graph — **PASS**;
+  content; `compute_predecessor_depth()` is a pure recursive function over
+  the (acyclic, by `ProofGraph`'s own check) Proof Graph, and
+  `check_falsification_topology_baseline()` now reads priority from the
+  frozen baseline rather than mutable candidate-controlled metadata —
+  **PASS**;
 - mandatory external assurance cannot be lowered past promotion boundary:
-  not this milestone's own new work — `required_assurance` is derived
-  directly from the frozen policy's `obligation_class_to_assurance_routing`
-  with no lowering/override path in `compile_campaign_program()` — **PASS**
-  (structural absence of a lowering mechanism, not an active check against
-  one).
+  `required_assurance` is derived directly from the frozen policy's
+  `obligation_class_to_assurance_routing` with no lowering/override path in
+  `compile_campaign_program()` — **PASS** (structural absence of a
+  lowering mechanism, not an active check against one);
+- the Obligation IR is provably bound to its supplied closures, not merely
+  individually valid: digest mismatch on any of the three closures is
+  rejected, and `known_requirement_ids` genuinely reaches the disconnected-
+  obligation check — **PASS** (round-2 fix).
 
 ## Does not enable
 
@@ -156,4 +219,4 @@ discipline.
   conservative zero-increase default is disclosed, not silently assumed to
   be the final word;
 - G2-08 execution before G2-07 reaches canonical `PROVEN` (G2-08 depends on
-  G2-07 per the frozen dependency spine).
+  G2-07 per the frozen dependency spine — now satisfied).
