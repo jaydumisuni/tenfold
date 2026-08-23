@@ -29,8 +29,10 @@ from tenfold.gen2.chronicle_bridge import (
     append_entry,
     check_checkpoint,
     check_tail_loss,
+    dump_as_chronicle_events,
     open_chronicle,
 )
+from tenfold.gen2.constitutional import ChronicleEvent
 from tenfold.gen2.mutation_fixtures import build_initial_mutation_suite
 from tenfold.gen2.state_model import (
     FailureSpaceDimension,
@@ -236,14 +238,112 @@ def test_g2_10_torn_write_scenario_is_a_real_tail_loss_when_evidenced() -> None:
 # ============================================================================
 
 
-def test_g2_10_checkpoint_accepts_when_sequence_covers_local_head() -> None:
-    check_checkpoint(checkpoint_sequence=10, checkpoint_generation=1, head_digest="d", local_head_sequence=10)
-    check_checkpoint(checkpoint_sequence=10, checkpoint_generation=1, head_digest="d", local_head_sequence=5)
+def test_g2_10_checkpoint_accepts_exact_match_at_local_head() -> None:
+    check_checkpoint(
+        checkpoint_sequence=10, checkpoint_generation=1, head_digest="d",
+        local_head_generation=1, local_head_sequence=10, local_head_digest="d",
+    )
+
+
+def test_g2_10_checkpoint_accepts_when_ahead_of_local_head() -> None:
+    check_checkpoint(
+        checkpoint_sequence=10, checkpoint_generation=1, head_digest="d",
+        local_head_generation=1, local_head_sequence=5, local_head_digest="unrelated-at-seq-5",
+    )
 
 
 def test_g2_10_checkpoint_rejects_when_behind_local_head() -> None:
     with pytest.raises(ChronicleCliError, match="checkpoint violation"):
-        check_checkpoint(checkpoint_sequence=5, checkpoint_generation=1, head_digest="d", local_head_sequence=10)
+        check_checkpoint(
+            checkpoint_sequence=5, checkpoint_generation=1, head_digest="d",
+            local_head_generation=1, local_head_sequence=10, local_head_digest="d",
+        )
+
+
+def test_g2_10_checkpoint_rejects_wrong_generation_even_with_matching_sequence() -> None:
+    """Round-1 review finding: a checkpoint whose sequence covers the
+    local head but names a different generation must still be rejected --
+    G2-00 SS8.4's full anchor is generation, sequence *and* head digest."""
+    with pytest.raises(ChronicleCliError, match="checkpoint violation"):
+        check_checkpoint(
+            checkpoint_sequence=10, checkpoint_generation=2, head_digest="d",
+            local_head_generation=1, local_head_sequence=10, local_head_digest="d",
+        )
+
+
+def test_g2_10_checkpoint_rejects_forged_digest_at_matching_sequence() -> None:
+    with pytest.raises(ChronicleCliError, match="checkpoint violation"):
+        check_checkpoint(
+            checkpoint_sequence=10, checkpoint_generation=1, head_digest="forged",
+            local_head_generation=1, local_head_sequence=10, local_head_digest="real",
+        )
+
+
+# ============================================================================
+# Real Chronicle-writer-lease fencing / ChronicleWriterCount = 1 under
+# concurrent handles.
+# ============================================================================
+
+
+def test_g2_10_open_after_transfer_reflects_the_new_writer() -> None:
+    """Each CLI invocation opens fresh from the real lease file, so a
+    transfer performed by one process invocation is immediately visible to
+    the next -- the concrete, black-box-observable half of the round-1
+    concurrency fix (the in-process stale-handle/race protections are
+    exercised directly by rust/chronicle's own unit tests)."""
+    path = _fresh_log_path("transfer_visible")
+    open_chronicle(path, "w1", 1)
+    append_entry(path, "w1", 1, "w1", 1, "EVENT_A", "d1")
+    open_chronicle(path, "w2", 2, transfer=True)
+    # w1 is no longer the live writer; a fresh open() as w1 must fail.
+    with pytest.raises(ChronicleCliError, match="ChronicleWriterCount=1"):
+        open_chronicle(path, "w1", 1)
+
+
+# ============================================================================
+# Interoperability with the frozen ChronicleEvent schema (G2-02,
+# `tenfold.gen2.constitutional.ChronicleEvent`).
+# ============================================================================
+
+
+def test_g2_10_converted_entries_validate_against_the_real_frozen_chronicle_event_schema() -> None:
+    """Round-1 review finding: rust/chronicle's internal ChronicleEntry
+    record is not wire-identical to the already-frozen Python
+    ChronicleEvent schema. This proves the explicit adapter
+    (`ChronicleEntry::to_chronicle_event_json`, exposed via the CLI's
+    `dump-as-chronicle-events`) produces output the *real* frozen Python
+    schema genuinely accepts -- not merely structurally similar JSON."""
+    path = _fresh_log_path("interop")
+    open_chronicle(path, "w1", 1)
+    append_entry(path, "w1", 1, "w1", 1, "EVENT_A", "d1")
+    append_entry(path, "w1", 1, "w1", 1, "EVENT_B", "d2")
+    append_entry(path, "w1", 1, "w1", 1, "EVENT_C", "d3")
+
+    converted = dump_as_chronicle_events(path, "EV", "campaign-1")
+    assert len(converted) == 3
+
+    events = [ChronicleEvent.from_dict(raw) for raw in converted]
+    for event in events:
+        event.validate()
+
+    # Genesis: engine sequence 1 maps to schema sequence 0 with no
+    # previous_event_digest.
+    assert events[0].sequence == 0
+    assert events[0].previous_event_digest is None
+    # The chain is genuinely walkable via previous_event_digest.
+    assert events[1].sequence == 1
+    assert events[1].previous_event_digest == events[0].payload_digest
+    assert events[2].sequence == 2
+    assert events[2].previous_event_digest == events[1].payload_digest
+
+
+def test_g2_10_converted_entries_carry_the_supplied_campaign_and_event_ids() -> None:
+    path = _fresh_log_path("interop_ids")
+    open_chronicle(path, "w1", 1)
+    append_entry(path, "w1", 1, "w1", 1, "EVENT_A", "d1")
+    converted = dump_as_chronicle_events(path, "EV", "my-campaign")
+    assert converted[0]["campaign_id"] == "my-campaign"
+    assert converted[0]["event_id"] == "EV-1"
 
 
 # ============================================================================

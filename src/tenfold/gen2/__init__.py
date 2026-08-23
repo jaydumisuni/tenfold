@@ -150,6 +150,7 @@ from .chronicle_bridge import (
     append_entry,
     check_checkpoint,
     check_tail_loss,
+    dump_as_chronicle_events,
     open_chronicle,
 )
 
@@ -282,5 +283,6 @@ __all__ = [
     "append_entry",
     "check_checkpoint",
     "check_tail_loss",
+    "dump_as_chronicle_events",
     "open_chronicle",
 ]

@@ -56,10 +56,12 @@ pub enum ChronicleError {
     CorruptEntry { line_number: u64, reason: String },
     DurabilityViolation { reason: String },
     TailLoss { recovered_last_sequence: u64, externally_evidenced_sequence: u64 },
-    CheckpointViolation { checkpoint_sequence: u64, local_head_sequence: u64 },
+    CheckpointViolation { reason: String },
     SnapshotMismatch { reason: String },
     MalformedOperationId { text: String },
     TrustTableRejection(String),
+    LeaseNoLongerBound { current_writer_id: String, current_generation: u64 },
+    AppendInProgress,
 }
 
 impl fmt::Display for ChronicleError {
@@ -94,13 +96,18 @@ impl fmt::Display for ChronicleError {
                 "CHRONICLE_TAIL_LOSS: external evidence proves sequence {externally_evidenced_sequence} occurred \
                  but recovered Chronicle ends at sequence {recovered_last_sequence}"
             ),
-            ChronicleError::CheckpointViolation { checkpoint_sequence, local_head_sequence } => write!(
-                f,
-                "checkpoint violation: checkpoint.sequence {checkpoint_sequence} < local head sequence {local_head_sequence}"
-            ),
+            ChronicleError::CheckpointViolation { reason } => write!(f, "checkpoint violation: {reason}"),
             ChronicleError::SnapshotMismatch { reason } => write!(f, "snapshot mismatch: {reason}"),
             ChronicleError::MalformedOperationId { text } => write!(f, "malformed operation id: {text:?}"),
             ChronicleError::TrustTableRejection(msg) => write!(f, "Trust Table rejection: {msg}"),
+            ChronicleError::LeaseNoLongerBound { current_writer_id, current_generation } => write!(
+                f,
+                "this handle's writer lease is no longer bound: the log is now leased to writer \
+                 {current_writer_id:?} generation {current_generation}"
+            ),
+            ChronicleError::AppendInProgress => {
+                write!(f, "another append is already in progress on this Chronicle log")
+            }
         }
     }
 }
@@ -192,6 +199,43 @@ impl ChronicleEntry {
 }
 
 // ============================================================================
+// Adapter to the already-frozen Python `ChronicleEvent` schema (G2-02,
+// `tenfold.gen2.constitutional.ChronicleEvent`).
+//
+// Round-1 review finding: `ChronicleEntry` (this engine's own internal,
+// durable record shape) is deliberately NOT wire-identical to the frozen
+// schema -- different field set (`writer_id`/`writer_generation`/
+// `entry_digest` have no schema equivalent; `event_id`/`campaign_id` are
+// schema fields this engine does not itself track, since a log is bound
+// to a writer identity, not a campaign_id), and this engine's sequence
+// starts at 1 while the frozen schema's genesis is sequence 0. Rather
+// than either silently treat the two shapes as interchangeable or
+// redesign this engine's durable format around a different milestone's
+// schema, this is an explicit, tested conversion.
+//
+// `payload_digest` in the converted output is populated from this
+// engine's own `entry_digest` chain (not the caller-supplied semantic
+// `payload_digest` field) so the converted chain is genuinely walkable
+// via the schema's own `previous_event_digest` field -- disclosed
+// explicitly as this engine's own SHA-256 digest scheme, not a
+// re-derivation of Python's `tenfold.contracts.canonical_digest`; nothing
+// in the frozen schema mandates one specific digest algorithm.
+// ============================================================================
+
+impl ChronicleEntry {
+    pub fn to_chronicle_event_json(&self, event_id: &str, campaign_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "event_id": event_id,
+            "campaign_id": campaign_id,
+            "sequence": self.sequence - 1,
+            "event_type": self.event_type,
+            "payload_digest": self.entry_digest,
+            "previous_event_digest": self.previous_entry_digest,
+        })
+    }
+}
+
+// ============================================================================
 // Sequence-bearing operation identity (G2-00 §8.3).
 //
 // §8.3 gives one example "conceptually": "TF:G17:S000183:C42:OP91" with no
@@ -246,11 +290,47 @@ pub struct ExternalHeadCheckpoint {
     pub head_digest: String,
 }
 
-pub fn verify_checkpoint_precondition(checkpoint: &ExternalHeadCheckpoint, local_head_sequence: u64) -> Result<(), ChronicleError> {
+/// Round-1 review finding: checking only `checkpoint.sequence >=
+/// local_head_sequence` let a checkpoint from the *wrong generation*, or
+/// carrying an arbitrary/wrong `head_digest`, satisfy the precondition as
+/// long as its sequence number happened to be large enough -- defeating
+/// the whole point of an external anchor (G2-00 §8.4: "Chronicle
+/// externally anchors generation, sequence and head digest"). This now
+/// checks all three: `generation` must match exactly (a checkpoint for a
+/// different Chronicle generation never anchors this one, regardless of
+/// its sequence number); `sequence` must cover the local head (the
+/// original inequality); and when the checkpoint claims exactly the local
+/// head's own sequence, its `head_digest` must match the local head
+/// digest exactly (a checkpoint that claims the local point but carries a
+/// wrong digest is a forgery, not a valid anchor). A checkpoint ahead of
+/// the local head cannot have its digest verified directly (that point
+/// does not exist locally yet) and is accepted on generation+sequence
+/// alone, per the original inequality's intent.
+pub fn verify_checkpoint_precondition(
+    checkpoint: &ExternalHeadCheckpoint,
+    local_head_generation: u64,
+    local_head_sequence: u64,
+    local_head_digest: Option<&str>,
+) -> Result<(), ChronicleError> {
+    if checkpoint.generation != local_head_generation {
+        return Err(ChronicleError::CheckpointViolation {
+            reason: format!(
+                "checkpoint.generation {} does not match local head generation {local_head_generation}",
+                checkpoint.generation
+            ),
+        });
+    }
     if checkpoint.sequence < local_head_sequence {
         return Err(ChronicleError::CheckpointViolation {
-            checkpoint_sequence: checkpoint.sequence,
-            local_head_sequence,
+            reason: format!("checkpoint.sequence {} < local head sequence {local_head_sequence}", checkpoint.sequence),
+        });
+    }
+    if checkpoint.sequence == local_head_sequence && Some(checkpoint.head_digest.as_str()) != local_head_digest {
+        return Err(ChronicleError::CheckpointViolation {
+            reason: format!(
+                "checkpoint.head_digest {:?} does not match local head digest {local_head_digest:?} at the claimed sequence",
+                checkpoint.head_digest
+            ),
         });
     }
     Ok(())
@@ -272,7 +352,33 @@ pub struct ChronicleSnapshot {
 /// Independently re-scans the real log file (a fresh `recover_log` pass,
 /// not a reuse of any in-memory state) and checks the result matches the
 /// snapshot exactly. A snapshot is *verified*, not merely *trusted*.
+///
+/// Round-1 review finding: this originally checked only entry_count/
+/// sequence/head_digest, never `snapshot.writer_id`/`writer_generation` --
+/// a snapshot with a stale or tampered writer identity but otherwise
+/// correct content passed. The current writer lease file (the
+/// authoritative "who currently owns this log" record, not merely the
+/// last entry's own writer fields, which could differ from the current
+/// lease if a transfer happened with zero appends since) is now checked
+/// against the snapshot's claimed identity too.
 pub fn verify_snapshot_against_log(snapshot: &ChronicleSnapshot, log_path: &Path) -> Result<(), ChronicleError> {
+    let lease = read_lease(log_path)?;
+    match &lease {
+        Some(l) if l.writer_id == snapshot.writer_id && l.writer_generation == snapshot.writer_generation => {}
+        Some(l) => {
+            return Err(ChronicleError::SnapshotMismatch {
+                reason: format!(
+                    "writer {:?} generation {} does not match the current lease's writer {:?} generation {}",
+                    snapshot.writer_id, snapshot.writer_generation, l.writer_id, l.writer_generation
+                ),
+            })
+        }
+        None => {
+            return Err(ChronicleError::SnapshotMismatch {
+                reason: "log has no writer lease on record; a snapshot cannot claim a writer identity for it".into(),
+            })
+        }
+    }
     let recovered = recover_log(log_path)?;
     if recovered.entries.len() as u64 != snapshot.entry_count {
         return Err(ChronicleError::SnapshotMismatch {
@@ -307,6 +413,14 @@ struct RecoveredLog {
     /// True if a torn (incomplete-but-non-corrupt-looking) trailing line
     /// was discarded during recovery.
     tail_was_torn: bool,
+}
+
+/// Public read-only recovery: the same real scan `ChronicleEngine::open`
+/// performs internally, exposed for callers (the CLI bridge's
+/// `dump-as-chronicle-events` command) that need the actual entries
+/// rather than only the aggregate open/recovery diagnostics.
+pub fn recover_entries(path: &Path) -> Result<Vec<ChronicleEntry>, ChronicleError> {
+    Ok(recover_log(path)?.entries)
 }
 
 fn recover_log(path: &Path) -> Result<RecoveredLog, ChronicleError> {
@@ -428,6 +542,51 @@ fn lease_path(log_path: &Path) -> PathBuf {
     PathBuf::from(p)
 }
 
+fn read_lease(log_path: &Path) -> Result<Option<WriterLease>, ChronicleError> {
+    let lease_file = lease_path(log_path);
+    if !lease_file.exists() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(&lease_file).map_err(io_err)?;
+    let lease: WriterLease =
+        serde_json::from_str(&raw).map_err(|e| ChronicleError::Io(format!("corrupt lease file: {e}")))?;
+    Ok(Some(lease))
+}
+
+fn append_lock_path(log_path: &Path) -> PathBuf {
+    let mut p = log_path.as_os_str().to_owned();
+    p.push(".append-lock");
+    PathBuf::from(p)
+}
+
+/// A real, exclusive, dependency-free mutual-exclusion primitive for the
+/// append critical section: atomic file creation (`create_new`) fails if
+/// the lock file already exists, on every platform Rust std targets, with
+/// no OS-specific flock binding required. Held only for the duration of
+/// one `append` call; released (the lock file removed) on drop, including
+/// on an early `?` return, so a rejected append never leaves a stale lock
+/// behind.
+struct AppendLockGuard {
+    lock_path: PathBuf,
+}
+
+impl AppendLockGuard {
+    fn acquire(log_path: &Path) -> Result<Self, ChronicleError> {
+        let lock_path = append_lock_path(log_path);
+        match OpenOptions::new().write(true).create_new(true).open(&lock_path) {
+            Ok(_) => Ok(Self { lock_path }),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(ChronicleError::AppendInProgress),
+            Err(e) => Err(io_err(e)),
+        }
+    }
+}
+
+impl Drop for AppendLockGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.lock_path);
+    }
+}
+
 #[derive(Debug)]
 pub struct ChronicleEngine {
     log_path: PathBuf,
@@ -455,10 +614,7 @@ impl ChronicleEngine {
         allow_transfer: bool,
     ) -> Result<OpenedChronicle, ChronicleError> {
         let lease_file = lease_path(log_path);
-        if lease_file.exists() {
-            let raw = std::fs::read_to_string(&lease_file).map_err(io_err)?;
-            let existing: WriterLease = serde_json::from_str(&raw)
-                .map_err(|e| ChronicleError::Io(format!("corrupt lease file: {e}")))?;
+        if let Some(existing) = read_lease(log_path)? {
             let identity_matches = existing.writer_id == writer_id && existing.writer_generation == writer_generation;
             if !identity_matches && !allow_transfer {
                 return Err(ChronicleError::WriterAlreadyBound {
@@ -530,6 +686,22 @@ impl ChronicleEngine {
         Self::open(log_path, writer_id, writer_generation)
     }
 
+    /// Admission-gated `open_with_transfer` (round-1 review finding: the
+    /// original integration path -- the CLI, and hence every Python-side
+    /// mutation fixture and test -- called the ungated `open`/
+    /// `open_with_transfer` directly, so the Trust Table row was never
+    /// actually an effective admission gate for real usage. This is the
+    /// transfer counterpart to `admit_and_open`.
+    pub fn admit_and_open_with_transfer(
+        table: &trust_table::TrustTable,
+        log_path: &Path,
+        writer_id: &str,
+        writer_generation: u64,
+    ) -> Result<OpenedChronicle, ChronicleError> {
+        table.admit("chronicle").map_err(|e| ChronicleError::TrustTableRejection(e.to_string()))?;
+        Self::open_with_transfer(log_path, writer_id, writer_generation)
+    }
+
     /// Opens (creating if absent) the Chronicle log at `log_path`, bound to
     /// `writer_id`/`writer_generation`. Fails closed with
     /// `WriterAlreadyBound` if the log's lease already names a *different*
@@ -572,6 +744,19 @@ impl ChronicleEngine {
     /// this engine's bound identity *before* anything is written (G2-00
     /// §8.1: "Every append checks expected writer identity, Chronicle
     /// authority generation and monotonic sequence").
+    ///
+    /// Round-1 review finding: checking only this handle's *cached*
+    /// `writer_id`/`writer_generation` let a stale handle keep appending
+    /// after a different handle called `open_with_transfer` on the same
+    /// log, and let two same-identity handles race to append duplicate
+    /// sequence numbers over the same head. Every append now (a) acquires
+    /// a real exclusive `AppendLockGuard` for the critical section, (b)
+    /// re-reads the lease file fresh and rejects if it no longer names
+    /// this handle's exact identity (`LeaseNoLongerBound`), and (c)
+    /// re-derives `sequence`/`previous_entry_digest` from a fresh
+    /// `recover_log` scan rather than trusting this handle's cached
+    /// fields, so a concurrent append by another handle can never be
+    /// silently overwritten or duplicated.
     pub fn append(
         &mut self,
         claimed_writer_id: &str,
@@ -591,6 +776,30 @@ impl ChronicleEngine {
                 claimed: claimed_writer_generation,
             });
         }
+
+        let _lock = AppendLockGuard::acquire(&self.log_path)?;
+
+        match read_lease(&self.log_path)? {
+            Some(current) if current.writer_id == self.writer_id && current.writer_generation == self.writer_generation => {}
+            Some(current) => {
+                return Err(ChronicleError::LeaseNoLongerBound {
+                    current_writer_id: current.writer_id,
+                    current_generation: current.writer_generation,
+                })
+            }
+            None => {
+                return Err(ChronicleError::LeaseNoLongerBound { current_writer_id: String::new(), current_generation: 0 })
+            }
+        }
+
+        // Re-derive the true current state from the file itself, under
+        // the lock, rather than trusting this handle's possibly-stale
+        // cached fields -- this is what makes two same-identity handles
+        // safe to race: whichever appends second sees the first's entry
+        // and correctly continues from it instead of duplicating it.
+        let fresh = recover_log(&self.log_path)?;
+        self.last_sequence = fresh.entries.last().map(|e| e.sequence).unwrap_or(0);
+        self.last_entry_digest = fresh.entries.last().map(|e| e.entry_digest.clone());
 
         let sequence = self.last_sequence + 1;
         let previous_entry_digest = self.last_entry_digest.clone();
@@ -709,6 +918,39 @@ mod tests {
         cleanup(&path);
     }
 
+    // ---- ChronicleEvent schema adapter ----
+
+    #[test]
+    fn genesis_entry_converts_to_schema_sequence_zero_with_no_previous_digest() {
+        let path = temp_log_path("adaptergenesis");
+        cleanup(&path);
+        let OpenedChronicle { mut engine, .. } = ChronicleEngine::open(&path, "w1", 1).unwrap();
+        let entry = engine.append("w1", 1, "A", "d1").unwrap();
+        let converted = entry.to_chronicle_event_json("EV-1", "campaign-1");
+        assert_eq!(converted["sequence"], 0);
+        assert_eq!(converted["previous_event_digest"], serde_json::Value::Null);
+        assert_eq!(converted["event_id"], "EV-1");
+        assert_eq!(converted["campaign_id"], "campaign-1");
+        assert_eq!(converted["event_type"], "A");
+        assert_eq!(converted["payload_digest"], entry.entry_digest);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn non_genesis_entry_converts_with_matching_previous_digest_chain() {
+        let path = temp_log_path("adapterchain");
+        cleanup(&path);
+        let OpenedChronicle { mut engine, .. } = ChronicleEngine::open(&path, "w1", 1).unwrap();
+        let e1 = engine.append("w1", 1, "A", "d1").unwrap();
+        let e2 = engine.append("w1", 1, "B", "d2").unwrap();
+        let c1 = e1.to_chronicle_event_json("EV-1", "campaign-1");
+        let c2 = e2.to_chronicle_event_json("EV-2", "campaign-1");
+        assert_eq!(c1["sequence"], 0);
+        assert_eq!(c2["sequence"], 1);
+        assert_eq!(c2["previous_event_digest"], c1["payload_digest"], "the converted chain must be walkable via previous_event_digest");
+        cleanup(&path);
+    }
+
     // ---- operation id ----
 
     #[test]
@@ -757,16 +999,52 @@ mod tests {
     // ---- external head checkpoint ----
 
     #[test]
-    fn checkpoint_precondition_accepts_when_sequence_covers_local_head() {
+    fn checkpoint_precondition_accepts_exact_match_at_local_head() {
         let checkpoint = ExternalHeadCheckpoint { generation: 1, sequence: 10, head_digest: "d".into() };
-        verify_checkpoint_precondition(&checkpoint, 10).unwrap();
-        verify_checkpoint_precondition(&checkpoint, 5).unwrap();
+        verify_checkpoint_precondition(&checkpoint, 1, 10, Some("d")).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_precondition_accepts_when_ahead_of_local_head() {
+        // A checkpoint ahead of the local head cannot have its digest
+        // verified directly (that point does not exist locally yet).
+        let checkpoint = ExternalHeadCheckpoint { generation: 1, sequence: 10, head_digest: "d".into() };
+        verify_checkpoint_precondition(&checkpoint, 1, 5, Some("unrelated-digest-at-seq-5")).unwrap();
     }
 
     #[test]
     fn checkpoint_precondition_rejects_when_behind_local_head() {
         let checkpoint = ExternalHeadCheckpoint { generation: 1, sequence: 5, head_digest: "d".into() };
-        assert!(verify_checkpoint_precondition(&checkpoint, 10).is_err());
+        let err = verify_checkpoint_precondition(&checkpoint, 1, 10, Some("d")).unwrap_err();
+        assert!(matches!(err, ChronicleError::CheckpointViolation { .. }));
+    }
+
+    #[test]
+    fn checkpoint_precondition_rejects_wrong_generation_even_with_matching_sequence() {
+        // Round-1 review finding's exact scenario: same sequence, wrong
+        // generation, must still be rejected.
+        let checkpoint = ExternalHeadCheckpoint { generation: 2, sequence: 10, head_digest: "d".into() };
+        let err = verify_checkpoint_precondition(&checkpoint, 1, 10, Some("d")).unwrap_err();
+        assert!(matches!(err, ChronicleError::CheckpointViolation { .. }));
+    }
+
+    #[test]
+    fn checkpoint_precondition_rejects_wrong_digest_at_matching_sequence() {
+        // Round-1 review finding's exact scenario: same generation and
+        // sequence, but an arbitrary/wrong digest, must still be rejected.
+        let checkpoint = ExternalHeadCheckpoint { generation: 1, sequence: 10, head_digest: "forged-digest".into() };
+        let err = verify_checkpoint_precondition(&checkpoint, 1, 10, Some("real-digest")).unwrap_err();
+        assert!(matches!(err, ChronicleError::CheckpointViolation { .. }));
+    }
+
+    #[test]
+    fn checkpoint_precondition_rejects_at_matching_sequence_with_no_local_digest() {
+        // A checkpoint claiming to anchor a specific local head must not
+        // be trivially accepted just because the local side has no digest
+        // recorded (an empty Chronicle at sequence 0, for example).
+        let checkpoint = ExternalHeadCheckpoint { generation: 1, sequence: 0, head_digest: "d".into() };
+        let err = verify_checkpoint_precondition(&checkpoint, 1, 0, None).unwrap_err();
+        assert!(matches!(err, ChronicleError::CheckpointViolation { .. }));
     }
 
     // ---- engine: basic append / recovery ----
@@ -871,6 +1149,58 @@ mod tests {
         assert!(engine.append("w1", 1, "B", "d2").is_err());
         // w2 can.
         assert!(engine.append("w2", 2, "B", "d2").is_ok());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn a_stale_handle_cannot_append_after_another_handle_transfers_the_lease() {
+        // Round-1 review finding: a handle only checked its own *cached*
+        // writer_id/writer_generation, never the live lease file, so a
+        // stale handle retained across a transfer could keep appending.
+        let path = temp_log_path("stalehandle");
+        cleanup(&path);
+        let mut stale_handle = ChronicleEngine::open(&path, "w1", 1).unwrap().engine;
+        // A second, independent handle transfers the lease away from w1.
+        ChronicleEngine::open_with_transfer(&path, "w2", 2).unwrap();
+        // The first handle still believes it is bound to w1/1 -- but the
+        // live lease now names w2/2, so its append must be rejected.
+        let err = stale_handle.append("w1", 1, "A", "d1").unwrap_err();
+        assert!(matches!(err, ChronicleError::LeaseNoLongerBound { .. }), "{err:?}");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn two_same_identity_handles_do_not_duplicate_a_sequence_number() {
+        // Round-1 review finding: two handles opened with the *same*
+        // writer identity could each cache last_sequence=0 and both
+        // compute sequence=1 for their next append, corrupting the chain.
+        // append() now re-derives sequence from a fresh log scan under
+        // the append lock, so whichever appends second correctly
+        // continues from the first's real entry instead of duplicating it.
+        let path = temp_log_path("racefree");
+        cleanup(&path);
+        let mut handle_a = ChronicleEngine::open(&path, "w1", 1).unwrap().engine;
+        let mut handle_b = ChronicleEngine::open(&path, "w1", 1).unwrap().engine;
+        let entry_a = handle_a.append("w1", 1, "A", "d1").unwrap();
+        let entry_b = handle_b.append("w1", 1, "B", "d2").unwrap();
+        assert_eq!(entry_a.sequence, 1);
+        assert_eq!(entry_b.sequence, 2, "the second handle must not duplicate sequence 1");
+        assert_eq!(entry_b.previous_entry_digest, Some(entry_a.entry_digest));
+
+        // Recovery agrees: two well-formed, correctly chained entries.
+        let OpenedChronicle { engine, recovered_entry_count, .. } = ChronicleEngine::open(&path, "w1", 1).unwrap();
+        assert_eq!(recovered_entry_count, 2);
+        assert_eq!(engine.last_sequence(), 2);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn append_lock_guard_releases_the_lock_file_on_success() {
+        let path = temp_log_path("lockrelease");
+        cleanup(&path);
+        let OpenedChronicle { mut engine, .. } = ChronicleEngine::open(&path, "w1", 1).unwrap();
+        engine.append("w1", 1, "A", "d1").unwrap();
+        assert!(!append_lock_path(&path).exists(), "the append lock must be released after a successful append");
         cleanup(&path);
     }
 
@@ -1114,6 +1444,49 @@ mod tests {
         snapshot.head_digest = Some("0".repeat(64));
         let err = verify_snapshot_against_log(&snapshot, &path).unwrap_err();
         assert!(matches!(err, ChronicleError::SnapshotMismatch { .. }));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn snapshot_rejects_a_stale_writer_identity() {
+        // Round-1 review finding: a snapshot claiming a writer identity
+        // other than the log's real current lease must be rejected, even
+        // when entry_count/sequence/head_digest all correctly match.
+        let path = temp_log_path("snapstalewriter");
+        cleanup(&path);
+        let OpenedChronicle { mut engine, .. } = ChronicleEngine::open(&path, "w1", 1).unwrap();
+        engine.append("w1", 1, "A", "d1").unwrap();
+        let mut snapshot = engine.snapshot(1);
+        snapshot.writer_id = "w2".to_string();
+        let err = verify_snapshot_against_log(&snapshot, &path).unwrap_err();
+        assert!(matches!(err, ChronicleError::SnapshotMismatch { .. }));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn snapshot_rejects_a_stale_writer_generation() {
+        let path = temp_log_path("snapstalegen");
+        cleanup(&path);
+        let OpenedChronicle { mut engine, .. } = ChronicleEngine::open(&path, "w1", 1).unwrap();
+        engine.append("w1", 1, "A", "d1").unwrap();
+        let mut snapshot = engine.snapshot(1);
+        snapshot.writer_generation = 2;
+        let err = verify_snapshot_against_log(&snapshot, &path).unwrap_err();
+        assert!(matches!(err, ChronicleError::SnapshotMismatch { .. }));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn snapshot_verification_reflects_a_real_writer_transfer() {
+        let path = temp_log_path("snaptransfer");
+        cleanup(&path);
+        let OpenedChronicle { mut engine, .. } = ChronicleEngine::open(&path, "w1", 1).unwrap();
+        engine.append("w1", 1, "A", "d1").unwrap();
+        let snapshot_before_transfer = engine.snapshot(1);
+        // A real transfer moves the lease to w2/2.
+        ChronicleEngine::open_with_transfer(&path, "w2", 2).unwrap();
+        // The old snapshot (claiming w1/1) no longer matches the live lease.
+        assert!(verify_snapshot_against_log(&snapshot_before_transfer, &path).is_err());
         cleanup(&path);
     }
 }

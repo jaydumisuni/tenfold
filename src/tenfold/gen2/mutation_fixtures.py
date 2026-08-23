@@ -436,7 +436,23 @@ def _g2_10_writer_generation_kill_check() -> None:
 def _g2_10_checkpoint_kill_check() -> None:
     # G2-10 acceptance: "checkpoint ... fixtures pass." G2-00 SS8.4:
     # "checkpoint.sequence >= LOCAL_CHRONICLE_HEAD_AT_VERDICT."
-    check_checkpoint(checkpoint_sequence=1, checkpoint_generation=1, head_digest="d", local_head_sequence=5)
+    check_checkpoint(
+        checkpoint_sequence=1, checkpoint_generation=1, head_digest="d",
+        local_head_generation=1, local_head_sequence=5, local_head_digest="d",
+    )
+
+
+def _g2_10_checkpoint_forged_generation_kill_check() -> None:
+    # Round-1 review finding: a checkpoint whose sequence matches (or
+    # exceeds) the local head but names a *different* generation or an
+    # arbitrary/wrong head digest must still be rejected -- G2-00 SS8.4:
+    # "Chronicle externally anchors generation, sequence and head digest."
+    # A checkpoint that only satisfies the sequence inequality does not
+    # anchor anything.
+    check_checkpoint(
+        checkpoint_sequence=5, checkpoint_generation=2, head_digest="forged",
+        local_head_generation=1, local_head_sequence=5, local_head_digest="real",
+    )
 
 
 def build_initial_mutation_suite() -> MutationSuite:
@@ -919,6 +935,20 @@ def build_initial_mutation_suite() -> MutationSuite:
             "G2-00 SS8.4; G2-10",
             "chronicle",
             _g2_10_checkpoint_kill_check,
+            ChronicleCliError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G10-CHECKPOINT-002",
+            MutationCategory.CHRONICLE_DURABILITY_TAIL_LOSS,
+            "An external head checkpoint whose sequence covers the local head but names a "
+            "different generation, or carries a forged head digest at the exact local sequence, "
+            "is rejected (G2-00 SS8.4's full anchor: generation, sequence and head digest), by "
+            "the real rust/chronicle engine.",
+            "G2-00 SS8.4; G2-10",
+            "chronicle",
+            _g2_10_checkpoint_forged_generation_kill_check,
             ChronicleCliError,
         )
     )

@@ -93,9 +93,28 @@ def append_entry(
     )
 
 
-def check_checkpoint(checkpoint_sequence: int, checkpoint_generation: int, head_digest: str, local_head_sequence: int) -> None:
-    _run("check-checkpoint", str(checkpoint_sequence), str(checkpoint_generation), head_digest, str(local_head_sequence))
+def check_checkpoint(
+    checkpoint_sequence: int,
+    checkpoint_generation: int,
+    head_digest: str,
+    local_head_generation: int,
+    local_head_sequence: int,
+    local_head_digest: str | None,
+) -> None:
+    _run(
+        "check-checkpoint",
+        str(checkpoint_sequence),
+        str(checkpoint_generation),
+        head_digest,
+        str(local_head_generation),
+        str(local_head_sequence),
+        "-" if local_head_digest is None else local_head_digest,
+    )
 
 
 def check_tail_loss(recovered_last_sequence: int, externally_evidenced_sequence: int) -> None:
     _run("check-tail-loss", str(recovered_last_sequence), str(externally_evidenced_sequence))
+
+
+def dump_as_chronicle_events(log_path: Path, event_id_prefix: str, campaign_id: str) -> list[dict]:
+    return json.loads(_run("dump-as-chronicle-events", str(log_path), event_id_prefix, campaign_id))
