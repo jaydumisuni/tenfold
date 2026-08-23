@@ -96,6 +96,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tenfold-identity-generation"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "tenfold-obligation-ir"
 version = "0.1.0"
 dependencies = [

@@ -117,6 +117,29 @@ from .campaign_compiler import (
     compute_predecessor_depth,
     reconcile_compiled_campaign,
 )
+from .identity_generation import (
+    AssignmentGeneration,
+    AuthorityGeneration,
+    CampaignIdentity,
+    IdentityGenerationError,
+    OrganizationGeneration,
+    check_generation_not_stale,
+    gen1_check_exact_state_binding,
+    organization_generation_from_interim_root,
+    reinstate_under_fresh_generation,
+)
+from .state_model import (
+    AuthorityHolder,
+    FailureSpaceCoverageReport,
+    FailureSpaceDimension,
+    StateModel,
+    StateModelDisposition,
+    StateModelError,
+    StateModelField,
+    check_standing_gate_d,
+    generate_one_wise,
+    generate_pairwise,
+)
 
 __all__ = [
     "ArtifactBinding",
@@ -219,4 +242,23 @@ __all__ = [
     "compute_constitutional_baseline",
     "compute_predecessor_depth",
     "reconcile_compiled_campaign",
+    "AssignmentGeneration",
+    "AuthorityGeneration",
+    "CampaignIdentity",
+    "IdentityGenerationError",
+    "OrganizationGeneration",
+    "check_generation_not_stale",
+    "gen1_check_exact_state_binding",
+    "organization_generation_from_interim_root",
+    "reinstate_under_fresh_generation",
+    "AuthorityHolder",
+    "FailureSpaceCoverageReport",
+    "FailureSpaceDimension",
+    "StateModel",
+    "StateModelDisposition",
+    "StateModelError",
+    "StateModelField",
+    "check_standing_gate_d",
+    "generate_one_wise",
+    "generate_pairwise",
 ]
