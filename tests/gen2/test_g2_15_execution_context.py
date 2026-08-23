@@ -113,7 +113,7 @@ def test_g2_15_this_process_genuinely_classifies_as_isolated_or_enumerated() -> 
 
 
 def test_g2_15_probe_held_authority_detects_an_injected_ambient_credential() -> None:
-    results = probe_held_authority(environ={"AWS_ACCESS_KEY_ID": "fake-key"})
+    results = probe_held_authority(environ={"AWS_ACCESS_KEY_ID": "fake-key"}, path_exists=lambda p: False)
     matched = next(r for r in results if r.indicator == "AWS_ACCESS_KEY_ID")
     assert matched.status == ProbeStatus.REACHABLE
     others_absent = [r for r in results if r.indicator != "AWS_ACCESS_KEY_ID"]
@@ -147,7 +147,7 @@ def test_g2_15_probe_network_positional_authority_reports_indeterminate_on_a_pro
 
 
 def test_g2_15_check_no_unadmitted_authority_rejects_an_injected_credential() -> None:
-    held = probe_held_authority(environ={"GITHUB_TOKEN": "fake-token"})
+    held = probe_held_authority(environ={"GITHUB_TOKEN": "fake-token"}, path_exists=lambda p: False)
     inventory = AmbientAuthorityInventory(held, (), ())
     with pytest.raises(UnadmittedAuthorityReachable):
         check_no_unadmitted_authority(inventory)
@@ -166,13 +166,13 @@ def test_g2_15_check_no_unadmitted_authority_accepts_a_reachable_indicator_that_
     """Round-2 review finding: a reachable indicator that was explicitly
     declared and approved (e.g. the interim Root's own scoped credential)
     must not be rejected just because it is reachable."""
-    held = probe_held_authority(environ={"GITHUB_TOKEN": "fake-token"})
+    held = probe_held_authority(environ={"GITHUB_TOKEN": "fake-token"}, path_exists=lambda p: False)
     inventory = AmbientAuthorityInventory(held, (), ())
     check_no_unadmitted_authority(inventory, admitted_indicators=frozenset({"GITHUB_TOKEN"}))
 
 
 def test_g2_15_check_no_unadmitted_authority_still_rejects_a_reachable_indicator_outside_the_admission_set() -> None:
-    held = probe_held_authority(environ={"GITHUB_TOKEN": "fake-token"})
+    held = probe_held_authority(environ={"GITHUB_TOKEN": "fake-token"}, path_exists=lambda p: False)
     inventory = AmbientAuthorityInventory(held, (), ())
     with pytest.raises(UnadmittedAuthorityReachable):
         check_no_unadmitted_authority(inventory, admitted_indicators=frozenset({"NPM_TOKEN"}))
