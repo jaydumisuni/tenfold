@@ -96,6 +96,25 @@ from .proof_graph_bridge import (
     rust_derive_mandatory_assurance,
     rust_verify_fresh_hermetic_proof,
 )
+from .runtime_obligation import (
+    ExpectedRuntimeObligation,
+    HazardDisposition,
+    HazardRecord,
+    RuntimeObligationClassKind,
+    RuntimeObligationError,
+    UnresolvedEffectObservation,
+    _check_source_has_no_mutation_authority,
+    check_hazard_disposition_resolves,
+    check_observer_has_no_mutation_authority,
+    derive_expected_runtime_obligations,
+    find_missing_runtime_obligations,
+)
+from .runtime_obligation_bridge import (
+    RuntimeObligationCliError,
+    rust_check_hazard_record,
+    rust_derive_expected_runtime_obligations,
+    rust_find_missing_runtime_obligations,
+)
 from tenfold.contracts import NodeState
 from tenfold.facility import FacilityError
 from tenfold.ownership import LeaseConflict, LeaseRegistry, WriteLease
@@ -822,6 +841,177 @@ def _g2_12_fabricated_assurance_kill_check() -> None:
     raise FabricatedAssuranceCorrectlyRejected("an unreconciled assurance-type claim does not satisfy required assurance in both Gen1 and Rust")
 
 
+class MissingReconciliationObligationCorrectlyDetected(Exception):
+    """Fixture-only sentinel (see `PartialProofCorrectlyRejected` above for
+    the rationale), for G2-13's "missing Reconciliation obligation is
+    independently detected" scenario."""
+
+
+class ObserverMutationDetectionConfirmed(Exception):
+    """Fixture-only sentinel, same rationale, confirming
+    `check_observer_has_no_mutation_authority`'s underlying detector
+    genuinely flags a deliberately-mutating synthetic module rather than
+    being a vacuous pass -- the real Observer module itself is also
+    confirmed clean in the same check."""
+
+
+class MissingEffectIntegrityObligationCorrectlyDetected(Exception):
+    """Fixture-only sentinel, same rationale as
+    `MissingReconciliationObligationCorrectlyDetected`, for the
+    EFFECT_INTEGRITY half of G2-13's acceptance bar (round-2 review
+    finding)."""
+
+
+class StaleGenerationRegistrationCorrectlyRejected(Exception):
+    """Fixture-only sentinel, same rationale, for the generation-binding
+    scenario (round-2 review finding)."""
+
+
+def _g2_13_missing_reconciliation_obligation_kill_check() -> None:
+    # G2-13 acceptance: "Missing Reconciliation/Effect Integrity
+    # obligations are independently detected." An unresolved effect (not
+    # yet terminal) expects a RECONCILIATION obligation; if it was never
+    # registered, both the real Gen1 re-derivation and the real compiled
+    # Rust kernel must independently detect the omission.
+    effect_dict = {
+        "effect_id": "eff-1", "campaign_id": "camp-1", "node_id": "node-1", "generation": 1,
+        "terminal": False, "has_conflicting_observation": False, "technical_reconciliation_possible": True,
+        "has_unexplained_residue": False,
+    }
+    rust_expected = rust_derive_expected_runtime_obligations([effect_dict])
+    rust_missing = rust_find_missing_runtime_obligations(rust_expected, [])
+    if rust_missing != rust_expected or not rust_missing:
+        raise AssertionError(f"rust runtime_obligation kernel failed to detect the omitted obligation: {rust_missing}")
+
+    effect = UnresolvedEffectObservation(
+        effect_id="eff-1", campaign_id="camp-1", node_id="node-1", generation=1,
+        terminal=False, has_conflicting_observation=False, technical_reconciliation_possible=True,
+        has_unexplained_residue=False,
+    )
+    gen1_expected = derive_expected_runtime_obligations((effect,))
+    gen1_missing = find_missing_runtime_obligations(gen1_expected, ())
+    if gen1_missing != gen1_expected or not gen1_missing:
+        raise AssertionError(f"gen1 runtime_obligation re-derivation failed to detect the omitted obligation: {gen1_missing}")
+
+    raise MissingReconciliationObligationCorrectlyDetected(
+        "an omitted RECONCILIATION obligation for an unresolved effect is independently detected by both Gen1 and Rust"
+    )
+
+
+def _g2_13_hazard_no_class_kill_check() -> None:
+    # G2-13 acceptance: "hazard cannot disappear for lack of class." A
+    # HazardRecord with an empty disposition_ref -- indistinguishable from
+    # having no real disposition at all -- is rejected by both the real
+    # Gen1 HazardRecord.validate() and the real compiled Rust kernel.
+    hazard_dict = {"hazard_id": "H-1", "description": "unbounded retry storm", "disposition": "EXPLICITLY_ACCEPTED_BOUNDED", "disposition_ref": ""}
+    try:
+        rust_check_hazard_record(hazard_dict)
+    except RuntimeObligationCliError:
+        pass
+    else:
+        raise AssertionError("rust runtime_obligation kernel incorrectly accepted a hazard with no disposition referent")
+
+    hazard = HazardRecord(hazard_id="H-1", description="unbounded retry storm", disposition=HazardDisposition.EXPLICITLY_ACCEPTED_BOUNDED, disposition_ref="")
+    hazard.validate()
+
+
+def _g2_13_missing_effect_integrity_obligation_kill_check() -> None:
+    # Round-2 review finding: an effect with unexplained Effect Census
+    # residue must derive an EFFECT_INTEGRITY obligation, and its omission
+    # from the registered set must be independently detected -- G2-13
+    # acceptance's "Effect Integrity" half, not just "Reconciliation".
+    effect_dict = {
+        "effect_id": "eff-2", "campaign_id": "camp-1", "node_id": "node-1", "generation": 1,
+        "terminal": True, "has_conflicting_observation": False, "technical_reconciliation_possible": True,
+        "has_unexplained_residue": True,
+    }
+    rust_expected = rust_derive_expected_runtime_obligations([effect_dict])
+    rust_missing = rust_find_missing_runtime_obligations(rust_expected, [])
+    if rust_missing != rust_expected or rust_missing != [{"effect_id": "eff-2", "campaign_id": "camp-1", "node_id": "node-1", "generation": 1, "class_kind": "EFFECT_INTEGRITY"}]:
+        raise AssertionError(f"rust runtime_obligation kernel failed to detect the omitted EFFECT_INTEGRITY obligation: {rust_missing}")
+
+    effect = UnresolvedEffectObservation(
+        effect_id="eff-2", campaign_id="camp-1", node_id="node-1", generation=1,
+        terminal=True, has_conflicting_observation=False, technical_reconciliation_possible=True,
+        has_unexplained_residue=True,
+    )
+    gen1_expected = derive_expected_runtime_obligations((effect,))
+    gen1_missing = find_missing_runtime_obligations(gen1_expected, ())
+    if gen1_missing != gen1_expected or gen1_missing != (ExpectedRuntimeObligation("eff-2", "camp-1", "node-1", 1, RuntimeObligationClassKind.EFFECT_INTEGRITY),):
+        raise AssertionError(f"gen1 runtime_obligation re-derivation failed to detect the omitted EFFECT_INTEGRITY obligation: {gen1_missing}")
+
+    raise MissingEffectIntegrityObligationCorrectlyDetected(
+        "an omitted EFFECT_INTEGRITY obligation for unexplained residue is independently detected by both Gen1 and Rust"
+    )
+
+
+def _g2_13_stale_generation_registration_kill_check() -> None:
+    # Round-2 review finding: a registered obligation for the same
+    # effect_id/class_kind but an OLD generation must not be treated as
+    # satisfying the CURRENT generation's expectation.
+    effect_dict = {
+        "effect_id": "eff-3", "campaign_id": "camp-1", "node_id": "node-1", "generation": 2,
+        "terminal": False, "has_conflicting_observation": False, "technical_reconciliation_possible": True,
+        "has_unexplained_residue": False,
+    }
+    stale_registered = [{"effect_id": "eff-3", "campaign_id": "camp-1", "node_id": "node-1", "generation": 1, "class_kind": "RECONCILIATION"}]
+    rust_expected = rust_derive_expected_runtime_obligations([effect_dict])
+    rust_missing = rust_find_missing_runtime_obligations(rust_expected, stale_registered)
+    if rust_missing != rust_expected or not rust_missing:
+        raise AssertionError(f"rust runtime_obligation kernel incorrectly treated a stale-generation registration as covering the current one: {rust_missing}")
+
+    effect = UnresolvedEffectObservation(
+        effect_id="eff-3", campaign_id="camp-1", node_id="node-1", generation=2,
+        terminal=False, has_conflicting_observation=False, technical_reconciliation_possible=True,
+        has_unexplained_residue=False,
+    )
+    gen1_expected = derive_expected_runtime_obligations((effect,))
+    gen1_stale_registered = (ExpectedRuntimeObligation("eff-3", "camp-1", "node-1", 1, RuntimeObligationClassKind.RECONCILIATION),)
+    gen1_missing = find_missing_runtime_obligations(gen1_expected, gen1_stale_registered)
+    if gen1_missing != gen1_expected or not gen1_missing:
+        raise AssertionError(f"gen1 runtime_obligation re-derivation incorrectly treated a stale-generation registration as covering the current one: {gen1_missing}")
+
+    raise StaleGenerationRegistrationCorrectlyRejected(
+        "a stale-generation registered obligation does not cover a current-generation expectation in both Gen1 and Rust"
+    )
+
+
+def _g2_13_fabricated_hazard_referent_kill_check() -> None:
+    # Round-2 review finding: a hazard's disposition_ref must resolve to a
+    # real, known referent of the matching kind -- a merely non-blank
+    # fabricated reference (e.g. "does-not-exist") must not pass, since
+    # that is precisely the path by which a reachable hazard can disappear
+    # from qualification.
+    hazard_dict = {"hazard_id": "H-2", "description": "d", "disposition": "COVERED_BY_RUNTIME_OBLIGATION", "disposition_ref": "does-not-exist"}
+    try:
+        rust_check_hazard_record(hazard_dict, known={"runtime_obligation_ids": ["OBL-1"]})
+    except RuntimeObligationCliError:
+        pass
+    else:
+        raise AssertionError("rust runtime_obligation kernel incorrectly accepted a fabricated hazard disposition referent")
+
+    hazard = HazardRecord(hazard_id="H-2", description="d", disposition=HazardDisposition.COVERED_BY_RUNTIME_OBLIGATION, disposition_ref="does-not-exist")
+    check_hazard_disposition_resolves(hazard, known_runtime_obligation_ids=frozenset({"OBL-1"}))
+
+
+def _g2_13_observer_mutation_kill_check() -> None:
+    # G2-13 acceptance: "Observer cannot mutate or execute directly."
+    # Confirms the real static-source detector genuinely flags a
+    # deliberately-mutating synthetic module (not a vacuous always-pass
+    # check), and that the real Observer module itself is independently
+    # confirmed clean.
+    check_observer_has_no_mutation_authority()  # the real Observer module: must not raise
+
+    synthetic_mutating_source = "def observe(lease):\n    lease.acquire(1, 2)\n"
+    found = _check_source_has_no_mutation_authority(synthetic_mutating_source)
+    if found != ("acquire",):
+        raise AssertionError(f"observer mutation detector failed to flag a deliberately mutating synthetic module: {found}")
+
+    raise ObserverMutationDetectionConfirmed(
+        "the real Observer module is confirmed mutation-free, and the detector genuinely flags a mutating synthetic module"
+    )
+
+
 def build_initial_mutation_suite() -> MutationSuite:
     suite = MutationSuite()
 
@@ -1451,6 +1641,87 @@ def build_initial_mutation_suite() -> MutationSuite:
             "proof_graph",
             _g2_12_fabricated_assurance_kill_check,
             FabricatedAssuranceCorrectlyRejected,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G13-RECONCILE-001",
+            MutationCategory.RUNTIME_OBLIGATION_OMISSION,
+            "An unresolved effect's expected RECONCILIATION obligation, if never registered, is "
+            "independently detected as missing by both the real compiled Rust runtime_obligation "
+            "kernel and the real Gen-1 derive_expected_runtime_obligations/find_missing_runtime_obligations.",
+            "G2-00 SS8.7; G2-13",
+            "runtime_obligation_derivation",
+            _g2_13_missing_reconciliation_obligation_kill_check,
+            MissingReconciliationObligationCorrectlyDetected,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G13-HAZARDCLASS-001",
+            MutationCategory.RUNTIME_OBLIGATION_OMISSION,
+            "A HazardRecord with an empty disposition_ref -- indistinguishable from having no "
+            "disposition at all -- is rejected by both the real compiled Rust runtime_obligation "
+            "kernel and the real Gen-1 HazardRecord.validate(): a hazard cannot disappear for lack "
+            "of class.",
+            "G2-00 SS8.7; G2-13",
+            "runtime_obligation_derivation",
+            _g2_13_hazard_no_class_kill_check,
+            RuntimeObligationError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G13-OBSERVER-001",
+            MutationCategory.EFFECT_CONTAINMENT,
+            "The real Observer module contains no forbidden mutating call (confirmed via static "
+            "source inspection), and the same detector genuinely flags a deliberately-mutating "
+            "synthetic module -- Observer cannot mutate or execute directly.",
+            "G2-00 SS13; G2-13",
+            "runtime_obligation_derivation",
+            _g2_13_observer_mutation_kill_check,
+            ObserverMutationDetectionConfirmed,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G13-EFFECTINTEGRITY-001",
+            MutationCategory.RUNTIME_OBLIGATION_OMISSION,
+            "An effect with unexplained Effect Census residue's expected EFFECT_INTEGRITY obligation, "
+            "if never registered, is independently detected as missing by both the real compiled "
+            "Rust runtime_obligation kernel and the real Gen-1 derivation -- round-2 review finding "
+            "(the Effect Integrity half of G2-13's acceptance bar).",
+            "G2-00 SS9.8; G2-13",
+            "runtime_obligation_derivation",
+            _g2_13_missing_effect_integrity_obligation_kill_check,
+            MissingEffectIntegrityObligationCorrectlyDetected,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G13-GENBINDING-001",
+            MutationCategory.GENERATION_FENCING_VIOLATION,
+            "A registered obligation from a stale generation does not satisfy a current-generation "
+            "expectation for the same effect_id/class_kind, in both the real compiled Rust "
+            "runtime_obligation kernel and the real Gen-1 derivation -- round-2 review finding.",
+            "G2-00 SS8.7; G2-13",
+            "runtime_obligation_derivation",
+            _g2_13_stale_generation_registration_kill_check,
+            StaleGenerationRegistrationCorrectlyRejected,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G13-HAZARDREF-001",
+            MutationCategory.RUNTIME_OBLIGATION_OMISSION,
+            "A hazard disposition_ref that does not resolve to a real, known referent of the matching "
+            "disposition kind is rejected by both the real compiled Rust runtime_obligation kernel and "
+            "the real Gen-1 check_hazard_disposition_resolves -- a hazard cannot disappear behind a "
+            "fabricated reference (round-2 review finding).",
+            "G2-00 SS8.7; G2-13",
+            "runtime_obligation_derivation",
+            _g2_13_fabricated_hazard_referent_kill_check,
+            RuntimeObligationError,
         )
     )
 

@@ -388,6 +388,70 @@ def build_g2_12_state_model() -> StateModel:
 
 
 # ============================================================================
+# G2-13 production State Model extension (docs/08-gen2-roadmap.md's G2-13
+# deliverable: "extension of accumulated Authoritative State Model with
+# runtime-obligation, Observer, hazard and ambiguity-blocking state.").
+# ============================================================================
+
+G2_13_REQUIRED_STATE_MODEL_FIELD_IDS: frozenset[str] = frozenset(
+    {
+        "runtime_obligation_registry_state",
+        "runtime_obligation_expected_set_derivation",
+        "runtime_obligation_candidate_ledger_state",
+        "runtime_obligation_rust_runtime",
+        "hazard_disposition_state",
+        "observer_finding_state",
+        "ambiguity_blocking_state",
+    }
+)
+
+
+def build_g2_13_state_model() -> StateModel:
+    """Extends the G2-12 State Model with G2-13's runtime-obligation,
+    Observer, hazard and ambiguity-blocking fields (G2-00 SS8.7, SS13-14;
+    `tenfold.gen2.runtime_obligation` + `rust/runtime_obligation`).
+    `ambiguity_blocking_state` maps to the already-proven G2-02
+    `constitutional.AmbiguityRecord.blocking_set()` -- an existing schema
+    now folded into the accumulated State Model for the first time, not a
+    new schema."""
+    return build_g2_12_state_model().extend(
+        (
+            StateModelField(
+                "runtime_obligation_registry_state", AuthorityHolder.GEN1_PYTHON, "runtime_obligation.RuntimeObligationRegistry",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-13",
+            ),
+            StateModelField(
+                "runtime_obligation_expected_set_derivation", AuthorityHolder.GEN1_PYTHON,
+                "runtime_obligation.derive_expected_runtime_obligations / find_missing_runtime_obligations",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-13",
+            ),
+            StateModelField(
+                "runtime_obligation_candidate_ledger_state", AuthorityHolder.GEN1_PYTHON,
+                "runtime_obligation.RuntimeObligationCandidateLedger",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-13",
+            ),
+            StateModelField(
+                "runtime_obligation_rust_runtime", AuthorityHolder.GEN2_RUST,
+                "runtime_obligation::derive_expected_runtime_obligations / find_missing_runtime_obligations / HazardRecord",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-13",
+            ),
+            StateModelField(
+                "hazard_disposition_state", AuthorityHolder.GEN1_PYTHON, "runtime_obligation.HazardRecord / HazardDisposition",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-13",
+            ),
+            StateModelField(
+                "observer_finding_state", AuthorityHolder.GEN1_PYTHON, "runtime_obligation.Observer.observe / ObserverFinding",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-13",
+            ),
+            StateModelField(
+                "ambiguity_blocking_state", AuthorityHolder.GEN1_PYTHON, "constitutional.AmbiguityRecord.blocking_set()",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-13",
+            ),
+        )
+    )
+
+
+# ============================================================================
 # Failure-space scenario generator base (G2-00 §14.1: "Failure-space
 # qualification reports 1-wise, pairwise, 3-wise high-risk, transition and
 # forbidden-state coverage according to frozen risk policy. No mathematical
