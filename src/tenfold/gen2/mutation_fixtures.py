@@ -15,7 +15,11 @@ passing check.
 
 from __future__ import annotations
 
+import os
+import tempfile
+import time
 from dataclasses import replace
+from pathlib import Path
 
 from .constitutional import (
     AmbiguityImpactDomain,
@@ -70,6 +74,7 @@ from .identity_generation import (
     check_generation_not_stale,
     reinstate_under_fresh_generation,
 )
+from .chronicle_bridge import ChronicleCliError, append_entry, check_checkpoint, check_tail_loss, open_chronicle
 
 
 def _total_policy(**overrides) -> ConstitutionalPolicySet:
@@ -217,11 +222,14 @@ def _runtime_obligation_omission_kill_check() -> None:
 
 
 def _chronicle_chain_kill_check() -> None:
-    # Schema-level proxy only: G2-02's ChronicleEvent enforces genesis/
-    # sequence-chain well-formedness, not G2-00 SS8's full durability
-    # semantics (torn writes, tail truncation, fsync/barrier failure —
-    # none of which have a runtime yet). Registered honestly as a partial
-    # proxy, not a claim of full Chronicle durability coverage.
+    # Schema-level proxy: G2-02's ChronicleEvent enforces genesis/
+    # sequence-chain well-formedness at the schema level. G2-00 SS8's full
+    # durability semantics (torn writes, tail truncation, fsync/barrier
+    # failure, writer-generation/checkpoint fencing) now have a real
+    # runtime -- rust/chronicle (G2-10) -- exercised by the
+    # MUT-G10-* fixtures below, bound to the "chronicle" Trust Table row.
+    # This fixture remains the schema-level check specifically; it does
+    # not duplicate G2-10's engine-level coverage.
     ChronicleEvent("EV-1", "campaign-1", 1, "progressed", "p" * 64, None).validate()
 
 
@@ -372,6 +380,79 @@ def _g2_09_duplicate_generation_kill_check() -> None:
     used_generations = frozenset({6, 7, 8})
     fresh = reinstate_under_fresh_generation(5, used_generations)
     check_generation_not_stale(claimed=6, live=fresh)
+
+
+def _g2_10_chronicle_log_path(name: str) -> Path:
+    path = Path(tempfile.gettempdir()) / f"tenfold_g2_10_mut_{name}_{os.getpid()}_{time.time_ns()}.log"
+    for candidate in (path, Path(str(path) + ".lease")):
+        if candidate.exists():
+            candidate.unlink()
+    return path
+
+
+def _g2_10_torn_write_kill_check() -> None:
+    # G2-10 acceptance: "Torn write ... fixtures pass." A write torn
+    # mid-append (this crate's disclosed practical proxy for a crash
+    # during append) must be discarded on recovery, not silently retained
+    # as durable. Tied to a real raised error via check_tail_loss: if the
+    # torn entry (sequence 3) were wrongly retained, recovered last_sequence
+    # would already be 3 and no tail-loss would be detected against
+    # externally-evidenced sequence 3.
+    log_path = _g2_10_chronicle_log_path("tornwrite")
+    open_chronicle(log_path, "w1", 1)
+    append_entry(log_path, "w1", 1, "w1", 1, "EVENT_A", "d1")
+    append_entry(log_path, "w1", 1, "w1", 1, "EVENT_B", "d2")
+    with open(log_path, "ab") as f:
+        f.write(b'{"sequence":3,"event_type":"TORN_MID_APPEND')  # no closing brace, no newline
+    opened = open_chronicle(log_path, "w1", 1)
+    check_tail_loss(opened["last_sequence"], 3)
+
+
+def _g2_10_tail_truncation_kill_check() -> None:
+    # G2-10 acceptance: "tail truncation ... fixtures pass." Distinct from
+    # a torn write: whole, well-formed trailing entries are removed
+    # (a clean, shorter log), and this must still be caught as tail loss
+    # against external evidence of the removed sequence.
+    log_path = _g2_10_chronicle_log_path("tailtrunc")
+    open_chronicle(log_path, "w1", 1)
+    append_entry(log_path, "w1", 1, "w1", 1, "EVENT_A", "d1")
+    append_entry(log_path, "w1", 1, "w1", 1, "EVENT_B", "d2")
+    append_entry(log_path, "w1", 1, "w1", 1, "EVENT_C", "d3")
+    lines = log_path.read_text(encoding="utf-8").splitlines()
+    log_path.write_text("\n".join(lines[:2]) + "\n", encoding="utf-8")
+    opened = open_chronicle(log_path, "w1", 1)
+    check_tail_loss(opened["last_sequence"], 3)
+
+
+def _g2_10_writer_generation_kill_check() -> None:
+    # G2-10 acceptance: "writer-generation ... fixtures pass." An append
+    # claiming the wrong writer generation must be rejected before
+    # anything is written.
+    log_path = _g2_10_chronicle_log_path("writergen")
+    open_chronicle(log_path, "w1", 1)
+    append_entry(log_path, "w1", 1, "w1", 2, "EVENT_A", "d1")
+
+
+def _g2_10_checkpoint_kill_check() -> None:
+    # G2-10 acceptance: "checkpoint ... fixtures pass." G2-00 SS8.4:
+    # "checkpoint.sequence >= LOCAL_CHRONICLE_HEAD_AT_VERDICT."
+    check_checkpoint(
+        checkpoint_sequence=1, checkpoint_generation=1, head_digest="d",
+        local_head_generation=1, local_head_sequence=5, local_head_digest="d",
+    )
+
+
+def _g2_10_checkpoint_forged_generation_kill_check() -> None:
+    # Round-1 review finding: a checkpoint whose sequence matches (or
+    # exceeds) the local head but names a *different* generation or an
+    # arbitrary/wrong head digest must still be rejected -- G2-00 SS8.4:
+    # "Chronicle externally anchors generation, sequence and head digest."
+    # A checkpoint that only satisfies the sequence inequality does not
+    # anchor anything.
+    check_checkpoint(
+        checkpoint_sequence=5, checkpoint_generation=2, head_digest="forged",
+        local_head_generation=1, local_head_sequence=5, local_head_digest="real",
+    )
 
 
 def build_initial_mutation_suite() -> MutationSuite:
@@ -588,8 +669,8 @@ def build_initial_mutation_suite() -> MutationSuite:
             "MUT-CHRONICLE-001",
             MutationCategory.CHRONICLE_DURABILITY_TAIL_LOSS,
             "A non-genesis ChronicleEvent omits its previous_event_digest, breaking the hash "
-            "chain (schema-level proxy only; full durability/tail-loss semantics per G2-00 SS8 "
-            "have no runtime yet).",
+            "chain (schema-level proxy; full durability/tail-loss semantics per G2-00 SS8 are "
+            "exercised at the engine level by the MUT-G10-* fixtures, G2-10).",
             "G2-00 SS8.1, SS8.3",
             "chronicle_event",
             _chronicle_chain_kill_check,
@@ -804,6 +885,71 @@ def build_initial_mutation_suite() -> MutationSuite:
             "identity_generation",
             _g2_09_duplicate_generation_kill_check,
             IdentityGenerationError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G10-TORNWRITE-001",
+            MutationCategory.CHRONICLE_DURABILITY_TAIL_LOSS,
+            "A write torn mid-append (this crate's disclosed practical proxy for a crash during "
+            "append) is discarded on recovery by the real rust/chronicle engine, not silently "
+            "retained as durable, proven via a real tail-loss check against the discarded sequence.",
+            "G2-00 SS8.1, SS8.2, SS8.3; G2-10",
+            "chronicle",
+            _g2_10_torn_write_kill_check,
+            ChronicleCliError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G10-TAILTRUNC-001",
+            MutationCategory.CHRONICLE_DURABILITY_TAIL_LOSS,
+            "Whole trailing entries removed from an otherwise well-formed log (distinct from a "
+            "torn write) are still caught as tail loss against external evidence of the removed "
+            "sequence, by the real rust/chronicle engine.",
+            "G2-00 SS8.1, SS8.3; G2-10",
+            "chronicle",
+            _g2_10_tail_truncation_kill_check,
+            ChronicleCliError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G10-WRITERGEN-001",
+            MutationCategory.GENERATION_FENCING_VIOLATION,
+            "An append claiming the wrong writer generation is rejected before anything is "
+            "written, by the real rust/chronicle engine.",
+            "G2-00 SS8.1; G2-10",
+            "chronicle",
+            _g2_10_writer_generation_kill_check,
+            ChronicleCliError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G10-CHECKPOINT-001",
+            MutationCategory.CHRONICLE_DURABILITY_TAIL_LOSS,
+            "An external head checkpoint whose sequence is behind the local Chronicle head is "
+            "rejected (G2-00 SS8.4: checkpoint.sequence >= LOCAL_CHRONICLE_HEAD_AT_VERDICT), by "
+            "the real rust/chronicle engine.",
+            "G2-00 SS8.4; G2-10",
+            "chronicle",
+            _g2_10_checkpoint_kill_check,
+            ChronicleCliError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G10-CHECKPOINT-002",
+            MutationCategory.CHRONICLE_DURABILITY_TAIL_LOSS,
+            "An external head checkpoint whose sequence covers the local head but names a "
+            "different generation, or carries a forged head digest at the exact local sequence, "
+            "is rejected (G2-00 SS8.4's full anchor: generation, sequence and head digest), by "
+            "the real rust/chronicle engine.",
+            "G2-00 SS8.4; G2-10",
+            "chronicle",
+            _g2_10_checkpoint_forged_generation_kill_check,
+            ChronicleCliError,
         )
     )
 
