@@ -58,6 +58,7 @@ from tenfold.gen2.state_model import (
     build_g2_10_state_model,
     build_g2_11_state_model,
     check_standing_gate_d,
+    generate_one_wise,
     generate_pairwise,
 )
 
@@ -282,7 +283,7 @@ def test_g2_11_gen1_rust_parity_on_mutation_admission_corpus(claim_overrides: di
 
     rust_claim = {**claim, "dispatch_digest": digest}
     rust_live = {
-        "campaign_generation": 1, "foreman_epoch": 1, "node_state": node_state.value,
+        "campaign_generation": 1, "foreman_epoch": 1, "node_states": {claim["node_id"]: node_state.value},
         "assignments": [{"assignment_id": claim["assignment_id"], "task_id": claim["task_id"], "node_id": claim["node_id"], "attempt": claim["attempt"], "status": assignment_status, "dispatch_digest": digest}],
         "leases": [rust_lease],
     }
@@ -313,7 +314,7 @@ def test_g2_11_gen1_rust_parity_rejects_wrong_dispatch_digest() -> None:
 
     rust_claim = {**claim, "dispatch_digest": _real_digest}
     rust_live = {
-        "campaign_generation": 1, "foreman_epoch": 1, "node_state": "running",
+        "campaign_generation": 1, "foreman_epoch": 1, "node_states": {claim["node_id"]: "running"},
         "assignments": [{"assignment_id": claim["assignment_id"], "task_id": claim["task_id"], "node_id": claim["node_id"], "attempt": claim["attempt"], "status": "active", "dispatch_digest": wrong_digest}],
         "leases": [{**{k: (list(v) if isinstance(v, tuple) else v) for k, v in _LEASE_SHAPE.items()}, "conflict_groups": [], "active": True}],
     }
@@ -325,6 +326,25 @@ def test_g2_11_gen1_rust_parity_rejects_wrong_dispatch_digest() -> None:
 
     assert gen1_accepted is False
     assert rust_accepted is False
+
+
+def test_g2_11_rust_rejects_when_only_a_different_nodes_state_is_present() -> None:
+    """Round-1 review finding's exact scenario: a live node_states map
+    carrying a mutable state for some *other* node while the actually-
+    claimed node has none must be rejected by the real Rust kernel, not
+    accepted by accident because *some* mutable state existed anywhere in
+    the map."""
+    claim, digest = _admission_scenario()
+    rust_claim = {**claim, "dispatch_digest": digest}
+    rust_live = {
+        "campaign_generation": 1,
+        "foreman_epoch": 1,
+        "node_states": {"some-other-node": "ready"},
+        "assignments": [{"assignment_id": claim["assignment_id"], "task_id": claim["task_id"], "node_id": claim["node_id"], "attempt": claim["attempt"], "status": "active", "dispatch_digest": digest}],
+        "leases": [{**{k: (list(v) if isinstance(v, tuple) else v) for k, v in _LEASE_SHAPE.items()}, "conflict_groups": [], "active": True}],
+    }
+    with pytest.raises(DispatchLeaseCliError):
+        rust_check_mutation_admission(rust_claim, rust_live)
 
 
 # ============================================================================
@@ -444,7 +464,7 @@ def test_g2_11_standing_gate_d_passes_against_the_combined_required_roster() -> 
         FailureSpaceDimension("lease_conflict_shape", ("NONE", "PATH", "SEMANTIC", "RESOURCE")),
         FailureSpaceDimension("fencing_token_freshness", ("FRESH", "STALE")),
     )
-    report = FailureSpaceCoverageReport(one_wise=(), pairwise=generate_pairwise(dims), dimension_ids=tuple(d.dimension_id for d in dims))
+    report = FailureSpaceCoverageReport(one_wise=generate_one_wise(dims), pairwise=generate_pairwise(dims), dimension_ids=tuple(d.dimension_id for d in dims))
     check_standing_gate_d(
         model,
         G2_09_REQUIRED_STATE_MODEL_FIELD_IDS | G2_10_REQUIRED_STATE_MODEL_FIELD_IDS | G2_11_REQUIRED_STATE_MODEL_FIELD_IDS,

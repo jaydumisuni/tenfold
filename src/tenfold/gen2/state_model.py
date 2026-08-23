@@ -265,6 +265,15 @@ G2_11_REQUIRED_STATE_MODEL_FIELD_IDS: frozenset[str] = frozenset(
         "dispatch_fence_state",
         "dispatch_resource_ownership",
         "dispatch_mutation_admission",
+        # Round-1 review finding: every G2-11 entry originally referenced
+        # only Gen-1 runtime types, so a change or disappearance of an
+        # actual Rust authority-bearing field would go undetected by
+        # Standing Gate D's coverage check. These four track the real
+        # rust/dispatch_lease types distinctly, GEN2_RUST-held.
+        "dispatch_rust_campaign_node_state",
+        "dispatch_rust_lease_registry",
+        "dispatch_rust_node_states_projection",
+        "dispatch_rust_mutation_admission_claim",
     }
 )
 
@@ -301,6 +310,25 @@ def build_g2_11_state_model() -> StateModel:
                 "dispatch_mutation_admission", AuthorityHolder.GEN1_PYTHON, "facility.validate_live_task(require_lease=True)",
                 StateModelDisposition.RUNTIME_MAPPED, "G2-11",
             ),
+            StateModelField(
+                "dispatch_rust_campaign_node_state", AuthorityHolder.GEN2_RUST,
+                "dispatch_lease::CampaignNodeState / Frontier",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-11",
+            ),
+            StateModelField(
+                "dispatch_rust_lease_registry", AuthorityHolder.GEN2_RUST, "dispatch_lease::WriteLease / LeaseRegistry",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-11",
+            ),
+            StateModelField(
+                "dispatch_rust_node_states_projection", AuthorityHolder.GEN2_RUST,
+                "dispatch_lease::LiveAuthorityState.node_states",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-11",
+            ),
+            StateModelField(
+                "dispatch_rust_mutation_admission_claim", AuthorityHolder.GEN2_RUST,
+                "dispatch_lease::MutationAdmissionClaim / LiveAuthorityState",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-11",
+            ),
         )
     )
 
@@ -332,6 +360,13 @@ class FailureSpaceCoverageReport:
     one_wise: tuple[dict[str, str], ...]
     pairwise: tuple[dict[str, str], ...]
     dimension_ids: tuple[str, ...]
+
+    def covers_every_value(self, dimensions: tuple[FailureSpaceDimension, ...]) -> bool:
+        """1-wise coverage: every value of every dimension appears in at
+        least one `one_wise` scenario."""
+        required = {(dim.dimension_id, value) for dim in dimensions for value in dim.values}
+        covered = {(dim.dimension_id, scenario[dim.dimension_id]) for scenario in self.one_wise for dim in dimensions}
+        return required <= covered
 
     def covers_every_pair(self, dimensions: tuple[FailureSpaceDimension, ...]) -> bool:
         required_pairs: set[tuple[str, str, str, str]] = set()
@@ -438,12 +473,24 @@ def generate_pairwise(dimensions: tuple[FailureSpaceDimension, ...]) -> tuple[di
 
 # ============================================================================
 # Standing Gate D check (docs/08-gen2-roadmap.md's 7-step Standing Gate D
-# sequence). This checks the two steps this module can mechanically verify
-# — State Model extension and failure-space generation actually ran and
-# actually cover the milestone's newly-introduced fields — and does not
-# claim to check the remaining steps (invariant-ownership mapping,
-# reconciliation, mutation-fixture authorship), which are judged by the
-# milestone's own review record, not by a single function.
+# sequence; G2-00 SS14.1: "Failure-space qualification reports 1-wise,
+# pairwise, 3-wise high-risk, transition and forbidden-state coverage").
+#
+# Round-1 review finding: the original version only inspected `pairwise`,
+# so a report built with an *empty* `one_wise` (never even calling
+# `generate_one_wise`) still satisfied the gate -- a milestone could claim
+# "Standing Gate D satisfied" while skipping a coverage class this module
+# can already generate. This now also requires `one_wise` to be non-empty
+# and to genuinely cover every dimension value.
+#
+# Disclosed, honest limit: this still checks only the two coverage classes
+# (1-wise, pairwise) this module has generators for. 3-wise high-risk,
+# transition and forbidden-state coverage have no generator anywhere in
+# this codebase yet (no milestone through G2-11 has built one) and cannot
+# be mechanically verified here -- that gap is not silently claimed
+# solved; a milestone's own review record must disclose it explicitly
+# until a later milestone (up to and including G2-20's full reconciliation)
+# adds those generators.
 # ============================================================================
 
 
@@ -454,6 +501,10 @@ def check_standing_gate_d(
     dimensions: tuple[FailureSpaceDimension, ...],
 ) -> None:
     state_model.check_coverage(milestone_new_field_ids)
+    if not failure_space_report.one_wise:
+        raise StateModelError("STANDING_GATE_D_FAILURE: failure-space generator produced no one-wise scenarios")
+    if not failure_space_report.covers_every_value(dimensions):
+        raise StateModelError("STANDING_GATE_D_FAILURE: failure-space report does not cover every required value")
     if not failure_space_report.pairwise:
         raise StateModelError("STANDING_GATE_D_FAILURE: failure-space generator produced no pairwise scenarios")
     if not failure_space_report.covers_every_pair(dimensions):

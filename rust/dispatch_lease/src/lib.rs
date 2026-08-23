@@ -218,8 +218,24 @@ impl WriteLease {
     }
 }
 
+/// Round-1 review finding: the original version stripped every leading
+/// slash as insignificant, but POSIX (and Python's `PurePosixPath`, which
+/// `tenfold.ownership.surfaces_overlap` relies on) treats leading slashes
+/// specially: zero means relative (no root part), exactly one or three-or-
+/// more collapse to a single `"/"` root part, and *exactly* two are
+/// preserved as a distinct `"//"` root part. Losing that distinction made
+/// `"//foo"` and `"//"` alone spuriously overlap with unrelated paths (an
+/// empty leading-root component trivially prefix-matches anything).
 fn path_parts(path: &str) -> Vec<&str> {
-    path.split('/').filter(|p| !p.is_empty() && *p != ".").collect()
+    let leading_slashes = path.chars().take_while(|&c| c == '/').count();
+    let root: Option<&str> = match leading_slashes {
+        0 => None,
+        2 => Some("//"),
+        _ => Some("/"),
+    };
+    root.into_iter()
+        .chain(path.split('/').filter(|p| !p.is_empty() && *p != "."))
+        .collect()
 }
 
 /// Exact re-derivation of `tenfold.ownership.surfaces_overlap`: one path's
@@ -383,7 +399,15 @@ pub struct LiveAssignment {
 pub struct LiveAuthorityState {
     pub campaign_generation: u64,
     pub foreman_epoch: u64,
-    pub node_state: Option<NodeState>,
+    /// Round-1 review finding: a bare `Option<NodeState>` carries no node
+    /// identifier, so nothing structurally ties it to `claim.node_id` --
+    /// an adapter could supply a *different* node's state (e.g. `Ready`
+    /// from an unrelated node while the actually-claimed node is
+    /// `Blocked`), and admission would wrongly succeed. Gen-1's real
+    /// `validate_live_task` looks the state up from a real map
+    /// (`snapshot.state_map().get(task.node_id)`); this now does the
+    /// same, keyed by node_id exactly like Gen-1.
+    pub node_states: HashMap<String, NodeState>,
     pub assignments: Vec<LiveAssignment>,
     pub leases: Vec<WriteLease>,
 }
@@ -419,7 +443,8 @@ pub fn check_mutation_admission(claim: &MutationAdmissionClaim, live: &LiveAutho
         return Err(err("task dispatch digest does not match durable assignment"));
     }
 
-    if !live.node_state.map(|s| mutable_states().contains(&s)).unwrap_or(false) {
+    let node_state = live.node_states.get(&claim.node_id).copied();
+    if !node_state.map(|s| mutable_states().contains(&s)).unwrap_or(false) {
         return Err(err("task node is not live-executable"));
     }
 
@@ -664,9 +689,36 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_overlap_ignores_dot_and_empty_segments() {
+    fn surfaces_overlap_ignores_dot_and_trailing_slash_segments() {
         assert!(surfaces_overlap("./a/b", "a/b/c"));
-        assert!(surfaces_overlap("/a/b/", "a/b"));
+        assert!(surfaces_overlap("/a/b/", "/a/b"));
+    }
+
+    #[test]
+    fn surfaces_overlap_treats_absolute_and_relative_paths_as_disjoint() {
+        // Round-1 review finding: real PurePosixPath("/a/b").parts is
+        // ('/', 'a', 'b') while PurePosixPath("a/b").parts is ('a', 'b')
+        // -- different root, so these do NOT overlap under real Gen-1
+        // semantics, even though they look textually similar. The
+        // original (buggy) implementation stripped the root entirely and
+        // wrongly treated these as overlapping.
+        assert!(!surfaces_overlap("/a/b", "a/b"));
+    }
+
+    #[test]
+    fn surfaces_overlap_preserves_the_double_slash_root_distinctly() {
+        // Round-1 review finding's exact scenario: PurePosixPath("//foo")
+        // preserves a distinct "//" root part (POSIX authority-root
+        // convention), which is neither the same as a single "/" root nor
+        // insignificant. A bare "//" must not trivially overlap with
+        // everything (which it would if its parts list were empty).
+        assert!(surfaces_overlap("//foo", "//foo/bar"));
+        assert!(!surfaces_overlap("//foo", "/foo"));
+        assert!(!surfaces_overlap("//", "foo"));
+        assert!(surfaces_overlap("//", "//foo"));
+        // Three or more leading slashes collapse to a single "/" root,
+        // matching PurePosixPath("///a").parts == ('/', 'a').
+        assert!(surfaces_overlap("///a", "/a/b"));
     }
 
     // ---- LeaseRegistry ----
@@ -804,7 +856,7 @@ mod tests {
         LiveAuthorityState {
             campaign_generation: 1,
             foreman_epoch: 1,
-            node_state: Some(NodeState::Running),
+            node_states: HashMap::from([("node-1".to_string(), NodeState::Running)]),
             assignments: vec![LiveAssignment {
                 assignment_id: "assign-1".into(),
                 task_id: "task-1".into(),
@@ -868,7 +920,19 @@ mod tests {
     #[test]
     fn mutation_admission_rejects_non_mutable_node_state() {
         let mut live = base_live();
-        live.node_state = Some(NodeState::PrepareOnly);
+        live.node_states.insert("node-1".to_string(), NodeState::PrepareOnly);
+        assert!(check_mutation_admission(&base_claim(), &live).is_err());
+    }
+
+    #[test]
+    fn mutation_admission_rejects_when_only_a_different_nodes_state_is_present() {
+        // Round-1 review finding's exact scenario: a mutable state exists
+        // for some *other* node while the actually-claimed node has none
+        // (or a non-mutable one) -- must be rejected, not accepted by
+        // accident because *some* mutable state was present.
+        let mut live = base_live();
+        live.node_states.clear();
+        live.node_states.insert("some-other-node".to_string(), NodeState::Ready);
         assert!(check_mutation_admission(&base_claim(), &live).is_err());
     }
 

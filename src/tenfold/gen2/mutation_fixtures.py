@@ -75,7 +75,18 @@ from .identity_generation import (
     reinstate_under_fresh_generation,
 )
 from .chronicle_bridge import ChronicleCliError, append_entry, check_checkpoint, check_tail_loss, open_chronicle
-from .dispatch_lease import gen1_check_mutation_admission, gen1_lease_acquire, sealed_task_dispatch_digest
+from .dispatch_lease import (
+    gen1_check_mutation_admission,
+    gen1_compute_frontier,
+    gen1_lease_acquire,
+    sealed_task_dispatch_digest,
+)
+from .dispatch_lease_bridge import (
+    DispatchLeaseCliError,
+    rust_check_mutation_admission,
+    rust_compute_frontier,
+    rust_lease_acquire,
+)
 from tenfold.contracts import NodeState
 from tenfold.facility import FacilityError
 from tenfold.ownership import LeaseConflict, LeaseRegistry, WriteLease
@@ -459,11 +470,50 @@ def _g2_10_checkpoint_forged_generation_kill_check() -> None:
     )
 
 
+class DependencyEligibilityMismatchRejected(Exception):
+    """Fixture-only sentinel (not a real Gen1/Rust exception type): raised
+    manually by `_g2_11_dependency_eligibility_kill_check` once it has
+    genuinely verified, against both real implementations, that a node
+    with an unsatisfied dependency was correctly classified blocked --
+    mirroring the manual-raise-on-verified-detection pattern
+    `_g2_08_coverage_omission_kill_check` already uses, since
+    `compute_frontier` is a pure computation with no exception of its own
+    to signal a correctly-rejected mismatch."""
+
+
+def _g2_11_registry_path(name: str) -> Path:
+    path = Path(tempfile.gettempdir()) / f"tenfold_g2_11_mut_{name}_{os.getpid()}_{time.time_ns()}.json"
+    if path.exists():
+        path.unlink()
+    return path
+
+
 def _g2_11_lease_conflict_kill_check() -> None:
     # G2-11 acceptance: "mutation/fencing mutants pass." A lease acquire
     # attempt whose surfaces overlap an existing active lease in the same
-    # namespace must be rejected by the real Gen-1 LeaseRegistry -- exact
-    # G2-00 SS15 semantic-conflict-enforcement scenario.
+    # namespace must be rejected -- exact G2-00 SS15 semantic-conflict-
+    # enforcement scenario. Round-1 review finding: the original version
+    # only exercised the real Gen-1 LeaseRegistry, never the real compiled
+    # Rust kernel the "dispatch_lease" Trust Table row actually admits --
+    # if Rust's own conflict check were weakened, this fixture would still
+    # report KILLED. Both real implementations are now exercised; if
+    # either wrongly admits the conflicting lease, this raises a loud,
+    # non-expected-type failure instead of silently passing.
+    registry_path = _g2_11_registry_path("leaseconflict")
+    rust_lease_acquire(
+        registry_path,
+        {"lease_id": "L1", "campaign_id": "camp-1", "campaign_generation": 1, "epoch": 1, "owner_lane": "lane-1", "namespace": "ns", "surfaces": ["a/b"]},
+    )
+    try:
+        rust_lease_acquire(
+            registry_path,
+            {"lease_id": "L2", "campaign_id": "camp-1", "campaign_generation": 1, "epoch": 1, "owner_lane": "lane-2", "namespace": "ns", "surfaces": ["a/b/c"]},
+        )
+    except DispatchLeaseCliError:
+        pass
+    else:
+        raise AssertionError("rust dispatch_lease kernel incorrectly admitted a conflicting lease")
+
     registry = LeaseRegistry()
     gen1_lease_acquire(
         registry, lease_id="L1", campaign_id="camp-1", campaign_generation=1, epoch=1,
@@ -478,14 +528,34 @@ def _g2_11_lease_conflict_kill_check() -> None:
 def _g2_11_fencing_kill_check() -> None:
     # G2-11 acceptance: "mutation/fencing mutants pass." A mutation
     # admission claim carrying a stale lease fencing token (wrong
-    # generation) must be rejected by the real Gen-1 validate_live_task.
-    lease = WriteLease(
-        lease_id="L1", campaign_id="camp-1", campaign_generation=1, epoch=1, generation=1,
-        owner_lane="assign-1", namespace="ns", surfaces=("a/b",),
-    )
+    # generation) must be rejected. Round-1 review finding: the original
+    # version only exercised real Gen-1 validate_live_task, never the real
+    # compiled Rust kernel; both are now exercised, matching the fix
+    # applied to the lease-conflict fixture above.
     digest = sealed_task_dispatch_digest(
         campaign_id="camp-1", campaign_generation=1, foreman_epoch=1, assignment_id="assign-1",
         task_id="task-1", node_id="node-1", attempt=1, lease_id="L1", lease_epoch=1, lease_generation=999,
+    )
+    rust_claim = {
+        "campaign_id": "camp-1", "campaign_generation": 1, "foreman_epoch": 1, "assignment_id": "assign-1",
+        "task_id": "task-1", "node_id": "node-1", "attempt": 1, "dispatch_digest": digest,
+        "lease_id": "L1", "lease_epoch": 1, "lease_generation": 999, "required_resource": None,
+    }
+    rust_live = {
+        "campaign_generation": 1, "foreman_epoch": 1, "node_states": {"node-1": "running"},
+        "assignments": [{"assignment_id": "assign-1", "task_id": "task-1", "node_id": "node-1", "attempt": 1, "status": "active", "dispatch_digest": digest}],
+        "leases": [{"lease_id": "L1", "campaign_id": "camp-1", "campaign_generation": 1, "epoch": 1, "generation": 1, "owner_lane": "assign-1", "namespace": "ns", "surfaces": ["a/b"], "conflict_groups": [], "resources": [], "active": True}],
+    }
+    try:
+        rust_check_mutation_admission(rust_claim, rust_live)
+    except DispatchLeaseCliError:
+        pass
+    else:
+        raise AssertionError("rust dispatch_lease kernel incorrectly admitted a stale lease fencing token")
+
+    lease = WriteLease(
+        lease_id="L1", campaign_id="camp-1", campaign_generation=1, epoch=1, generation=1,
+        owner_lane="assign-1", namespace="ns", surfaces=("a/b",),
     )
     gen1_check_mutation_admission(
         campaign_id="camp-1", campaign_generation=1, foreman_epoch=1, assignment_id="assign-1",
@@ -493,6 +563,29 @@ def _g2_11_fencing_kill_check() -> None:
         required_resource=None, live_campaign_generation=1, live_foreman_epoch=1,
         live_node_state=NodeState.RUNNING, live_assignment_dispatch_digest=digest,
         live_assignment_status="active", live_leases=(lease,),
+    )
+
+
+def _g2_11_dependency_eligibility_kill_check() -> None:
+    # G2-11 acceptance: "mutation/fencing mutants pass" -- the dependency-
+    # eligibility mismatch case no earlier fixture covered. A node whose
+    # dependency has not yet reached PROVEN/SHIPPED must be classified
+    # blocked, not ready, by both the real Gen-1 Foreman.frontier() and
+    # the real compiled Rust kernel.
+    nodes = [
+        {"node_id": "a", "state": "authorized", "dependencies": []},
+        {"node_id": "b", "state": "authorized", "dependencies": [{"node_id": "a", "required_state": "proven", "dependency_class": "blocked"}]},
+    ]
+    gen1_frontier = gen1_compute_frontier(nodes)
+    rust_frontier = rust_compute_frontier(nodes)
+    gen1_correct = "b" in gen1_frontier["blocked"] and "b" not in gen1_frontier["ready"]
+    rust_correct = "b" in rust_frontier["blocked"] and "b" not in rust_frontier["ready"]
+    if not (gen1_correct and rust_correct):
+        raise AssertionError(
+            f"dependency-eligibility mismatch not correctly rejected: gen1={gen1_frontier} rust={rust_frontier}"
+        )
+    raise DependencyEligibilityMismatchRejected(
+        "node 'b' correctly classified blocked (unsatisfied dependency) by both Gen1 and Rust"
     )
 
 
@@ -998,8 +1091,8 @@ def build_initial_mutation_suite() -> MutationSuite:
             "MUT-G11-LEASECONFLICT-001",
             MutationCategory.BOUNDARY_INDEPENDENCE_FAILURE,
             "A lease acquire attempt whose surfaces overlap an existing active lease in the same "
-            "namespace is rejected by the real Gen-1 tenfold.ownership.LeaseRegistry -- G2-00 SS15 "
-            "semantic conflict enforcement.",
+            "namespace is rejected by both the real compiled Rust dispatch_lease kernel and the "
+            "real Gen-1 tenfold.ownership.LeaseRegistry -- G2-00 SS15 semantic conflict enforcement.",
             "G2-00 SS15; G2-11",
             "dispatch_lease",
             _g2_11_lease_conflict_kill_check,
@@ -1011,11 +1104,25 @@ def build_initial_mutation_suite() -> MutationSuite:
             "MUT-G11-FENCING-001",
             MutationCategory.GENERATION_FENCING_VIOLATION,
             "A mutation admission claim carrying a stale lease fencing token (wrong generation) is "
-            "rejected by the real Gen-1 tenfold.facility.validate_live_task.",
+            "rejected by both the real compiled Rust dispatch_lease kernel and the real Gen-1 "
+            "tenfold.facility.validate_live_task.",
             "G2-00 SS14-15; G2-11",
             "dispatch_lease",
             _g2_11_fencing_kill_check,
             FacilityError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G11-ELIGIBILITY-001",
+            MutationCategory.EXPECTED_SET_FAILURE,
+            "A node whose dependency has not yet reached PROVEN/SHIPPED is classified blocked, not "
+            "ready, by both the real Gen-1 Foreman.frontier() and the real compiled Rust "
+            "dispatch_lease kernel -- the dependency-eligibility-mismatch case.",
+            "G2-00 SS14; G2-11",
+            "dispatch_lease",
+            _g2_11_dependency_eligibility_kill_check,
+            DependencyEligibilityMismatchRejected,
         )
     )
 
