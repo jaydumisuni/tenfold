@@ -659,7 +659,11 @@ def independent_verify_requirement_closure_manifest(raw: Any) -> list[str]:
     for req in raw["requirements"]:
         req_defects = independent_verify_closed_schema(req, _INDEPENDENT_REQUIREMENT_KEYS, array_fields=frozenset({"classes"}))
         if req_defects:
-            defects.extend(f"requirement {req.get('requirement_id', '?')}: {d}" for d in req_defects)
+            # req may not even be a dict here (independent_verify_closed_schema
+            # returns a defect for that case too) — req.get(...) would crash
+            # on a non-dict adversarial element instead of cleanly reporting it.
+            req_label = req.get("requirement_id", "?") if isinstance(req, dict) else "?"
+            defects.extend(f"requirement {req_label}: {d}" for d in req_defects)
             continue
         req_ids.append(req["requirement_id"])
     if len(set(req_ids)) != len(req_ids):
@@ -669,7 +673,10 @@ def independent_verify_requirement_closure_manifest(raw: Any) -> list[str]:
     for ledger in raw["candidate_ledgers"]:
         ledger_defects = independent_verify_closed_schema(ledger, _INDEPENDENT_CANDIDATE_LEDGER_KEYS, array_fields=frozenset({"entries"}))
         if ledger_defects:
-            defects.extend(f"candidate_ledger {ledger.get('requirement_id', '?')}: {d}" for d in ledger_defects)
+            # Same non-dict-adversarial-element hazard as the requirements
+            # loop above: ledger may not be a dict at all here.
+            ledger_label = ledger.get("requirement_id", "?") if isinstance(ledger, dict) else "?"
+            defects.extend(f"candidate_ledger {ledger_label}: {d}" for d in ledger_defects)
             continue
         ledger_req_ids.append(ledger["requirement_id"])
         accepted_or_merged = False
@@ -705,6 +712,101 @@ def independent_verify_requirement_closure_manifest(raw: Any) -> list[str]:
     orphaned_ledgers = set(ledger_req_ids) - set(req_ids)
     if orphaned_ledgers:
         defects.append(f"Candidate Ledger(s) for unknown requirement_id: {sorted(orphaned_ledgers)}")
+
+    return defects
+
+
+_INDEPENDENT_OBLIGATION_IR_KEYS = frozenset(
+    {"ir_generation", "requirement_closure_digest", "classification_closure_digest", "policy_closure_digest", "nodes"}
+)
+_INDEPENDENT_OBLIGATION_IR_NODE_KEYS = frozenset(
+    {"obligation_id", "requirement_id", "obligation_class", "proof_predicate", "falsification_class"}
+)
+# G2-00 SS7: "architecture, behaviour, mutation, security, recovery,
+# evidence, assurance and promotion" -- independently re-derived from the
+# frozen authority text, not imported from tenfold.gen2.constitutional
+# .ObligationClass (G2-06's Verifier Gate: this module's semantics are not
+# derived from, or checked against, the producer's own enum).
+_INDEPENDENT_OBLIGATION_CLASSES = frozenset(
+    {"ARCHITECTURE", "BEHAVIOUR", "MUTATION", "SECURITY", "RECOVERY", "EVIDENCE", "ASSURANCE", "PROMOTION"}
+)
+# G2-00 SS11.1's falsification-priority partial order.
+_INDEPENDENT_FALSIFICATION_CLASSES = frozenset({"CRITICAL", "HIGH", "STANDARD", "LOW", "DEFERRED"})
+
+# Independently re-derived copy of constitutional.py's _MAX_U64: Rust's
+# ir_generation is a u64, so a value Python's arbitrary-precision int would
+# otherwise accept above 2**64-1 is a real cross-decoder disagreement
+# (G2-00 SS7.1), not merely a style preference.
+_INDEPENDENT_MAX_U64 = (1 << 64) - 1
+
+
+def independent_verify_obligation_ir(raw: Any, *, known_requirement_ids: frozenset[str] | None = None) -> list[str]:
+    """Independently re-verify an ObligationIR-shaped candidate (G2-00 SS7):
+    closed-schema well-formedness at every level, an ir_generation that is
+    both a positive integer and within the u64 bound the Rust decoder
+    enforces, non-empty digest fields, non-empty nodes, no duplicate
+    obligation_id, every node's requirement_id bound to a real requirement
+    when `known_requirement_ids` is supplied (G2-00 SS4.1's obligation_ir
+    Trust Table row: required_negative_fixture "disconnected obligation"),
+    and every node's obligation_class/falsification_class is a member of
+    the independently re-derived (not imported) closed enums. Returns the
+    list of defects found; empty means this independent check found
+    nothing wrong."""
+    defects: list[str] = []
+    defects.extend(
+        independent_verify_closed_schema(raw, _INDEPENDENT_OBLIGATION_IR_KEYS, array_fields=frozenset({"nodes"}))
+    )
+    if defects:
+        return defects
+
+    if not isinstance(raw["ir_generation"], int) or isinstance(raw["ir_generation"], bool) or raw["ir_generation"] < 1:
+        defects.append("ir_generation must be a positive integer")
+    elif raw["ir_generation"] > _INDEPENDENT_MAX_U64:
+        defects.append(f"ir_generation must not exceed the u64 bound {_INDEPENDENT_MAX_U64} (cross-decoder agreement)")
+    for field in ("requirement_closure_digest", "classification_closure_digest", "policy_closure_digest"):
+        if not isinstance(raw[field], str) or not raw[field].strip():
+            defects.append(f"{field} must be a non-empty string")
+
+    nodes = raw["nodes"]
+    if not nodes:
+        defects.append("nodes must be non-empty")
+
+    obligation_ids: list[str] = []
+    for node in nodes:
+        node_defects = independent_verify_closed_schema(node, _INDEPENDENT_OBLIGATION_IR_NODE_KEYS)
+        if node_defects:
+            # node may not be a dict at all — see the identical hazard
+            # fixed in independent_verify_requirement_closure_manifest.
+            node_label = node.get("obligation_id", "?") if isinstance(node, dict) else "?"
+            defects.extend(f"node {node_label}: {d}" for d in node_defects)
+            continue
+        if not isinstance(node["obligation_id"], str) or not node["obligation_id"].strip():
+            defects.append("node obligation_id must be a non-empty string")
+        else:
+            obligation_ids.append(node["obligation_id"])
+        if not isinstance(node["requirement_id"], str) or not node["requirement_id"].strip():
+            defects.append(f"node {node['obligation_id']!r}: requirement_id must be a non-empty string")
+        elif known_requirement_ids is not None and node["requirement_id"] not in known_requirement_ids:
+            defects.append(
+                f"node {node['obligation_id']!r}: requirement_id {node['requirement_id']!r} is not bound to "
+                "any requirement in the closure — disconnected obligation"
+            )
+        if not isinstance(node["proof_predicate"], str) or not node["proof_predicate"].strip():
+            defects.append(f"node {node['obligation_id']!r}: proof_predicate must be a non-empty string")
+        # isinstance-guarded before the `in` check: an adversarial encoding
+        # can supply a list/dict (unhashable) where a scalar enum value is
+        # expected, and `x not in a_frozenset` raises TypeError for an
+        # unhashable x rather than returning False — a defensive decoder
+        # must reject that cleanly, not crash on it.
+        obligation_class = node["obligation_class"]
+        if not isinstance(obligation_class, str) or obligation_class not in _INDEPENDENT_OBLIGATION_CLASSES:
+            defects.append(f"node {node['obligation_id']!r}: invalid obligation_class {obligation_class!r}")
+        falsification_class = node["falsification_class"]
+        if not isinstance(falsification_class, str) or falsification_class not in _INDEPENDENT_FALSIFICATION_CLASSES:
+            defects.append(f"node {node['obligation_id']!r}: invalid falsification_class {falsification_class!r}")
+
+    if len(set(obligation_ids)) != len(obligation_ids):
+        defects.append("duplicate obligation_id across nodes")
 
     return defects
 

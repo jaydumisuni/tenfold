@@ -271,6 +271,31 @@ def _g2_05_policy_escape_blast_radius_kill_check() -> None:
     record_policy_escape("ESC-1", 99, "retrospective-probe", {"P-1": 1, "P-2": 2})
 
 
+def _g2_06_canonical_duplicate_key_kill_check() -> None:
+    # G2-06 / G2-00 SS7.1: canonical decoding must reject ambiguous
+    # duplicate object keys rather than silently keeping the last one.
+    text = (
+        '{"ir_generation":1,"ir_generation":2,"requirement_closure_digest":"a"'
+        ',"classification_closure_digest":"b","policy_closure_digest":"c","nodes":[]}'
+    )
+    ObligationIR.load(text)
+
+
+def _g2_06_disconnected_obligation_kill_check() -> None:
+    # G2-00 SS4.1's obligation_ir Trust Table row (added G2-03) names
+    # "disconnected obligation" as its required_negative_fixture: a node
+    # whose requirement_id names no real requirement in the bound closure
+    # must reject, not pass on a merely-non-empty-string check.
+    ir = ObligationIR(
+        1,
+        "a" * 4,
+        "b" * 4,
+        "c" * 4,
+        (ObligationIRNode("OB-1", "REQ-GHOST", ObligationClass.SECURITY, "predicate-SECURITY", FalsificationClass.CRITICAL),),
+    )
+    ir.validate(known_requirement_ids=frozenset({"REQ-1"}))
+
+
 def build_initial_mutation_suite() -> MutationSuite:
     suite = MutationSuite()
 
@@ -622,6 +647,32 @@ def build_initial_mutation_suite() -> MutationSuite:
             "G2-00 SS6.7; G2-05",
             "constitutional_policy",
             _g2_05_policy_escape_blast_radius_kill_check,
+            ConstitutionalError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G06-CANONICAL-001",
+            MutationCategory.PARTIAL_PROOF_SEMANTICS,
+            "An ObligationIR encoding carries the same top-level key twice "
+            "(ir_generation), an ambiguous duplicate G2-00 SS7.1 requires canonical "
+            "decoding to reject rather than silently keeping the last occurrence.",
+            "G2-00 SS7.1; G2-06",
+            "obligation_ir",
+            _g2_06_canonical_duplicate_key_kill_check,
+            ConstitutionalError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G06-DISCONNECTED-001",
+            MutationCategory.BOUNDARY_INDEPENDENCE_FAILURE,
+            "An ObligationIRNode names a requirement_id absent from the bound Requirement "
+            "Closure's known requirement set — the obligation_ir Trust Table row's own "
+            "promised required_negative_fixture, 'disconnected obligation'.",
+            "G2-00 SS4.1 Trust Table row: Obligation IR; G2-06",
+            "obligation_ir",
+            _g2_06_disconnected_obligation_kill_check,
             ConstitutionalError,
         )
     )

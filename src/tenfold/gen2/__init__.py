@@ -76,6 +76,7 @@ from .verifier import (
     independent_decode_canonical_json,
     independent_reconcile_external_assurance,
     independent_verify_closed_schema,
+    independent_verify_obligation_ir,
     independent_verify_requirement_closure_manifest,
     scan_for_undeclared_common_mode_dependencies,
 )
@@ -173,6 +174,7 @@ __all__ = [
     "independent_decode_canonical_json",
     "independent_reconcile_external_assurance",
     "independent_verify_closed_schema",
+    "independent_verify_obligation_ir",
     "independent_verify_requirement_closure_manifest",
     "scan_for_undeclared_common_mode_dependencies",
     "FixtureStatus",
