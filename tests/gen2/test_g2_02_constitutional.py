@@ -461,6 +461,21 @@ def test_g2_02_compilation_certificate_requires_transformation_witnesses() -> No
         cert.validate()
 
 
+def test_g2_02_compilation_certificate_rejects_blank_witness_id() -> None:
+    # Found during G2-08 review against the equivalent Rust check: a tuple
+    # containing only "" is non-empty as a collection, so the check above
+    # alone would accept it.
+    cert = CompilationCertificate(1, "a" * 64, "b" * 64, 1, "c" * 64, "d" * 64, ("",), "e" * 64, "f" * 64, "g" * 64, "h" * 64)
+    with pytest.raises(ConstitutionalError, match="must not contain an empty witness ID"):
+        cert.validate()
+
+
+def test_g2_02_compilation_certificate_rejects_duplicate_witness_ids() -> None:
+    cert = CompilationCertificate(1, "a" * 64, "b" * 64, 1, "c" * 64, "d" * 64, ("WIT-1", "WIT-1"), "e" * 64, "f" * 64, "g" * 64, "h" * 64)
+    with pytest.raises(ConstitutionalError, match="must not contain duplicates"):
+        cert.validate()
+
+
 def test_g2_02_campaign_program_duplicate_task_id_fails_closed() -> None:
     program = ConstitutionalCampaignProgram(1, "d" * 64, ("T-1", "T-1"))
     with pytest.raises(ConstitutionalError, match="duplicate task_ids"):

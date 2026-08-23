@@ -1466,6 +1466,15 @@ class CompilationCertificate:
         _positive_int(self.policy_generation, "policy_generation", "CompilationCertificate")
         if not self.transformation_witnesses:
             raise ConstitutionalError("CompilationCertificate: transformation_witnesses must be non-empty (proves HOW transformation occurred)")
+        # Found alongside the identical gap in rust/certificate_checker
+        # during G2-08 review: a tuple containing only "" is non-empty as a
+        # collection, so the check above alone would accept it. Each
+        # witness ID must itself be a genuine reference, and the set must
+        # not silently absorb a duplicate claim.
+        if any(not w or not w.strip() for w in self.transformation_witnesses):
+            raise ConstitutionalError("CompilationCertificate: transformation_witnesses must not contain an empty witness ID")
+        if len(set(self.transformation_witnesses)) != len(self.transformation_witnesses):
+            raise ConstitutionalError("CompilationCertificate: transformation_witnesses must not contain duplicates")
 
     def to_dict(self) -> dict[str, Any]:
         return {
