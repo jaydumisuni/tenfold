@@ -189,6 +189,69 @@ def build_g2_09_base_state_model() -> StateModel:
 
 
 # ============================================================================
+# G2-10 production State Model extension (docs/08-gen2-roadmap.md's G2-10
+# deliverable: "Extend State Model with writer identity/generation,
+# sequence, checkpoint, durability, snapshot and transfer state.").
+#
+# Follows the same discipline established for G2-09: a frozen,
+# independently-authored required-field roster, checked against a
+# production `.extend()` call, not against itself.
+# ============================================================================
+
+G2_10_REQUIRED_STATE_MODEL_FIELD_IDS: frozenset[str] = frozenset(
+    {
+        "chronicle_writer_id",
+        "chronicle_writer_generation",
+        "chronicle_sequence",
+        "chronicle_external_checkpoint",
+        "chronicle_durability_barrier",
+        "chronicle_snapshot",
+        "chronicle_writer_transfer_state",
+    }
+)
+
+
+def build_g2_10_state_model() -> StateModel:
+    """Extends the G2-09 base State Model with G2-10's Chronicle
+    identity/sequence/checkpoint/durability/snapshot/transfer fields (G2-00
+    §8; `rust/chronicle`)."""
+    return build_g2_09_base_state_model().extend(
+        (
+            StateModelField(
+                "chronicle_writer_id", AuthorityHolder.GEN2_RUST, "chronicle::ChronicleEngine (writer lease)",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-10",
+            ),
+            StateModelField(
+                "chronicle_writer_generation", AuthorityHolder.GEN2_RUST, "chronicle::ChronicleEngine (writer lease)",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-10",
+            ),
+            StateModelField(
+                "chronicle_sequence", AuthorityHolder.GEN2_RUST, "chronicle::ChronicleEntry.sequence",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-10",
+            ),
+            StateModelField(
+                "chronicle_external_checkpoint", AuthorityHolder.GEN2_RUST, "chronicle::ExternalHeadCheckpoint",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-10",
+            ),
+            StateModelField(
+                "chronicle_durability_barrier", AuthorityHolder.GEN2_RUST,
+                "chronicle::ChronicleEngine::append (fsync + read-after-write)",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-10",
+            ),
+            StateModelField(
+                "chronicle_snapshot", AuthorityHolder.GEN2_RUST, "chronicle::ChronicleSnapshot",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-10",
+            ),
+            StateModelField(
+                "chronicle_writer_transfer_state", AuthorityHolder.GEN2_RUST,
+                "chronicle::ChronicleEngine::open_with_transfer (writer lease rebind)",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-10",
+            ),
+        )
+    )
+
+
+# ============================================================================
 # Failure-space scenario generator base (G2-00 §14.1: "Failure-space
 # qualification reports 1-wise, pairwise, 3-wise high-risk, transition and
 # forbidden-state coverage according to frozen risk policy. No mathematical
