@@ -259,13 +259,20 @@ pub fn initial_trust_table() -> TrustTable {
         },
         TrustTableRow {
             artifact_identity: "facility_declaration".into(),
-            independently_checks: vec!["nothing authoritative before qualification".into()],
+            independently_checks: vec![
+                "nothing authoritative before qualification".into(),
+                "unqualified non-occurrence signal cannot yield FAILED_NON_OCCURRENCE_PROVEN".into(),
+                "REAL_MUTATING io_class mechanically blocked (G2-14 critical gate, until G2-18 is PROVEN)".into(),
+            ],
             trusts_only: "individually qualified properties only".into(),
             trust_bounded_reason: "G2-00 SS9.1: a Facility declaration has no constitutional authority merely because the adapter/provider says it is true; only adversarially qualified properties may be trusted, and only up to their qualified bound".into(),
             authority_generation: 1,
             required_negative_fixture: "unqualified property".into(),
             failure_result: "non-authoritative".into(),
-            fixture_qualified: false,
+            // G2-14 (rust/facility) is the real crate genuinely backing
+            // this claim now -- flipped from the honest `false` G2-03
+            // seeded this row with before any real runtime existed.
+            fixture_qualified: true,
         },
         TrustTableRow {
             artifact_identity: "evidence_packet".into(),
@@ -334,6 +341,7 @@ mod tests {
             "compilation_certificate_witnesses",
             "external_assurance",
             "runtime_obligation",
+            "facility_declaration",
         ] {
             assert!(table.admit(identity).is_ok(), "expected {identity} to be admitted");
         }
@@ -341,20 +349,18 @@ mod tests {
 
     #[test]
     fn fail_closed_admission_for_artifact_with_no_qualified_fixture() {
-        // A row's mere presence is not admission: facility_declaration and
-        // evidence_packet are real, well-formed Trust Table rows, but no
-        // fixture has genuinely killed the mutation either row's
-        // required_negative_fixture describes yet
-        // (tenfold.gen2.mutation_fixtures leaves both PENDING_IMPLEMENTATION
-        // honestly). admit() must refuse them exactly like a missing row.
+        // A row's mere presence is not admission: evidence_packet is a
+        // real, well-formed Trust Table row, but no fixture has genuinely
+        // killed the mutation its required_negative_fixture describes yet
+        // (tenfold.gen2.mutation_fixtures leaves it PENDING_IMPLEMENTATION
+        // honestly). admit() must refuse it exactly like a missing row.
         let table = initial_trust_table();
-        for identity in ["facility_declaration", "evidence_packet"] {
-            assert_eq!(
-                table.admit(identity),
-                Err(TrustTableError::UnqualifiedFixture { artifact_identity: identity.to_string() }),
-                "expected {identity} to be refused for an unqualified fixture"
-            );
-        }
+        let identity = "evidence_packet";
+        assert_eq!(
+            table.admit(identity),
+            Err(TrustTableError::UnqualifiedFixture { artifact_identity: identity.to_string() }),
+            "expected {identity} to be refused for an unqualified fixture"
+        );
     }
 
     #[test]

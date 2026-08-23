@@ -452,6 +452,55 @@ def build_g2_13_state_model() -> StateModel:
 
 
 # ============================================================================
+# G2-14 production State Model extension (G2-00 SS9.1; docs/08-gen2-
+# roadmap.md's G2-14 deliverable set).
+# ============================================================================
+
+G2_14_REQUIRED_STATE_MODEL_FIELD_IDS: frozenset[str] = frozenset(
+    {
+        "facility_contract_state",
+        "facility_property_qualification_state",
+        "facility_critical_gate_state",
+        "facility_rust_runtime",
+        "facility_qualification_harness_state",
+    }
+)
+
+
+def build_g2_14_state_model() -> StateModel:
+    """Extends the G2-13 State Model with G2-14's Facility contract/
+    qualification/critical-gate fields (G2-00 SS9.1; `tenfold.gen2.facility`
+    + `rust/facility`)."""
+    return build_g2_13_state_model().extend(
+        (
+            StateModelField(
+                "facility_contract_state", AuthorityHolder.GEN1_PYTHON, "facility.FacilityContract",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-14",
+            ),
+            StateModelField(
+                "facility_property_qualification_state", AuthorityHolder.GEN1_PYTHON,
+                "facility.PropertyQualificationRecord / QualificationState",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-14",
+            ),
+            StateModelField(
+                "facility_critical_gate_state", AuthorityHolder.GEN1_PYTHON, "facility.check_critical_gate / FacilityIOClass",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-14",
+            ),
+            StateModelField(
+                "facility_rust_runtime", AuthorityHolder.GEN2_RUST,
+                "facility::FacilityContract::validate / check_critical_gate",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-14",
+            ),
+            StateModelField(
+                "facility_qualification_harness_state", AuthorityHolder.GEN1_PYTHON,
+                "facility.LocalSandboxFacility / FacilityPropertyQualificationHarness",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-14",
+            ),
+        )
+    )
+
+
+# ============================================================================
 # Failure-space scenario generator base (G2-00 §14.1: "Failure-space
 # qualification reports 1-wise, pairwise, 3-wise high-risk, transition and
 # forbidden-state coverage according to frozen risk policy. No mathematical

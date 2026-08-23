@@ -1003,3 +1003,27 @@ def independent_derive_expected_runtime_obligation_set(effects: list[dict]) -> f
         if effect["has_unexplained_residue"]:
             expected.add((effect["effect_id"], "EFFECT_INTEGRITY"))
     return frozenset(expected)
+
+
+# ============================================================================
+# G2-14: Facility Capability ABI -- Standing Gate B addition (G2-00 SS12.1,
+# same 6-step sequence documented at the G2-12 section above). Steps 1/3
+# are this function itself (derived from G2-00 SS9.1 directly, never from
+# rust/facility's implementation); steps 2/4 are recorded as real
+# VerifierSpecificationDelta/ComponentLineage instances in
+# tests/gen2/test_g2_14_facility.py alongside the real reconciliation
+# (steps 5-6) against both tenfold.gen2.facility and the real compiled
+# Rust kernel.
+# ============================================================================
+
+
+def independent_can_emit_authoritative_non_occurrence(property_states: dict[str, str]) -> bool:
+    """Independent re-derivation of G2-00 SS9.1's "An unqualified Facility
+    may never emit authoritative FAILED_NON_OCCURRENCE_PROVEN", operating
+    on a raw {property_name: qualification_state} mapping rather than
+    importing `tenfold.gen2.facility.FacilityContract`. True only when the
+    NON_OCCURRENCE_SIGNAL property's state is QUALIFIED or
+    QUALIFIED_WITH_BOUND.
+    """
+    state = property_states.get("NON_OCCURRENCE_SIGNAL")
+    return state in ("QUALIFIED", "QUALIFIED_WITH_BOUND")
