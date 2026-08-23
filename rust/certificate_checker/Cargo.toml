@@ -1,0 +1,14 @@
+[package]
+name = "tenfold-certificate-checker"
+version = "0.1.0"
+edition = "2021"
+description = "Rust certificate checker and independent coverage/structural-floor/policy-totality/falsification-depth/ambiguity-blocking checks (G2-00 SS6.3, SS7) for Tenfold Gen 2.0."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+obligation_ir = { package = "tenfold-obligation-ir", path = "../obligation_ir" }
+
+[lib]
+name = "certificate_checker"
+path = "src/lib.rs"

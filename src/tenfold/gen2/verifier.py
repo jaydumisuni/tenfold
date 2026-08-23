@@ -811,6 +811,48 @@ def independent_verify_obligation_ir(raw: Any, *, known_requirement_ids: frozens
     return defects
 
 
+# G2-00 SS6.3's three structurally-floored obligation classes, independently
+# re-derived here (not imported from tenfold.gen2.constitutional or
+# tenfold.gen2.closure_runtime) for G2-08's own acceptance bar: "A
+# structurally valid certificate whose final program omits a required
+# security/recovery obligation must be rejected independently by Rust and
+# verifier." rust/certificate_checker's check_typed_coverage enforces the
+# Rust half; this is the verifier half.
+_INDEPENDENT_STRUCTURALLY_FLOORED_CLASSES = frozenset({"MUTATION", "SECURITY", "RECOVERY"})
+
+
+def independent_check_typed_coverage(raw: Any, task_ids: list[str]) -> list[str]:
+    """Independently re-derive G2-00 SS7's "Rust independently recomputes
+    typed final-program coverage and answers what survived" on the
+    verifier side: given an already-decoded ObligationIR-shaped `raw` and
+    the Campaign Program's own `task_ids`, checks that every obligation has
+    a corresponding task (`TASK-<obligation_id>`, the same compiler rule
+    `rust/certificate_checker` independently checks against). Returns the
+    list of defects found; empty means every obligation is covered. An
+    omitted MUTATION/SECURITY/RECOVERY-classed obligation is reported with
+    an explicit "structurally-floored" marker, matching this milestone's
+    own acceptance bar."""
+    defects = independent_verify_obligation_ir(raw)
+    if defects:
+        return defects
+
+    task_id_set = set(task_ids)
+    missing: list[str] = []
+    missing_floored: list[str] = []
+    for node in raw["nodes"]:
+        expected_task_id = f"TASK-{node['obligation_id']}"
+        if expected_task_id not in task_id_set:
+            missing.append(node["obligation_id"])
+            if node["obligation_class"] in _INDEPENDENT_STRUCTURALLY_FLOORED_CLASSES:
+                missing_floored.append(node["obligation_id"])
+    if missing:
+        defects.append(
+            f"independent_check_typed_coverage: final program omits obligation(s) {sorted(missing)}; "
+            f"structurally-floored omission(s): {sorted(missing_floored)}"
+        )
+    return defects
+
+
 def independent_reconcile_external_assurance(
     *,
     assurance_type: str,

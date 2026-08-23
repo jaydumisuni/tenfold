@@ -51,6 +51,7 @@ from .constitutional import (
     AssuranceCopySlot,
 )
 from .reference import ReferenceError
+from .verifier import VerifierError, independent_check_typed_coverage, independent_decode_canonical_json
 from .mutation_suite import MutationCategory, MutationFixture, MutationSuite
 from .closure_runtime import (
     ClassificationMergeRecord,
@@ -322,6 +323,26 @@ def _g2_07_broken_witness_kill_check() -> None:
     forged = replace(compiled.witnesses[0], input_digest="not-the-real-digest" * 4)
     tampered = replace(compiled, witnesses=(forged,))
     reconcile_compiled_campaign(ir, tampered)
+
+
+def _g2_08_coverage_omission_kill_check() -> None:
+    # G2-08 / G2-00 SS7 acceptance: "A structurally valid certificate whose
+    # final program omits a required security/recovery obligation must be
+    # rejected independently by Rust and verifier." Exercises the verifier
+    # half; rust/certificate_checker's own
+    # typed_coverage_flags_structurally_floored_omission_separately test
+    # exercises the Rust half independently.
+    text = (
+        '{"ir_generation":1,"requirement_closure_digest":"a"'
+        ',"classification_closure_digest":"b","policy_closure_digest":"c"'
+        ',"nodes":[{"obligation_id":"OB-1","requirement_id":"REQ-1"'
+        ',"obligation_class":"SECURITY","proof_predicate":"predicate-SECURITY"'
+        ',"falsification_class":"CRITICAL"}]}'
+    )
+    raw = independent_decode_canonical_json(text)
+    defects = independent_check_typed_coverage(raw, [])
+    if defects:
+        raise VerifierError("; ".join(defects))
 
 
 def build_initial_mutation_suite() -> MutationSuite:
@@ -715,6 +736,19 @@ def build_initial_mutation_suite() -> MutationSuite:
             "compilation_certificate_witnesses",
             _g2_07_broken_witness_kill_check,
             ConstitutionalError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G08-COVERAGE-001",
+            MutationCategory.PARTIAL_PROOF_SEMANTICS,
+            "A structurally valid Obligation IR carries a SECURITY-classed obligation, but the "
+            "final program's task_ids omit it entirely — the exact G2-08 acceptance scenario, "
+            "rejected independently by rust/certificate_checker and this verifier-side check.",
+            "G2-00 SS7 acceptance: security/recovery omission rejected by Rust and verifier; G2-08",
+            "campaign_program",
+            _g2_08_coverage_omission_kill_check,
+            VerifierError,
         )
     )
 
