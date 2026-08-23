@@ -22,13 +22,14 @@ This file records the repository recovery point. Always recover live GitHub stat
 - Canonical review/freeze record: `docs/09-gen2-review-record.md`.
 - Canonical chat-workspace execution rule: `docs/10-chat-workspace-execution.md`.
 - Complete generational evolution map: `docs/11-generational-evolution-map.md`.
-- Gen-2 implementation: **IN PROGRESS** (G2-01 PROVEN; G2-02 PROVEN; G2-03 PROVEN; G2-04 PROVEN).
+- Gen-2 implementation: **IN PROGRESS** (G2-01 PROVEN; G2-02 PROVEN; G2-03 PROVEN; G2-04 PROVEN; G2-05 PROVEN).
 - Gen-2 qualification: **IN PROGRESS**.
 - G2-01 — Gen-1 Reference and Inheritance Freeze: **PROVEN**. Proven candidate `8e33f7a4240e18141ae44d6733043660f64c1640`. Canonical review/proof record: `docs/gen2/G2-01-review-record.md`.
 - G2-02 — Constitutional Schema and Policy Foundation: **PROVEN**. Proven candidate `a3a9b19702b203ad79aecebdf039eb12254e8daf`. Canonical review/proof record: `docs/gen2/G2-02-review-record.md`.
 - G2-04 — Independent Verifier Specification and Core: **PROVEN**. Proven candidate `c7606a6ea4d3a3a7f4a37783863de68915dd0600`. Canonical review/proof record: `docs/gen2/G2-04-review-record.md`.
 - G2-03 — Constitutional Mutation Suite / Executable Rust Trust Table: **PROVEN**. Proven candidate `8a14162e6202a9e85bb154f5d29e67e9788e7528`. Canonical review/proof record: `docs/gen2/G2-03-review-record.md`.
-- Current next Gen-2 milestone: **G2-05 — Requirement / Classification / Policy Closure Runtime** (real dependency frontier: ready, since G2-02+G2-03+G2-04 are all PROVEN).
+- G2-05 — Requirement / Classification / Policy Closure Runtime: **PROVEN**. Proven candidate `a49310e54297003d41d22b29eff54ce66015460f`. Canonical review/proof record: `docs/gen2/G2-05-review-record.md`.
+- Current next Gen-2 milestone: **G2-06 — Obligation IR and Canonical Encoding** (real dependency frontier: ready, since G2-05 is PROVEN).
 - Construction runtime: **qualified Tenfold Gen 1** (authoritative through G2-23 per the frozen roadmap).
 
 Do not restart Gen-2 architecture design from chat memory. Recover G2-00, the Gen-2 roadmap, workspace rule and generational evolution map first. Reopen G2-00 only if implementation/evidence demonstrates a real frozen-authority violation or the Owner explicitly authorises an architecture change.
