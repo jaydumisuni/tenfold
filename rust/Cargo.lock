@@ -203,6 +203,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tenfold-proof-graph"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "tenfold-obligation-ir",
+ "tenfold-trust-table",
+]
+
+[[package]]
 name = "tenfold-trust-table"
 version = "0.1.0"
 

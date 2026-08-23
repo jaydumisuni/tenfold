@@ -334,6 +334,60 @@ def build_g2_11_state_model() -> StateModel:
 
 
 # ============================================================================
+# G2-12 production State Model extension (docs/08-gen2-roadmap.md's G2-12
+# deliverable: "Extend State Model with Proof Graph, evidence-admission,
+# assurance, falsification and promotion state.").
+# ============================================================================
+
+G2_12_REQUIRED_STATE_MODEL_FIELD_IDS: frozenset[str] = frozenset(
+    {
+        "proof_graph_node_state",
+        "proof_evidence_admission",
+        "proof_mandatory_assurance",
+        "proof_falsification_topology_baseline",
+        "proof_hermetic_record",
+        "proof_graph_rust_runtime",
+    }
+)
+
+
+def build_g2_12_state_model() -> StateModel:
+    """Extends the G2-11 State Model with G2-12's Proof Graph/evidence-
+    admission/assurance/falsification/promotion fields (G2-00 SS11;
+    `tenfold.gen2.proof_graph` + `rust/proof_graph`)."""
+    return build_g2_11_state_model().extend(
+        (
+            StateModelField(
+                "proof_graph_node_state", AuthorityHolder.GEN1_PYTHON, "constitutional.ProofGraphNode.state / ProofState",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-12",
+            ),
+            StateModelField(
+                "proof_evidence_admission", AuthorityHolder.GEN1_PYTHON, "proof_graph.admit_evidence",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-12",
+            ),
+            StateModelField(
+                "proof_mandatory_assurance", AuthorityHolder.GEN1_PYTHON,
+                "constitutional.ConstitutionalPolicySet.obligation_class_to_assurance_routing / proof_graph.derive_mandatory_assurance",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-12",
+            ),
+            StateModelField(
+                "proof_falsification_topology_baseline", AuthorityHolder.GEN1_PYTHON,
+                "campaign_compiler.check_falsification_topology_baseline",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-12",
+            ),
+            StateModelField(
+                "proof_hermetic_record", AuthorityHolder.GEN1_PYTHON, "proof_graph.HermeticProofRecord",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-12",
+            ),
+            StateModelField(
+                "proof_graph_rust_runtime", AuthorityHolder.GEN2_RUST, "proof_graph::ProofGraph / compute_proof_verdict",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-12",
+            ),
+        )
+    )
+
+
+# ============================================================================
 # Failure-space scenario generator base (G2-00 §14.1: "Failure-space
 # qualification reports 1-wise, pairwise, 3-wise high-risk, transition and
 # forbidden-state coverage according to frozen risk policy. No mathematical

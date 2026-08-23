@@ -916,3 +916,51 @@ def independent_reconcile_external_assurance(
             mismatch_reason=f"supplied/retained or expected-binding mismatch on: {', '.join(mismatches)}",
         )
     return ExternalAssuranceReconciliationResult(assurance_type=assurance_type, reconciled=True, mismatch_reason=None)
+
+
+# ============================================================================
+# G2-12: Proof Graph / Assurance / Falsification Runtime -- Standing Gate B
+# additions (G2-00 SS12.1: "Whenever a milestone expands verifier
+# semantics: 1. derive verifier expectation from frozen authority; 2.
+# record verifier specification delta; 3. implement/update verifier
+# without using kernel implementation as normative source; 4. record
+# lineage declaration; 5. only then reconcile against runtime/kernel
+# output; 6. record disagreement in the formal ledger."). Steps 1/3 are
+# this section itself (derived from G2-00 SS11/SS11.2 directly, never
+# from rust/proof_graph's implementation); steps 2/4 are recorded as real
+# VerifierSpecificationDelta/ComponentLineage instances in
+# tests/gen2/test_g2_12_proof_graph.py alongside the real reconciliation
+# (steps 5-6) against both tenfold.gen2.proof_graph and the real compiled
+# Rust kernel.
+# ============================================================================
+
+
+def independent_derive_mandatory_assurance(present_obligation_classes: list[str], routing: dict[str, list[str]]) -> frozenset[str]:
+    """Independent re-derivation of G2-00 SS11.2's mandatory-assurance
+    derivation ("The verifier derives mandatory assurance from
+    Requirement Closure, Classification Closure, Policy Generation,
+    Obligation IR and Assurance Matrix rather than accepting runtime
+    routing claims"), operating on raw obligation-class strings and a raw
+    routing map rather than importing
+    `tenfold.gen2.constitutional.ConstitutionalPolicySet`/`ObligationIR`.
+    """
+    required: set[str] = set()
+    for obligation_class in present_obligation_classes:
+        required.update(routing.get(obligation_class, ()))
+    return frozenset(required)
+
+
+def independent_compute_proof_verdict(node_states: list[str], required_assurance: list[str], satisfied_assurance: list[str]) -> str:
+    """Independent re-derivation of the campaign-level PROVEN/NOT_PROVEN
+    verdict (G2-00 SS11: "A terminated campaign missing any required proof
+    is NOT_PROVEN"; SS11.2: "Missing expected assurance -> NOT_PROVEN"),
+    operating on raw `ProofState`-value strings and raw assurance-id lists
+    rather than importing `tenfold.gen2.constitutional.ProofGraph`. PROVEN
+    requires *both* every node's state being exactly "PROVEN" *and* every
+    required assurance id present in the satisfied set.
+    """
+    if not node_states or any(state != "PROVEN" for state in node_states):
+        return "NOT_PROVEN"
+    if not set(required_assurance) <= set(satisfied_assurance):
+        return "NOT_PROVEN"
+    return "PROVEN"

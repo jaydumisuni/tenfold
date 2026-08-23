@@ -66,6 +66,7 @@ from .closure_runtime import (
 from .campaign_compiler import (
     TASK_DERIVATION_RULE_REF,
     TransformationWitness,
+    check_falsification_topology_baseline,
     compile_campaign_program,
     reconcile_compiled_campaign,
 )
@@ -86,6 +87,13 @@ from .dispatch_lease_bridge import (
     rust_check_mutation_admission,
     rust_compute_frontier,
     rust_lease_acquire,
+)
+from .proof_graph import HermeticProofRecord, compute_proof_verdict, verify_fresh_hermetic_proof
+from .proof_graph_bridge import (
+    ProofGraphCliError,
+    rust_check_falsification_topology_baseline,
+    rust_compute_proof_verdict,
+    rust_verify_fresh_hermetic_proof,
 )
 from tenfold.contracts import NodeState
 from tenfold.facility import FacilityError
@@ -587,6 +595,120 @@ def _g2_11_dependency_eligibility_kill_check() -> None:
     raise DependencyEligibilityMismatchRejected(
         "node 'b' correctly classified blocked (unsatisfied dependency) by both Gen1 and Rust"
     )
+
+
+class PartialProofCorrectlyRejected(Exception):
+    """Fixture-only sentinel (not a real Gen1/Rust exception type): raised
+    manually by `_g2_12_partial_proof_kill_check` once it has genuinely
+    verified, against both real implementations, that a partial Proof
+    Graph correctly yields NOT_PROVEN -- matching the manual-raise-on-
+    verified-detection pattern established for `compute_frontier`/
+    `DependencyEligibilityMismatchRejected` above, since
+    `compute_proof_verdict` is a pure computation with no exception of its
+    own to signal a correctly-rejected partial proof."""
+
+
+class MissingAssuranceCorrectlyRejected(Exception):
+    """Fixture-only sentinel, same rationale as
+    `PartialProofCorrectlyRejected`, for the missing-assurance scenario."""
+
+
+def _g2_12_partial_proof_kill_check() -> None:
+    # G2-12 acceptance: "Partial proof never yields PROVEN." A Proof Graph
+    # with one PROVEN and one non-PROVEN node must yield NOT_PROVEN from
+    # both the real Python compute_proof_verdict and the real compiled
+    # Rust kernel.
+    graph_dict = {
+        "graph_generation": 1,
+        "obligation_ir_digest": "d" * 4,
+        "nodes": [
+            {"obligation_id": "OB-1", "state": "PROVEN", "falsification_class": "STANDARD", "evidence_refs": ["ev-1"], "predecessor_obligation_ids": []},
+            {"obligation_id": "OB-2", "state": "EVIDENCE_PENDING", "falsification_class": "STANDARD", "evidence_refs": [], "predecessor_obligation_ids": []},
+        ],
+    }
+    rust_verdict = rust_compute_proof_verdict(graph_dict, [], [])
+    if rust_verdict != "NOT_PROVEN":
+        raise AssertionError(f"rust proof_graph kernel incorrectly computed {rust_verdict} for a partial proof")
+    gen1_graph = ProofGraph.from_dict(graph_dict)
+    gen1_verdict = compute_proof_verdict(gen1_graph, frozenset(), frozenset())
+    if gen1_verdict != ProofState.NOT_PROVEN:
+        raise AssertionError(f"gen1 compute_proof_verdict incorrectly computed {gen1_verdict} for a partial proof")
+    raise PartialProofCorrectlyRejected("partial Proof Graph correctly yields NOT_PROVEN in both Gen1 and Rust")
+
+
+def _g2_12_missing_assurance_kill_check() -> None:
+    # G2-12 acceptance: "missing assurance yields NOT_PROVEN." A fully
+    # PROVEN Proof Graph whose required assurance is not satisfied must
+    # still yield NOT_PROVEN.
+    graph_dict = {
+        "graph_generation": 1,
+        "obligation_ir_digest": "d" * 4,
+        "nodes": [
+            {"obligation_id": "OB-1", "state": "PROVEN", "falsification_class": "STANDARD", "evidence_refs": ["ev-1"], "predecessor_obligation_ids": []},
+        ],
+    }
+    rust_verdict = rust_compute_proof_verdict(graph_dict, ["independent_authority_review"], [])
+    if rust_verdict != "NOT_PROVEN":
+        raise AssertionError(f"rust proof_graph kernel incorrectly computed {rust_verdict} with missing assurance")
+    gen1_graph = ProofGraph.from_dict(graph_dict)
+    gen1_verdict = compute_proof_verdict(gen1_graph, frozenset({"independent_authority_review"}), frozenset())
+    if gen1_verdict != ProofState.NOT_PROVEN:
+        raise AssertionError(f"gen1 compute_proof_verdict incorrectly computed {gen1_verdict} with missing assurance")
+    raise MissingAssuranceCorrectlyRejected("fully proven graph with missing assurance correctly yields NOT_PROVEN in both Gen1 and Rust")
+
+
+def _g2_12_topology_kill_check() -> None:
+    # G2-12 acceptance: "topology mutants fail." A candidate that
+    # increases predecessor depth for a CRITICAL falsifier relative to the
+    # baseline must be rejected by both the real compiled Rust kernel and
+    # real Gen-1 check_falsification_topology_baseline.
+    baseline_dict = {
+        "graph_generation": 1,
+        "obligation_ir_digest": "d" * 4,
+        "nodes": [
+            {"obligation_id": "OB-1", "state": "UNSATISFIED", "falsification_class": "CRITICAL", "evidence_refs": [], "predecessor_obligation_ids": []},
+        ],
+    }
+    candidate_dict = {
+        "graph_generation": 1,
+        "obligation_ir_digest": "d" * 4,
+        "nodes": [
+            {"obligation_id": "OB-0", "state": "UNSATISFIED", "falsification_class": "CRITICAL", "evidence_refs": [], "predecessor_obligation_ids": []},
+            {"obligation_id": "OB-1", "state": "UNSATISFIED", "falsification_class": "CRITICAL", "evidence_refs": [], "predecessor_obligation_ids": ["OB-0"]},
+        ],
+    }
+    try:
+        rust_check_falsification_topology_baseline(baseline_dict, candidate_dict)
+    except ProofGraphCliError:
+        pass
+    else:
+        raise AssertionError("rust proof_graph kernel incorrectly admitted an increased CRITICAL predecessor depth")
+
+    baseline_graph = ProofGraph.from_dict(baseline_dict)
+    candidate_graph = ProofGraph.from_dict(candidate_dict)
+    check_falsification_topology_baseline(baseline_graph, candidate_graph)
+
+
+def _g2_12_stale_hermetic_proof_kill_check() -> None:
+    # G2-12 acceptance: "no proof cache hit." A recorded PROVEN verdict
+    # whose input-closure digests no longer match the live closures must
+    # be rejected by both the real compiled Rust kernel and real Gen-1
+    # verify_fresh_hermetic_proof.
+    record_dict = {
+        "requirement_closure_digest": "a", "classification_closure_digest": "b", "policy_closure_digest": "c",
+        "obligation_ir_digest": "d", "campaign_program_digest": "e", "proof_graph_digest": "f",
+    }
+    live_dict = {**record_dict, "requirement_closure_digest": "CHANGED"}
+    try:
+        rust_verify_fresh_hermetic_proof(record_dict, live_dict)
+    except ProofGraphCliError:
+        pass
+    else:
+        raise AssertionError("rust proof_graph kernel incorrectly accepted a stale hermetic proof record")
+
+    record = HermeticProofRecord(**record_dict)
+    live = HermeticProofRecord(**live_dict)
+    verify_fresh_hermetic_proof(record, live)
 
 
 def build_initial_mutation_suite() -> MutationSuite:
@@ -1123,6 +1245,58 @@ def build_initial_mutation_suite() -> MutationSuite:
             "dispatch_lease",
             _g2_11_dependency_eligibility_kill_check,
             DependencyEligibilityMismatchRejected,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G12-PARTIALPROOF-001",
+            MutationCategory.PARTIAL_PROOF_SEMANTICS,
+            "A Proof Graph with one PROVEN node and one non-PROVEN node never yields an overall "
+            "PROVEN verdict from either the real Gen-1 compute_proof_verdict or the real compiled "
+            "Rust proof_graph kernel -- partial proof never yields PROVEN.",
+            "G2-00 SS11; G2-12",
+            "proof_graph",
+            _g2_12_partial_proof_kill_check,
+            PartialProofCorrectlyRejected,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G12-ASSURANCE-001",
+            MutationCategory.ASSURANCE_OMISSION,
+            "A fully PROVEN Proof Graph whose mandatory assurance is not satisfied still yields "
+            "NOT_PROVEN from both the real Gen-1 compute_proof_verdict and the real compiled Rust "
+            "proof_graph kernel -- missing assurance yields NOT_PROVEN.",
+            "G2-00 SS11-12; G2-12",
+            "proof_graph",
+            _g2_12_missing_assurance_kill_check,
+            MissingAssuranceCorrectlyRejected,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G12-TOPOLOGY-001",
+            MutationCategory.FALSIFICATION_TOPOLOGY,
+            "A candidate Proof Graph that increases predecessor depth for a CRITICAL falsifier "
+            "relative to the baseline is rejected by both the real compiled Rust proof_graph "
+            "kernel and the real Gen-1 check_falsification_topology_baseline -- topology mutants fail.",
+            "G2-00 SS11; G2-12",
+            "proof_graph",
+            _g2_12_topology_kill_check,
+            ConstitutionalError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G12-HERMETIC-001",
+            MutationCategory.PARTIAL_PROOF_SEMANTICS,
+            "A recorded PROVEN verdict whose input-closure digests no longer match the live "
+            "closures is rejected by both the real compiled Rust proof_graph kernel and the real "
+            "Gen-1 verify_fresh_hermetic_proof -- no proof cache hit.",
+            "G2-00 SS11; G2-12",
+            "proof_graph",
+            _g2_12_stale_hermetic_proof_kill_check,
+            ConstitutionalError,
         )
     )
 
