@@ -58,6 +58,12 @@ from .closure_runtime import (
     reconcile_requirement_closure,
     record_policy_escape,
 )
+from .campaign_compiler import (
+    TASK_DERIVATION_RULE_REF,
+    TransformationWitness,
+    compile_campaign_program,
+    reconcile_compiled_campaign,
+)
 
 
 def _total_policy(**overrides) -> ConstitutionalPolicySet:
@@ -294,6 +300,28 @@ def _g2_06_disconnected_obligation_kill_check() -> None:
         (ObligationIRNode("OB-1", "REQ-GHOST", ObligationClass.SECURITY, "predicate-SECURITY", FalsificationClass.CRITICAL),),
     )
     ir.validate(known_requirement_ids=frozenset({"REQ-1"}))
+
+
+def _g2_07_broken_witness_kill_check() -> None:
+    # G2-07 / G2-00 SS7 acceptance: "broken-witness transforms reject."
+    # A transformation witness correctly bound to a real obligation_id
+    # but whose input_digest does not match that obligation's actual
+    # content is a forged/broken witness, not merely a dropped one.
+    req = Requirement("REQ-1", "text", "authority@ref", (RequirementClass.SECURITY,), 1)
+    entry = CandidateLedgerEntry("C-1", "REQ-1", "alice", "manual", "v1", 1, "d" * 64, CandidatePathDisposition.ACCEPTED)
+    ledger = CandidateLedger("REQ-1", (entry,))
+    req_closure = RequirementClosureManifest(1, "s" * 64, (req,), (ledger,), "manual", ("alice",))
+    class_entry = ClassificationEntry("REQ-1", "alice", (RequirementClass.SECURITY,), (), None)
+    class_closure = ClassificationClosure(1, "d" * 64, (class_entry,), True)
+    policy = _total_policy()
+    node = ObligationIRNode("OB-1", "REQ-1", ObligationClass.SECURITY, "predicate-SECURITY", FalsificationClass.STANDARD)
+    ir = ObligationIR(1, req_closure.digest, class_closure.digest, policy.digest, (node,))
+    compiled = compile_campaign_program(
+        req_closure, class_closure, policy, ir, program_generation=1, certificate_generation=1, graph_generation=1
+    )
+    forged = replace(compiled.witnesses[0], input_digest="not-the-real-digest" * 4)
+    tampered = replace(compiled, witnesses=(forged,))
+    reconcile_compiled_campaign(ir, tampered)
 
 
 def build_initial_mutation_suite() -> MutationSuite:
@@ -673,6 +701,19 @@ def build_initial_mutation_suite() -> MutationSuite:
             "G2-00 SS4.1 Trust Table row: Obligation IR; G2-06",
             "obligation_ir",
             _g2_06_disconnected_obligation_kill_check,
+            ConstitutionalError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G07-BROKENWITNESS-001",
+            MutationCategory.BOUNDARY_INDEPENDENCE_FAILURE,
+            "A transformation witness names a real obligation_id but its input_digest does "
+            "not match that obligation's actual content — a forged/broken witness, exercised "
+            "through the compiler's own reconciliation check rather than a hand-supplied claim.",
+            "G2-00 SS7 acceptance: broken-witness transforms reject; G2-07",
+            "compilation_certificate_witnesses",
+            _g2_07_broken_witness_kill_check,
             ConstitutionalError,
         )
     )

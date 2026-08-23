@@ -106,6 +106,16 @@ from .closure_runtime import (
     record_policy_escape,
     requires_path_c_challenge,
 )
+from .campaign_compiler import (
+    CompiledCampaign,
+    TASK_DERIVATION_RULE_REF,
+    TransformationWitness,
+    check_falsification_topology_baseline,
+    compile_campaign_program,
+    compute_constitutional_baseline,
+    compute_predecessor_depth,
+    reconcile_compiled_campaign,
+)
 
 __all__ = [
     "ArtifactBinding",
@@ -199,4 +209,12 @@ __all__ = [
     "reconcile_requirement_closure",
     "record_policy_escape",
     "requires_path_c_challenge",
+    "CompiledCampaign",
+    "TASK_DERIVATION_RULE_REF",
+    "TransformationWitness",
+    "check_falsification_topology_baseline",
+    "compile_campaign_program",
+    "compute_constitutional_baseline",
+    "compute_predecessor_depth",
+    "reconcile_compiled_campaign",
 ]
