@@ -43,6 +43,7 @@ from tenfold.gen2.state_model import (
     build_g2_09_base_state_model,
     build_g2_10_state_model,
     check_standing_gate_d,
+    generate_one_wise,
     generate_pairwise,
 )
 
@@ -387,5 +388,5 @@ def test_g2_10_standing_gate_d_passes_against_the_combined_required_roster() -> 
         FailureSpaceDimension("write_shape", ("CLEAN", "TORN", "TAIL_TRUNCATED")),
         FailureSpaceDimension("writer_match", ("MATCHING", "WRONG_ID", "WRONG_GENERATION")),
     )
-    report = FailureSpaceCoverageReport(one_wise=(), pairwise=generate_pairwise(dims), dimension_ids=tuple(d.dimension_id for d in dims))
+    report = FailureSpaceCoverageReport(one_wise=generate_one_wise(dims), pairwise=generate_pairwise(dims), dimension_ids=tuple(d.dimension_id for d in dims))
     check_standing_gate_d(model, G2_09_REQUIRED_STATE_MODEL_FIELD_IDS | G2_10_REQUIRED_STATE_MODEL_FIELD_IDS, report, dims)

@@ -389,7 +389,7 @@ def test_g2_09_standing_gate_d_passes_when_all_conditions_met() -> None:
         FailureSpaceDimension("epoch_freshness", ("FRESH", "STALE")),
         FailureSpaceDimension("revision_freshness", ("FRESH", "STALE")),
     )
-    report = FailureSpaceCoverageReport(one_wise=(), pairwise=generate_pairwise(dims), dimension_ids=tuple(d.dimension_id for d in dims))
+    report = FailureSpaceCoverageReport(one_wise=generate_one_wise(dims), pairwise=generate_pairwise(dims), dimension_ids=tuple(d.dimension_id for d in dims))
     check_standing_gate_d(model, frozenset({"campaign_id", "foreman_epoch"}), report, dims)
 
 
@@ -399,7 +399,7 @@ def test_g2_09_standing_gate_d_passes_against_the_production_required_roster() -
         FailureSpaceDimension("epoch_freshness", ("FRESH", "STALE")),
         FailureSpaceDimension("revision_freshness", ("FRESH", "STALE")),
     )
-    report = FailureSpaceCoverageReport(one_wise=(), pairwise=generate_pairwise(dims), dimension_ids=tuple(d.dimension_id for d in dims))
+    report = FailureSpaceCoverageReport(one_wise=generate_one_wise(dims), pairwise=generate_pairwise(dims), dimension_ids=tuple(d.dimension_id for d in dims))
     check_standing_gate_d(model, G2_09_REQUIRED_STATE_MODEL_FIELD_IDS, report, dims)
 
 
@@ -409,17 +409,39 @@ def test_g2_09_standing_gate_d_fails_on_missing_state_model_field() -> None:
         FailureSpaceDimension("epoch_freshness", ("FRESH", "STALE")),
         FailureSpaceDimension("revision_freshness", ("FRESH", "STALE")),
     )
-    report = FailureSpaceCoverageReport(one_wise=(), pairwise=generate_pairwise(dims), dimension_ids=tuple(d.dimension_id for d in dims))
+    report = FailureSpaceCoverageReport(one_wise=generate_one_wise(dims), pairwise=generate_pairwise(dims), dimension_ids=tuple(d.dimension_id for d in dims))
     with pytest.raises(StateModelError, match="STATE_MODEL_COVERAGE_FAILURE"):
         check_standing_gate_d(model, frozenset({"campaign_id", "a_field_nobody_registered"}), report, dims)
+
+
+def test_g2_09_standing_gate_d_fails_on_empty_one_wise_report() -> None:
+    model = build_g2_09_base_state_model()
+    dims = (FailureSpaceDimension("a", ("A", "B")), FailureSpaceDimension("b", ("C", "D")))
+    empty_report = FailureSpaceCoverageReport(one_wise=(), pairwise=generate_pairwise(dims), dimension_ids=())
+    with pytest.raises(StateModelError, match="STANDING_GATE_D_FAILURE"):
+        check_standing_gate_d(model, frozenset({"campaign_id"}), empty_report, dims)
 
 
 def test_g2_09_standing_gate_d_fails_on_empty_pairwise_report() -> None:
     model = build_g2_09_base_state_model()
     dims = (FailureSpaceDimension("a", ("A", "B")), FailureSpaceDimension("b", ("C", "D")))
-    empty_report = FailureSpaceCoverageReport(one_wise=(), pairwise=(), dimension_ids=())
+    empty_report = FailureSpaceCoverageReport(one_wise=generate_one_wise(dims), pairwise=(), dimension_ids=())
     with pytest.raises(StateModelError, match="STANDING_GATE_D_FAILURE"):
         check_standing_gate_d(model, frozenset({"campaign_id"}), empty_report, dims)
+
+
+def test_g2_09_standing_gate_d_fails_when_one_wise_report_does_not_actually_cover_every_value() -> None:
+    model = build_g2_09_base_state_model()
+    dims = (
+        FailureSpaceDimension("epoch_freshness", ("FRESH", "STALE", "FORWARD_DATED")),
+        FailureSpaceDimension("revision_freshness", ("FRESH", "STALE")),
+    )
+    incomplete_one_wise = ({"epoch_freshness": "FRESH", "revision_freshness": "FRESH"},)
+    incomplete_report = FailureSpaceCoverageReport(
+        one_wise=incomplete_one_wise, pairwise=generate_pairwise(dims), dimension_ids=tuple(d.dimension_id for d in dims)
+    )
+    with pytest.raises(StateModelError, match="STANDING_GATE_D_FAILURE"):
+        check_standing_gate_d(model, frozenset({"campaign_id"}), incomplete_report, dims)
 
 
 def test_g2_09_standing_gate_d_fails_when_pairwise_report_does_not_actually_cover_dimensions() -> None:
@@ -431,7 +453,7 @@ def test_g2_09_standing_gate_d_fails_when_pairwise_report_does_not_actually_cove
         FailureSpaceDimension("revision_freshness", ("FRESH", "STALE")),
     )
     incomplete_report = FailureSpaceCoverageReport(
-        one_wise=(),
+        one_wise=generate_one_wise(dims),
         pairwise=({"epoch_freshness": "FRESH", "revision_freshness": "FRESH"},),
         dimension_ids=tuple(d.dimension_id for d in dims),
     )
