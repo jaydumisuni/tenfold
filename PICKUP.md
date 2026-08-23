@@ -22,7 +22,7 @@ This file records the repository recovery point. Always recover live GitHub stat
 - Canonical review/freeze record: `docs/09-gen2-review-record.md`.
 - Canonical chat-workspace execution rule: `docs/10-chat-workspace-execution.md`.
 - Complete generational evolution map: `docs/11-generational-evolution-map.md`.
-- Gen-2 implementation: **IN PROGRESS** (G2-01 PROVEN; G2-02 PROVEN; G2-03 PROVEN; G2-04 PROVEN; G2-05 PROVEN; G2-06 PROVEN; G2-07 PROVEN; G2-08 PROVEN; G2-09 PROVEN; G2-10 PROVEN; G2-11 PROVEN; G2-12 PROVEN).
+- Gen-2 implementation: **IN PROGRESS** (G2-01 PROVEN; G2-02 PROVEN; G2-03 PROVEN; G2-04 PROVEN; G2-05 PROVEN; G2-06 PROVEN; G2-07 PROVEN; G2-08 PROVEN; G2-09 PROVEN; G2-10 PROVEN; G2-11 PROVEN; G2-12 PROVEN; G2-13 PROVEN).
 - Gen-2 qualification: **IN PROGRESS**.
 - G2-01 — Gen-1 Reference and Inheritance Freeze: **PROVEN**. Proven candidate `8e33f7a4240e18141ae44d6733043660f64c1640`. Canonical review/proof record: `docs/gen2/G2-01-review-record.md`.
 - G2-02 — Constitutional Schema and Policy Foundation: **PROVEN**. Proven candidate `a3a9b19702b203ad79aecebdf039eb12254e8daf`. Canonical review/proof record: `docs/gen2/G2-02-review-record.md`.
@@ -36,7 +36,8 @@ This file records the repository recovery point. Always recover live GitHub stat
 - G2-10 — Local Authoritative Chronicle Candidate: **PROVEN**. Proven candidate `2870a2388bc787565351cd88089cc224257d9cea`. Canonical review/proof record: `docs/gen2/G2-10-review-record.md`.
 - G2-11 — Dispatch / Lease / Fencing Kernel: **PROVEN**. Proven candidate `6230985805d6138fd91f635ff2b89a93b657aa92`. Canonical review/proof record: `docs/gen2/G2-11-review-record.md`.
 - G2-12 — Proof Graph / Assurance / Falsification Runtime: **PROVEN**. Proven candidate `82fc6db5201b54cd4c122cb55be67c9de9f49a02`. Canonical review/proof record: `docs/gen2/G2-12-review-record.md`.
-- Current next Gen-2 milestone: **G2-13 — Runtime Obligations, Invariants and Observer** (real dependency frontier: ready, since G2-12 is PROVEN).
+- G2-13 — Runtime Obligations, Invariants and Observer: **PROVEN**. Proven candidate `4ecfc2f5d0288e6141214de62bf98c62a575081c`. Canonical review/proof record: `docs/gen2/G2-13-review-record.md`.
+- Current next Gen-2 milestone: **G2-14 — Facility Capability ABI (READ-ONLY / SANDBOX GATE)** (real dependency frontier: ready, since G2-13 is PROVEN).
 - Construction runtime: **qualified Tenfold Gen 1** (authoritative through G2-23 per the frozen roadmap).
 
 Do not restart Gen-2 architecture design from chat memory. Recover G2-00, the Gen-2 roadmap, workspace rule and generational evolution map first. Reopen G2-00 only if implementation/evidence demonstrates a real frozen-authority violation or the Owner explicitly authorises an architecture change.
