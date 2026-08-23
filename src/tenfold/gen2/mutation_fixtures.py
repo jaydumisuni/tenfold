@@ -115,6 +115,26 @@ from .runtime_obligation_bridge import (
     rust_derive_expected_runtime_obligations,
     rust_find_missing_runtime_obligations,
 )
+from .facility import (
+    FacilityAdapterBoundary,
+    FacilityContract,
+    FacilityIOClass,
+    FacilityProperty,
+    PropertyQualificationRecord,
+    QualificationState,
+    check_critical_gate,
+)
+# Aliased: tenfold.facility.FacilityError (Gen-1, imported below) and
+# tenfold.gen2.facility.FacilityError (this milestone's own, unrelated
+# schema) share a name but are distinct classes -- an unaliased import
+# here would silently shadow the Gen-1 one already used by earlier
+# fixtures in this file.
+from .facility import FacilityError as Gen2FacilityError
+from .facility_bridge import (
+    FacilityCliError,
+    rust_can_emit_authoritative_non_occurrence,
+    rust_validate_facility_contract,
+)
 from tenfold.contracts import NodeState
 from tenfold.facility import FacilityError
 from tenfold.ownership import LeaseConflict, LeaseRegistry, WriteLease
@@ -1012,6 +1032,157 @@ def _g2_13_observer_mutation_kill_check() -> None:
     )
 
 
+class MissingPropertyDeclarationCorrectlyRejected(Exception):
+    """Fixture-only sentinel (see `PartialProofCorrectlyRejected` above for
+    the rationale), for G2-14's "no declaration becomes authoritative
+    without falsification evidence" scenario (missing property record)."""
+
+
+class UnqualifiedNonOccurrenceCorrectlyRejected(Exception):
+    """Fixture-only sentinel, same rationale, for G2-14's "unqualified
+    non-occurrence signal cannot yield FAILED_NON_OCCURRENCE_PROVEN"
+    acceptance bar."""
+
+
+def _all_qualified_property_records() -> list[dict]:
+    return [{"property": p.value, "state": "QUALIFIED", "evidence_refs": ["ev-1"], "bound_description": None} for p in FacilityProperty]
+
+
+def _facility_contract_dict(io_class: str = "READ_ONLY", records: list[dict] | None = None) -> dict:
+    return {
+        "facility_id": "fac-1", "facility_generation": 1, "io_class": io_class, "adapter_boundary": "LOCAL_FACILITY",
+        "effect_class": "test-effect", "authority_ref": "authority@ref",
+        "property_qualifications": records if records is not None else _all_qualified_property_records(),
+        "evidence_refs": ["ev-declaration"],
+    }
+
+
+def _g2_14_missing_property_declaration_kill_check() -> None:
+    # G2-14 acceptance: "no declaration becomes authoritative without
+    # falsification evidence." A FacilityContract missing a declaration
+    # for one of G2-00 SS9.1's 11 adversarially-qualified properties is
+    # rejected by both the real compiled Rust kernel and real Gen-1
+    # FacilityContract.validate() -- an absent record is not
+    # distinguishable from silently assuming the property away.
+    records = _all_qualified_property_records()[:-1]
+    contract_dict = _facility_contract_dict(records=records)
+    try:
+        rust_validate_facility_contract(contract_dict)
+    except FacilityCliError:
+        pass
+    else:
+        raise AssertionError("rust facility kernel incorrectly accepted a contract missing a property declaration")
+
+    gen1_records = tuple(PropertyQualificationRecord(FacilityProperty(r["property"]), QualificationState(r["state"]), tuple(r["evidence_refs"]), r["bound_description"]) for r in records)
+    contract = FacilityContract("fac-1", 1, FacilityIOClass.READ_ONLY, FacilityAdapterBoundary.LOCAL_FACILITY, "test-effect", "authority@ref", gen1_records, ("ev-declaration",))
+    try:
+        contract.validate()
+    except Gen2FacilityError:
+        pass
+    else:
+        raise AssertionError("gen1 FacilityContract.validate() incorrectly accepted a contract missing a property declaration")
+
+    raise MissingPropertyDeclarationCorrectlyRejected("a FacilityContract missing a required property declaration is rejected in both Gen1 and Rust")
+
+
+class QualifiedClaimWithoutEvidenceCorrectlyRejected(Exception):
+    """Fixture-only sentinel, same rationale as
+    `PartialProofCorrectlyRejected`, for G2-14's "no declaration becomes
+    authoritative without falsification evidence" scenario (a QUALIFIED
+    claim with no evidence_refs)."""
+
+
+def _g2_14_qualified_claim_without_evidence_kill_check() -> None:
+    # G2-14 acceptance, verbatim: "no declaration becomes authoritative
+    # without falsification evidence." A property record claiming
+    # QUALIFIED with no evidence_refs is rejected by both the real
+    # compiled Rust kernel and real Gen-1
+    # PropertyQualificationRecord.validate().
+    record_dict = {"property": "IDEMPOTENCY", "state": "QUALIFIED", "evidence_refs": [], "bound_description": None}
+    contract_dict = _facility_contract_dict(records=[record_dict] + [r for r in _all_qualified_property_records() if r["property"] != "IDEMPOTENCY"])
+    try:
+        rust_validate_facility_contract(contract_dict)
+    except FacilityCliError:
+        pass
+    else:
+        raise AssertionError("rust facility kernel incorrectly accepted a QUALIFIED claim with no evidence_refs")
+
+    record = PropertyQualificationRecord(FacilityProperty.IDEMPOTENCY, QualificationState.QUALIFIED, (), None)
+    try:
+        record.validate()
+    except Gen2FacilityError:
+        pass
+    else:
+        raise AssertionError("gen1 PropertyQualificationRecord.validate() incorrectly accepted a QUALIFIED claim with no evidence_refs")
+
+    raise QualifiedClaimWithoutEvidenceCorrectlyRejected("a QUALIFIED property claim with no evidence_refs is rejected in both Gen1 and Rust")
+
+
+def _g2_14_real_mutation_blocked_kill_check() -> None:
+    # G2-14 critical gate: "Until G2-18 is PROVEN: REAL MUTATING FACILITY
+    # AUTHORITY = DISABLED." A REAL_MUTATING FacilityContract is rejected
+    # by both the real compiled Rust kernel and real Gen-1
+    # check_critical_gate, even though every property is genuinely
+    # qualified.
+    contract_dict = _facility_contract_dict(io_class="REAL_MUTATING")
+    try:
+        rust_validate_facility_contract(contract_dict)
+    except FacilityCliError:
+        pass
+    else:
+        raise AssertionError("rust facility kernel incorrectly admitted a REAL_MUTATING contract")
+
+    gen1_records = tuple(PropertyQualificationRecord(FacilityProperty(r["property"]), QualificationState(r["state"]), tuple(r["evidence_refs"]), r["bound_description"]) for r in _all_qualified_property_records())
+    contract = FacilityContract("fac-1", 1, FacilityIOClass.REAL_MUTATING, FacilityAdapterBoundary.LOCAL_FACILITY, "test-effect", "authority@ref", gen1_records, ("ev-declaration",))
+    contract.validate()  # structurally well-formed; only the critical gate rejects it
+    check_critical_gate(contract)
+
+
+def _g2_14_unqualified_non_occurrence_kill_check() -> None:
+    # G2-14 acceptance, verbatim: "unqualified non-occurrence signal
+    # cannot yield FAILED_NON_OCCURRENCE_PROVEN."
+    records = [r for r in _all_qualified_property_records() if r["property"] != "NON_OCCURRENCE_SIGNAL"]
+    records.append({"property": "NON_OCCURRENCE_SIGNAL", "state": "UNQUALIFIED", "evidence_refs": [], "bound_description": None})
+    contract_dict = _facility_contract_dict(records=records)
+    rust_result = rust_can_emit_authoritative_non_occurrence(contract_dict)
+    if rust_result is not False:
+        raise AssertionError(f"rust facility kernel incorrectly allowed an unqualified non-occurrence signal to be authoritative: {rust_result}")
+
+    gen1_records = tuple(PropertyQualificationRecord(FacilityProperty(r["property"]), QualificationState(r["state"]), tuple(r["evidence_refs"]), r["bound_description"]) for r in records)
+    contract = FacilityContract("fac-1", 1, FacilityIOClass.READ_ONLY, FacilityAdapterBoundary.LOCAL_FACILITY, "test-effect", "authority@ref", gen1_records, ("ev-declaration",))
+    gen1_result = contract.can_emit_authoritative_non_occurrence()
+    if gen1_result is not False:
+        raise AssertionError(f"gen1 FacilityContract incorrectly allowed an unqualified non-occurrence signal to be authoritative: {gen1_result}")
+
+    raise UnqualifiedNonOccurrenceCorrectlyRejected("an unqualified NON_OCCURRENCE_SIGNAL cannot yield an authoritative non-occurrence result in both Gen1 and Rust")
+
+
+class CriticalGateBypassCorrectlyRejected(Exception):
+    """Fixture-only sentinel (see `PartialProofCorrectlyRejected` above for
+    the rationale), for G2-14's round-2 review finding: the critical gate
+    must hold on every admission path that returns an authoritative
+    result, not only `validate`."""
+
+
+def _g2_14_critical_gate_bypass_kill_check() -> None:
+    # Round-2 review finding: a REAL_MUTATING contract with every property
+    # genuinely qualified must still be rejected by
+    # can_emit_authoritative_non_occurrence itself, not silently answer
+    # True just because it takes a different admission path than
+    # `validate`.
+    contract_dict = _facility_contract_dict(io_class="REAL_MUTATING")
+    try:
+        rust_can_emit_authoritative_non_occurrence(contract_dict)
+    except FacilityCliError:
+        pass
+    else:
+        raise AssertionError("rust facility kernel incorrectly answered an authoritative non-occurrence result for a REAL_MUTATING contract")
+
+    gen1_records = tuple(PropertyQualificationRecord(FacilityProperty(r["property"]), QualificationState(r["state"]), tuple(r["evidence_refs"]), r["bound_description"]) for r in _all_qualified_property_records())
+    contract = FacilityContract("fac-1", 1, FacilityIOClass.REAL_MUTATING, FacilityAdapterBoundary.LOCAL_FACILITY, "test-effect", "authority@ref", gen1_records, ("ev-declaration",))
+    contract.can_emit_authoritative_non_occurrence()
+
+
 def build_initial_mutation_suite() -> MutationSuite:
     suite = MutationSuite()
 
@@ -1722,6 +1893,76 @@ def build_initial_mutation_suite() -> MutationSuite:
             "runtime_obligation_derivation",
             _g2_13_fabricated_hazard_referent_kill_check,
             RuntimeObligationError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G14-PROPDECL-001",
+            MutationCategory.BOUNDARY_INDEPENDENCE_FAILURE,
+            "A FacilityContract missing a declaration for one of G2-00 SS9.1's 11 adversarially-"
+            "qualified properties is rejected by both the real compiled Rust facility kernel and "
+            "the real Gen-1 FacilityContract.validate() -- no declaration becomes authoritative "
+            "without falsification evidence.",
+            "G2-00 SS9.1; G2-14",
+            "facility_declaration",
+            _g2_14_missing_property_declaration_kill_check,
+            MissingPropertyDeclarationCorrectlyRejected,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G14-NOEVIDENCE-001",
+            MutationCategory.BOUNDARY_INDEPENDENCE_FAILURE,
+            "A property record claiming QUALIFIED with no evidence_refs is rejected by both the "
+            "real compiled Rust facility kernel and the real Gen-1 "
+            "PropertyQualificationRecord.validate() -- no declaration becomes authoritative "
+            "without falsification evidence.",
+            "G2-00 SS9.1; G2-14",
+            "facility_declaration",
+            _g2_14_qualified_claim_without_evidence_kill_check,
+            QualifiedClaimWithoutEvidenceCorrectlyRejected,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G14-REALMUTATION-001",
+            MutationCategory.EFFECT_CONTAINMENT,
+            "A REAL_MUTATING FacilityContract, even with every property genuinely qualified, is "
+            "rejected by both the real compiled Rust facility kernel and the real Gen-1 "
+            "check_critical_gate -- REAL MUTATING FACILITY AUTHORITY = DISABLED until G2-18 is "
+            "PROVEN.",
+            "G2-14 critical gate",
+            "facility_declaration",
+            _g2_14_real_mutation_blocked_kill_check,
+            Gen2FacilityError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G14-NONOCCURRENCE-001",
+            MutationCategory.UNCERTAINTY_TERMINAL_EFFECT_VIOLATION,
+            "An unqualified NON_OCCURRENCE_SIGNAL property cannot yield an authoritative non-"
+            "occurrence result in either the real compiled Rust facility kernel or the real Gen-1 "
+            "FacilityContract.can_emit_authoritative_non_occurrence().",
+            "G2-00 SS9.1; G2-14",
+            "facility_declaration",
+            _g2_14_unqualified_non_occurrence_kill_check,
+            UnqualifiedNonOccurrenceCorrectlyRejected,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G14-GATEBYPASS-001",
+            MutationCategory.EFFECT_CONTAINMENT,
+            "A REAL_MUTATING FacilityContract with every property genuinely qualified is still "
+            "rejected by can_emit_authoritative_non_occurrence itself (not only the validate "
+            "admission path) in both the real compiled Rust facility kernel and real Gen-1 -- the "
+            "critical gate holds on every admission path that returns an authoritative result "
+            "(round-2 review finding).",
+            "G2-14 critical gate",
+            "facility_declaration",
+            _g2_14_critical_gate_bypass_kill_check,
+            Gen2FacilityError,
         )
     )
 

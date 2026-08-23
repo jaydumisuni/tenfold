@@ -186,6 +186,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tenfold-facility"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tenfold-trust-table",
+]
+
+[[package]]
 name = "tenfold-identity-generation"
 version = "0.1.0"
 dependencies = [
