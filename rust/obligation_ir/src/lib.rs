@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fmt;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ObligationClass {
     ARCHITECTURE,
     BEHAVIOUR,
@@ -48,7 +48,7 @@ pub enum ObligationClass {
     PROMOTION,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FalsificationClass {
     CRITICAL,
     HIGH,

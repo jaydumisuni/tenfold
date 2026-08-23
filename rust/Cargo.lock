@@ -87,6 +87,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tenfold-certificate-checker"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tenfold-obligation-ir",
+]
+
+[[package]]
 name = "tenfold-obligation-ir"
 version = "0.1.0"
 dependencies = [
