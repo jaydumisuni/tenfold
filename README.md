@@ -86,12 +86,13 @@ Gen-2.0 architecture review and post-PASS reconciliation are complete.
 - G2-01 through G2-30 roadmap: **FROZEN ROADMAP**.
 - Architecture review: **PASS — 0 blockers / 0 majors**.
 - Post-PASS reconciliation: **PASS / READY_FOR_FREEZE**.
-- Gen-2 implementation: **IN PROGRESS** (G2-01 PROVEN; G2-02 PROVEN; G2-04 PROVEN).
+- Gen-2 implementation: **IN PROGRESS** (G2-01 PROVEN; G2-02 PROVEN; G2-03 PROVEN; G2-04 PROVEN).
 - Gen-2 qualification: **IN PROGRESS**.
 - G2-01 — Gen-1 Reference and Inheritance Freeze: **PROVEN**. Canonical review/proof record: `docs/gen2/G2-01-review-record.md`.
 - G2-02 — Constitutional Schema and Policy Foundation: **PROVEN**. Review/proof record: `docs/gen2/G2-02-review-record.md`.
 - G2-04 — Independent Verifier Specification and Core: **PROVEN**. Review/proof record: `docs/gen2/G2-04-review-record.md`.
-- Current next Gen-2 milestone: **G2-03 — Constitutional Mutation Suite** (also ready; not yet started — its Rust Trust Table deliverable is the first Rust code in this repository and is being scoped deliberately).
+- G2-03 — Constitutional Mutation Suite / Executable Rust Trust Table: **PROVEN**. Review/proof record: `docs/gen2/G2-03-review-record.md`.
+- Current next Gen-2 milestone: **G2-05 — Requirement / Classification / Policy Closure Runtime** (real dependency frontier: ready, since G2-02+G2-03+G2-04 are all PROVEN).
 - Construction runtime: **qualified Tenfold Gen 1** (authoritative through G2-23 per the frozen roadmap).
 
 The Gen-2 bootstrap is explicit: Gen 1 builds Gen 2 under TF-00 + G2-00 until G2-27 independently proves the Self-Construction Minimum. Only then may Gen 2 execute the remaining already-approved roadmap itself. Gen 1 remains afterward as frozen reference/differential oracle/fallback unless later authority explicitly retires it.
