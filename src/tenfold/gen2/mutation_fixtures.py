@@ -135,6 +135,18 @@ from .facility_bridge import (
     rust_can_emit_authoritative_non_occurrence,
     rust_validate_facility_contract,
 )
+from .execution_context import (
+    AmbientAuthorityInventory,
+    ExecutionAuthorityState,
+    HighRiskUnboundedExecutionRejected,
+    UnadmittedAuthorityReachable,
+    check_high_risk_execution_admission,
+    check_no_unadmitted_authority,
+    classify_execution_authority_state,
+    probe_held_authority,
+    probe_local_positional_authority,
+    probe_network_positional_authority,
+)
 from tenfold.contracts import NodeState
 from tenfold.facility import FacilityError
 from tenfold.ownership import LeaseConflict, LeaseRegistry, WriteLease
@@ -1183,6 +1195,47 @@ def _g2_14_critical_gate_bypass_kill_check() -> None:
     contract.can_emit_authoritative_non_occurrence()
 
 
+def _g2_15_ambient_authority_kill_check() -> None:
+    # G2-15 backs the G2-03-seeded MUT-AMBIENT-001 placeholder with a real
+    # runtime. Injects a fake held-authority credential into the process
+    # environment view (never the real one) and confirms
+    # check_no_unadmitted_authority genuinely detects and rejects it --
+    # proving the detector is not a vacuous always-pass check, matching
+    # the injectable-real-probe pattern established for LocalSandboxFacility.
+    injected_environ = {"AWS_ACCESS_KEY_ID": "fixture-injected-fake-credential"}
+    held = probe_held_authority(environ=injected_environ)
+    inventory = AmbientAuthorityInventory(held, (), ())
+    check_no_unadmitted_authority(inventory)
+
+
+def _g2_15_local_positional_authority_kill_check() -> None:
+    # G2-15 acceptance: "...across held/network/local axes." Injects a
+    # fake local-socket presence and confirms genuine detection/rejection.
+    injected_local = probe_local_positional_authority(path_exists=lambda p: True)
+    inventory = AmbientAuthorityInventory((), (), injected_local)
+    check_no_unadmitted_authority(inventory)
+
+
+def _g2_15_network_positional_authority_kill_check() -> None:
+    # G2-15 acceptance: "...across held/network/local axes." Injects a
+    # fake reachable network target and confirms genuine detection/rejection.
+    injected_network = probe_network_positional_authority(connect=lambda host, port, timeout: True)
+    inventory = AmbientAuthorityInventory((), injected_network, ())
+    check_no_unadmitted_authority(inventory)
+
+
+def _g2_15_high_risk_unbounded_kill_check() -> None:
+    # G2-15 acceptance, verbatim: "High-risk work may not use UNBOUNDED."
+    # An inventory with no probe results at all classifies as UNBOUNDED
+    # (the true authority extent is completely unknown), which high-risk
+    # admission must reject.
+    empty_inventory = AmbientAuthorityInventory((), (), ())
+    state = classify_execution_authority_state(empty_inventory)
+    if state != ExecutionAuthorityState.UNBOUNDED:
+        raise AssertionError(f"an unprobed inventory incorrectly classified as {state}, expected UNBOUNDED")
+    check_high_risk_execution_admission(state)
+
+
 def build_initial_mutation_suite() -> MutationSuite:
     suite = MutationSuite()
 
@@ -1421,12 +1474,53 @@ def build_initial_mutation_suite() -> MutationSuite:
         MutationFixture(
             "MUT-AMBIENT-001",
             MutationCategory.AMBIENT_HELD_NETWORK_LOCAL_AUTHORITY,
-            "Execution context isolation qualification detects unadmitted held/network/local "
-            "authority reachable from the execution context. No execution-context isolation "
-            "runtime exists yet.",
-            "G2-00 SS9.2",
+            "Execution context isolation qualification detects unadmitted held authority "
+            "(an injected ambient credential environment variable) reachable from the "
+            "execution context, via the real probe_held_authority/check_no_unadmitted_authority "
+            "(G2-15).",
+            "G2-00 SS9.2; G2-15",
             None,
+            _g2_15_ambient_authority_kill_check,
+            UnadmittedAuthorityReachable,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-AMBIENT-002",
+            MutationCategory.AMBIENT_HELD_NETWORK_LOCAL_AUTHORITY,
+            "Execution context isolation qualification detects unadmitted local-positional "
+            "authority (an injected reachable local socket path) via the real "
+            "probe_local_positional_authority/check_no_unadmitted_authority (G2-15).",
+            "G2-00 SS9.2; G2-15",
             None,
+            _g2_15_local_positional_authority_kill_check,
+            UnadmittedAuthorityReachable,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-AMBIENT-003",
+            MutationCategory.AMBIENT_HELD_NETWORK_LOCAL_AUTHORITY,
+            "Execution context isolation qualification detects unadmitted network-positional "
+            "authority (an injected reachable network target) via the real "
+            "probe_network_positional_authority/check_no_unadmitted_authority (G2-15).",
+            "G2-00 SS9.2; G2-15",
+            None,
+            _g2_15_network_positional_authority_kill_check,
+            UnadmittedAuthorityReachable,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-AMBIENT-004",
+            MutationCategory.AMBIENT_HELD_NETWORK_LOCAL_AUTHORITY,
+            "High-risk execution admission rejects an UNBOUNDED execution authority state "
+            "(an entirely unprobed inventory) via the real "
+            "classify_execution_authority_state/check_high_risk_execution_admission (G2-15).",
+            "G2-00 SS9.2; G2-15",
+            None,
+            _g2_15_high_risk_unbounded_kill_check,
+            HighRiskUnboundedExecutionRejected,
         )
     )
     suite.register(

@@ -501,6 +501,55 @@ def build_g2_14_state_model() -> StateModel:
 
 
 # ============================================================================
+# G2-15 production State Model extension (G2-00 SS9.2; docs/08-gen2-
+# roadmap.md's G2-15 deliverable set). Python-only -- G2-00 SS4 assigns no
+# Rust ownership to execution-context isolation qualification.
+# ============================================================================
+
+G2_15_REQUIRED_STATE_MODEL_FIELD_IDS: frozenset[str] = frozenset(
+    {
+        "execution_context_principal_state",
+        "ambient_authority_inventory_state",
+        "execution_authority_classification_state",
+        "p0_derivation_state",
+        "execution_image_lineage_state",
+    }
+)
+
+
+def build_g2_15_state_model() -> StateModel:
+    """Extends the G2-14 State Model with G2-15's Execution Context/
+    ambient-authority/P0/image-lineage fields (G2-00 SS9.2;
+    `tenfold.gen2.execution_context`)."""
+    return build_g2_14_state_model().extend(
+        (
+            StateModelField(
+                "execution_context_principal_state", AuthorityHolder.GEN1_PYTHON, "execution_context.ExecutionContextPrincipal",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-15",
+            ),
+            StateModelField(
+                "ambient_authority_inventory_state", AuthorityHolder.GEN1_PYTHON,
+                "execution_context.AmbientAuthorityInventory / probe_held_authority / probe_network_positional_authority / probe_local_positional_authority",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-15",
+            ),
+            StateModelField(
+                "execution_authority_classification_state", AuthorityHolder.GEN1_PYTHON,
+                "execution_context.classify_execution_authority_state / ExecutionAuthorityState",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-15",
+            ),
+            StateModelField(
+                "p0_derivation_state", AuthorityHolder.GEN1_PYTHON, "execution_context.compute_p0",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-15",
+            ),
+            StateModelField(
+                "execution_image_lineage_state", AuthorityHolder.GEN1_PYTHON, "execution_context.ExecutionImageLineage",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-15",
+            ),
+        )
+    )
+
+
+# ============================================================================
 # Failure-space scenario generator base (G2-00 §14.1: "Failure-space
 # qualification reports 1-wise, pairwise, 3-wise high-risk, transition and
 # forbidden-state coverage according to frozen risk policy. No mathematical
