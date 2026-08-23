@@ -296,17 +296,88 @@ pub fn admit_evidence(node: &ProofGraphNode, new_state: ProofState, evidence_ref
 /// G2-02). Never accepts a runtime claim of what assurance is required --
 /// only what the frozen policy mapping actually says for the classes
 /// genuinely present.
+///
+/// `tenfold.gen2.constitutional.ConstitutionalPolicySet.validate()`
+/// enforces the policy is *total*: every row of
+/// `obligation_class_to_assurance_routing` must exist and be non-empty
+/// (G2-02 acceptance: "missing policy rows reject"; a missing/empty row
+/// is default-deny, not "no assurance required"). This function re-derives
+/// that same default-deny totality check locally, for exactly the classes
+/// genuinely present: a missing or empty routing row for a present class
+/// is rejected outright rather than silently contributing nothing to the
+/// required set -- round-2 review finding: a caller could otherwise submit
+/// a class with an empty/absent routing entry and bypass the exact bound
+/// Assurance Matrix by omission.
 pub fn derive_mandatory_assurance(
     present_obligation_classes: &HashSet<ObligationClass>,
     obligation_class_to_assurance_routing: &HashMap<ObligationClass, Vec<String>>,
-) -> HashSet<String> {
+) -> Result<HashSet<String>, ProofGraphError> {
     let mut required = HashSet::new();
     for class in present_obligation_classes {
-        if let Some(routes) = obligation_class_to_assurance_routing.get(class) {
-            required.extend(routes.iter().cloned());
+        match obligation_class_to_assurance_routing.get(class) {
+            Some(routes) if !routes.is_empty() => required.extend(routes.iter().cloned()),
+            _ => {
+                return Err(err(format!(
+                    "derive_mandatory_assurance: missing/empty obligation_class_to_assurance_routing row for \
+                     {class:?} -- a present obligation class with no routing entry is default-deny, not \
+                     \"no assurance required\""
+                )));
+            }
         }
     }
-    required
+    Ok(required)
+}
+
+// ============================================================================
+// External assurance reconciliation (G2-00 SS11.2: "Required external
+// assurance has two retained copies: copy A -> supplied to Tenfold, copy B
+// -> independently retained by external authority. Verifier reconciles
+// request/response digests, external authority identity/generation,
+// campaign generation and obligation/milestone binding. Gen 2 cannot
+// manufacture external PASS by Chronicle assertion."). Exact port of
+// `tenfold.gen2.verifier.independent_reconcile_external_assurance`'s
+// mismatch checks (G2-04) -- round-2 review finding: a bare claimed
+// `assurance_type` string with no binding to a genuinely reconciled
+// external PASS is exactly the "manufactured PASS" this text forbids.
+// ============================================================================
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssuranceBindingClaim {
+    pub assurance_type: String,
+    pub expected_campaign_generation: u64,
+    pub expected_milestone_id: String,
+    pub expected_obligation_ids: Vec<String>,
+    pub supplied_request_digest: String,
+    pub supplied_response_digest: String,
+    pub supplied_authority_identity: String,
+    pub supplied_authority_generation: u64,
+    pub supplied_campaign_generation: u64,
+    pub supplied_milestone_id: String,
+    pub supplied_obligation_ids: Vec<String>,
+    pub retained_request_digest: String,
+    pub retained_response_digest: String,
+    pub retained_authority_identity: String,
+    pub retained_authority_generation: u64,
+}
+
+impl AssuranceBindingClaim {
+    /// True only if the supplied copy (A) agrees with the independently
+    /// retained copy (B) on every reconciled field, *and* the supplied
+    /// copy is bound to the campaign generation/milestone/obligation set
+    /// this verdict is actually being computed for -- copies that agree
+    /// with each other but were replayed against a different campaign
+    /// generation, milestone or obligation set do not reconcile.
+    pub fn reconciled(&self) -> bool {
+        let expected_obligations: HashSet<&str> = self.expected_obligation_ids.iter().map(String::as_str).collect();
+        let supplied_obligations: HashSet<&str> = self.supplied_obligation_ids.iter().map(String::as_str).collect();
+        self.supplied_request_digest == self.retained_request_digest
+            && self.supplied_response_digest == self.retained_response_digest
+            && self.supplied_authority_identity == self.retained_authority_identity
+            && self.supplied_authority_generation == self.retained_authority_generation
+            && self.supplied_campaign_generation == self.expected_campaign_generation
+            && self.supplied_milestone_id == self.expected_milestone_id
+            && supplied_obligations == expected_obligations
+    }
 }
 
 // ============================================================================
@@ -318,20 +389,31 @@ pub fn derive_mandatory_assurance(
 /// The campaign-level verdict is binary (PROVEN/NOT_PROVEN), distinct from
 /// the per-obligation `ProofState`'s 5-value lifecycle. PROVEN requires
 /// *both* every Proof Graph node individually PROVEN *and* every mandatory
-/// assurance genuinely satisfied -- partial proof, or proof with missing
-/// assurance, both yield NOT_PROVEN, never a partial-credit PROVEN.
+/// assurance genuinely reconciled -- partial proof, or proof with missing
+/// or unreconciled assurance, both yield NOT_PROVEN, never a partial-credit
+/// PROVEN.
+///
+/// Validates `graph` first (round-2 review finding): without this, an
+/// empty `nodes` array or a `PROVEN` node with no `evidence_refs` -- both
+/// structurally invalid, reachable by feeding untrusted JSON straight to
+/// this function without going through `admit_evidence` -- would satisfy
+/// `is_fully_proven()`'s vacuous/unchecked semantics and let structurally
+/// invalid proof input reach a PROVEN verdict.
 pub fn compute_proof_verdict(
     graph: &ProofGraph,
     required_assurance: &HashSet<String>,
-    satisfied_assurance: &HashSet<String>,
-) -> ProofState {
+    assurance_bindings: &[AssuranceBindingClaim],
+) -> Result<ProofState, ProofGraphError> {
+    graph.validate()?;
     if !graph.is_fully_proven() {
-        return ProofState::NOT_PROVEN;
+        return Ok(ProofState::NOT_PROVEN);
     }
-    if !required_assurance.is_subset(satisfied_assurance) {
-        return ProofState::NOT_PROVEN;
+    let satisfied: HashSet<String> =
+        assurance_bindings.iter().filter(|claim| claim.reconciled()).map(|claim| claim.assurance_type.clone()).collect();
+    if !required_assurance.is_subset(&satisfied) {
+        return Ok(ProofState::NOT_PROVEN);
     }
-    ProofState::PROVEN
+    Ok(ProofState::PROVEN)
 }
 
 // ============================================================================
@@ -401,18 +483,26 @@ pub fn trust_table_row() -> trust_table::TrustTableRow {
             "acyclic predecessor structure".into(),
             "falsification-topology baseline non-regression".into(),
             "evidence admission".into(),
-            "mandatory-assurance derivation".into(),
-            "overall proof verdict (partial-proof / missing-assurance rejection)".into(),
+            "mandatory-assurance derivation (routing-row totality)".into(),
+            "external assurance copy-A/copy-B/expected-binding reconciliation".into(),
+            "overall proof verdict (structural graph validity / partial-proof / missing-or-unreconciled-assurance rejection)".into(),
             "hermetic-proof freshness".into(),
         ],
-        trusts_only: "the closed policy routing map and the live closure digests supplied by the caller as ground truth".into(),
+        trusts_only: "that a per-obligation-class routing row present in the supplied policy routing map genuinely \
+            reflects the exact bound Assurance Matrix, that the supplied/retained copies of an external assurance \
+            binding genuinely originated from Tenfold and the external authority respectively, and the live closure \
+            digests supplied by the caller"
+            .into(),
         trust_bounded_reason: "every structural property (transition legality, acyclicity, depth non-regression, \
-            evidence well-formedness, verdict computation, hermetic digest equality) is independently mechanically \
-            recomputed; the genuineness of the supplied policy routing map and live closure digests is bounded by \
-            whichever authority produced them, not re-derived here"
+            evidence well-formedness, routing-row totality, external-assurance copy-A/copy-B/expected-binding \
+            reconciliation, verdict computation, hermetic digest equality) is independently mechanically \
+            recomputed; the genuineness of the routing map's content, the two assurance copies' provenance, and \
+            live closure digests is bounded by whichever authority produced them, not re-derived here"
             .into(),
         authority_generation: 1,
-        required_negative_fixture: "partial proof / missing assurance / topology regression / stale hermetic proof".into(),
+        required_negative_fixture: "partial proof / missing or unreconciled assurance / missing routing row / \
+            invalid graph structure / topology regression / stale hermetic proof"
+            .into(),
         failure_result: "reject".into(),
         fixture_qualified: true,
     }
@@ -422,10 +512,31 @@ pub fn admit_compute_proof_verdict(
     table: &trust_table::TrustTable,
     graph: &ProofGraph,
     required_assurance: &HashSet<String>,
-    satisfied_assurance: &HashSet<String>,
+    assurance_bindings: &[AssuranceBindingClaim],
 ) -> Result<ProofState, ProofGraphError> {
     table.admit("proof_graph").map_err(|e| err(e.to_string()))?;
-    Ok(compute_proof_verdict(graph, required_assurance, satisfied_assurance))
+    // AGENTS.md ("No authority-bearing artifact may enter Gen2 without a
+    // Trust Table row and negative fixture"): a verdict computation always
+    // exercises the external-assurance reconciliation path (empty
+    // required_assurance / assurance_bindings included), so the
+    // "external_assurance" artifact family (G2-01) must also be admitted,
+    // not only "proof_graph" itself.
+    table.admit("external_assurance").map_err(|e| err(e.to_string()))?;
+    compute_proof_verdict(graph, required_assurance, assurance_bindings)
+}
+
+pub fn admit_derive_mandatory_assurance(
+    table: &trust_table::TrustTable,
+    present_obligation_classes: &HashSet<ObligationClass>,
+    obligation_class_to_assurance_routing: &HashMap<ObligationClass, Vec<String>>,
+) -> Result<HashSet<String>, ProofGraphError> {
+    table.admit("proof_graph").map_err(|e| err(e.to_string()))?;
+    // Round-2 review finding: the routing map is a "constitutional_policy"
+    // family artifact (G2-01), not a "proof_graph" one -- admitting only
+    // "proof_graph" left the routing map's own artifact family entirely
+    // ungated.
+    table.admit("constitutional_policy").map_err(|e| err(e.to_string()))?;
+    derive_mandatory_assurance(present_obligation_classes, obligation_class_to_assurance_routing)
 }
 
 pub fn admit_check_falsification_topology_baseline(
@@ -482,16 +593,36 @@ mod tests {
     fn admit_compute_proof_verdict_fails_closed_when_table_has_no_row() {
         let table = trust_table::TrustTable::new();
         let graph = simple_graph(vec![simple_node("OB-1", ProofState::PROVEN, FalsificationClass::STANDARD, vec![])]);
-        assert!(admit_compute_proof_verdict(&table, &graph, &HashSet::new(), &HashSet::new()).is_err());
+        assert!(admit_compute_proof_verdict(&table, &graph, &HashSet::new(), &[]).is_err());
     }
 
     #[test]
     fn admit_compute_proof_verdict_succeeds_when_table_carries_the_row() {
-        let mut table = trust_table::TrustTable::new();
+        let mut table = trust_table::initial_trust_table();
         table.extend(trust_table_row()).unwrap();
         let graph = simple_graph(vec![simple_node("OB-1", ProofState::PROVEN, FalsificationClass::STANDARD, vec![])]);
-        let verdict = admit_compute_proof_verdict(&table, &graph, &HashSet::new(), &HashSet::new()).unwrap();
+        let verdict = admit_compute_proof_verdict(&table, &graph, &HashSet::new(), &[]).unwrap();
         assert_eq!(verdict, ProofState::PROVEN);
+    }
+
+    #[test]
+    fn admit_derive_mandatory_assurance_fails_closed_when_table_has_no_row() {
+        let table = trust_table::TrustTable::new();
+        let mut routing: HashMap<ObligationClass, Vec<String>> = HashMap::new();
+        routing.insert(ObligationClass::SECURITY, vec!["independent_authority_review".to_string()]);
+        let present: HashSet<ObligationClass> = [ObligationClass::SECURITY].into_iter().collect();
+        assert!(admit_derive_mandatory_assurance(&table, &present, &routing).is_err());
+    }
+
+    #[test]
+    fn admit_derive_mandatory_assurance_succeeds_when_table_carries_both_rows() {
+        let mut table = trust_table::initial_trust_table();
+        table.extend(trust_table_row()).unwrap();
+        let mut routing: HashMap<ObligationClass, Vec<String>> = HashMap::new();
+        routing.insert(ObligationClass::SECURITY, vec!["independent_authority_review".to_string()]);
+        let present: HashSet<ObligationClass> = [ObligationClass::SECURITY].into_iter().collect();
+        let required = admit_derive_mandatory_assurance(&table, &present, &routing).unwrap();
+        assert_eq!(required, HashSet::from(["independent_authority_review".to_string()]));
     }
 
     // ---- ProofState transitions ----
@@ -723,27 +854,102 @@ mod tests {
         routing.insert(ObligationClass::SECURITY, vec!["independent_authority_review".to_string()]);
         routing.insert(ObligationClass::RECOVERY, vec!["tenfold_council".to_string(), "independent_authority_review".to_string()]);
         let present: HashSet<ObligationClass> = [ObligationClass::SECURITY, ObligationClass::RECOVERY].into_iter().collect();
-        let required = derive_mandatory_assurance(&present, &routing);
+        let required = derive_mandatory_assurance(&present, &routing).unwrap();
         assert_eq!(required, HashSet::from(["independent_authority_review".to_string(), "tenfold_council".to_string()]));
     }
 
     #[test]
-    fn mandatory_assurance_ignores_absent_classes() {
+    fn mandatory_assurance_ignores_classes_not_present() {
         let mut routing: HashMap<ObligationClass, Vec<String>> = HashMap::new();
         routing.insert(ObligationClass::SECURITY, vec!["independent_authority_review".to_string()]);
-        let present: HashSet<ObligationClass> = [ObligationClass::ARCHITECTURE].into_iter().collect();
-        let required = derive_mandatory_assurance(&present, &routing);
-        assert!(required.is_empty());
+        let present: HashSet<ObligationClass> = [ObligationClass::SECURITY].into_iter().collect();
+        // ARCHITECTURE has no routing row at all, but it is also not in
+        // `present` -- only rows for genuinely-present classes are
+        // required, matching ConstitutionalPolicySet's own "missing rows
+        // for classes not actually exercised" tolerance.
+        let required = derive_mandatory_assurance(&present, &routing).unwrap();
+        assert_eq!(required, HashSet::from(["independent_authority_review".to_string()]));
+    }
+
+    #[test]
+    fn mandatory_assurance_rejects_a_present_class_with_no_routing_row() {
+        // Round-2 review finding: a present class entirely absent from the
+        // routing map must fail closed, not silently contribute nothing.
+        let routing: HashMap<ObligationClass, Vec<String>> = HashMap::new();
+        let present: HashSet<ObligationClass> = [ObligationClass::SECURITY].into_iter().collect();
+        assert!(derive_mandatory_assurance(&present, &routing).is_err());
+    }
+
+    #[test]
+    fn mandatory_assurance_rejects_a_present_class_with_an_empty_routing_row() {
+        // Round-2 review finding: an explicit-but-empty row is also
+        // default-deny, not "policy says no assurance required" -- an
+        // empty tuple for a present key is treated as a missing row,
+        // exactly matching ConstitutionalPolicySet.validate()'s own
+        // "a missing key or an empty tuple ... are both treated as a
+        // missing row" semantics.
+        let mut routing: HashMap<ObligationClass, Vec<String>> = HashMap::new();
+        routing.insert(ObligationClass::SECURITY, vec![]);
+        let present: HashSet<ObligationClass> = [ObligationClass::SECURITY].into_iter().collect();
+        assert!(derive_mandatory_assurance(&present, &routing).is_err());
+    }
+
+    // ---- external assurance reconciliation ----
+
+    fn reconciled_binding(assurance_type: &str) -> AssuranceBindingClaim {
+        AssuranceBindingClaim {
+            assurance_type: assurance_type.to_string(),
+            expected_campaign_generation: 1,
+            expected_milestone_id: "m1".to_string(),
+            expected_obligation_ids: vec!["OB-1".to_string()],
+            supplied_request_digest: "req-digest".to_string(),
+            supplied_response_digest: "resp-digest".to_string(),
+            supplied_authority_identity: "external-authority-1".to_string(),
+            supplied_authority_generation: 1,
+            supplied_campaign_generation: 1,
+            supplied_milestone_id: "m1".to_string(),
+            supplied_obligation_ids: vec!["OB-1".to_string()],
+            retained_request_digest: "req-digest".to_string(),
+            retained_response_digest: "resp-digest".to_string(),
+            retained_authority_identity: "external-authority-1".to_string(),
+            retained_authority_generation: 1,
+        }
+    }
+
+    #[test]
+    fn assurance_binding_reconciles_when_every_copy_and_binding_field_agrees() {
+        assert!(reconciled_binding("independent_authority_review").reconciled());
+    }
+
+    #[test]
+    fn assurance_binding_fails_to_reconcile_on_supplied_vs_retained_digest_mismatch() {
+        let mut binding = reconciled_binding("independent_authority_review");
+        binding.supplied_request_digest = "tampered-digest".to_string();
+        assert!(!binding.reconciled());
+    }
+
+    #[test]
+    fn assurance_binding_fails_to_reconcile_on_wrong_campaign_generation() {
+        let mut binding = reconciled_binding("independent_authority_review");
+        binding.supplied_campaign_generation = 2;
+        assert!(!binding.reconciled());
+    }
+
+    #[test]
+    fn assurance_binding_fails_to_reconcile_on_wrong_obligation_binding() {
+        let mut binding = reconciled_binding("independent_authority_review");
+        binding.supplied_obligation_ids = vec!["OB-OTHER".to_string()];
+        assert!(!binding.reconciled());
     }
 
     // ---- overall proof verdict ----
 
     #[test]
-    fn proof_verdict_proven_when_graph_complete_and_assurance_satisfied() {
+    fn proof_verdict_proven_when_graph_complete_and_assurance_reconciled() {
         let graph = simple_graph(vec![simple_node("OB-1", ProofState::PROVEN, FalsificationClass::STANDARD, vec![])]);
-        let required: HashSet<String> = HashSet::from(["a".to_string()]);
-        let satisfied: HashSet<String> = HashSet::from(["a".to_string(), "b".to_string()]);
-        assert_eq!(compute_proof_verdict(&graph, &required, &satisfied), ProofState::PROVEN);
+        let required: HashSet<String> = HashSet::from(["independent_authority_review".to_string()]);
+        let bindings = vec![reconciled_binding("independent_authority_review"), reconciled_binding("extra-unrequired")];
+        assert_eq!(compute_proof_verdict(&graph, &required, &bindings).unwrap(), ProofState::PROVEN);
     }
 
     #[test]
@@ -752,14 +958,36 @@ mod tests {
             simple_node("OB-1", ProofState::PROVEN, FalsificationClass::STANDARD, vec![]),
             simple_node("OB-2", ProofState::EVIDENCE_PENDING, FalsificationClass::STANDARD, vec![]),
         ]);
-        assert_eq!(compute_proof_verdict(&graph, &HashSet::new(), &HashSet::new()), ProofState::NOT_PROVEN);
+        assert_eq!(compute_proof_verdict(&graph, &HashSet::new(), &[]).unwrap(), ProofState::NOT_PROVEN);
     }
 
     #[test]
     fn proof_verdict_not_proven_on_missing_assurance() {
         let graph = simple_graph(vec![simple_node("OB-1", ProofState::PROVEN, FalsificationClass::STANDARD, vec![])]);
         let required: HashSet<String> = HashSet::from(["independent_authority_review".to_string()]);
-        assert_eq!(compute_proof_verdict(&graph, &required, &HashSet::new()), ProofState::NOT_PROVEN);
+        assert_eq!(compute_proof_verdict(&graph, &required, &[]).unwrap(), ProofState::NOT_PROVEN);
+    }
+
+    #[test]
+    fn proof_verdict_not_proven_when_assurance_claim_does_not_reconcile() {
+        // Round-2 review finding: a claim whose `assurance_type` matches
+        // the required id, but whose supplied copy disagrees with the
+        // retained copy, must not count as satisfied -- a fabricated
+        // string alone must never manufacture a PASS.
+        let graph = simple_graph(vec![simple_node("OB-1", ProofState::PROVEN, FalsificationClass::STANDARD, vec![])]);
+        let required: HashSet<String> = HashSet::from(["independent_authority_review".to_string()]);
+        let mut unreconciled = reconciled_binding("independent_authority_review");
+        unreconciled.retained_response_digest = "different-from-supplied".to_string();
+        assert_eq!(compute_proof_verdict(&graph, &required, &[unreconciled]).unwrap(), ProofState::NOT_PROVEN);
+    }
+
+    #[test]
+    fn proof_verdict_rejects_an_invalid_graph_instead_of_silently_computing() {
+        // Round-2 review finding: an empty-nodes graph must not reach
+        // is_fully_proven()'s vacuous `all()` semantics and be treated as
+        // PROVEN by omission.
+        let empty_graph = simple_graph(vec![]);
+        assert!(compute_proof_verdict(&empty_graph, &HashSet::new(), &[]).is_err());
     }
 
     // ---- hermetic proof freshness ----

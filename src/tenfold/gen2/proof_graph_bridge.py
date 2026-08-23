@@ -59,8 +59,8 @@ def _run(*args: str, input_text: str) -> str:
     raise ProofGraphCliBuildError(f"proof_graph_cli usage/process error (exit {result.returncode}): {output or result.stderr}")
 
 
-def rust_compute_proof_verdict(graph: dict, required_assurance: list[str], satisfied_assurance: list[str]) -> str:
-    payload = {"graph": graph, "required_assurance": required_assurance, "satisfied_assurance": satisfied_assurance}
+def rust_compute_proof_verdict(graph: dict, required_assurance: list[str], assurance_bindings: list[dict]) -> str:
+    payload = {"graph": graph, "required_assurance": required_assurance, "assurance_bindings": assurance_bindings}
     return _run("verdict", input_text=json.dumps(payload))
 
 

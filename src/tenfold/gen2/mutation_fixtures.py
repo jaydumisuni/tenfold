@@ -88,11 +88,12 @@ from .dispatch_lease_bridge import (
     rust_compute_frontier,
     rust_lease_acquire,
 )
-from .proof_graph import HermeticProofRecord, compute_proof_verdict, verify_fresh_hermetic_proof
+from .proof_graph import AssuranceBindingClaim, HermeticProofRecord, compute_proof_verdict, verify_fresh_hermetic_proof
 from .proof_graph_bridge import (
     ProofGraphCliError,
     rust_check_falsification_topology_baseline,
     rust_compute_proof_verdict,
+    rust_derive_mandatory_assurance,
     rust_verify_fresh_hermetic_proof,
 )
 from tenfold.contracts import NodeState
@@ -613,6 +614,24 @@ class MissingAssuranceCorrectlyRejected(Exception):
     `PartialProofCorrectlyRejected`, for the missing-assurance scenario."""
 
 
+class InvalidGraphCorrectlyRejected(Exception):
+    """Fixture-only sentinel, same rationale as
+    `PartialProofCorrectlyRejected`, for the invalid-graph-structure
+    scenario (round-2 review finding)."""
+
+
+class MissingRoutingRowCorrectlyRejected(Exception):
+    """Fixture-only sentinel, same rationale as
+    `PartialProofCorrectlyRejected`, for the missing-routing-row scenario
+    (round-2 review finding)."""
+
+
+class FabricatedAssuranceCorrectlyRejected(Exception):
+    """Fixture-only sentinel, same rationale as
+    `PartialProofCorrectlyRejected`, for the unreconciled/fabricated-
+    assurance-claim scenario (round-2 review finding)."""
+
+
 def _g2_12_partial_proof_kill_check() -> None:
     # G2-12 acceptance: "Partial proof never yields PROVEN." A Proof Graph
     # with one PROVEN and one non-PROVEN node must yield NOT_PROVEN from
@@ -630,7 +649,7 @@ def _g2_12_partial_proof_kill_check() -> None:
     if rust_verdict != "NOT_PROVEN":
         raise AssertionError(f"rust proof_graph kernel incorrectly computed {rust_verdict} for a partial proof")
     gen1_graph = ProofGraph.from_dict(graph_dict)
-    gen1_verdict = compute_proof_verdict(gen1_graph, frozenset(), frozenset())
+    gen1_verdict = compute_proof_verdict(gen1_graph, frozenset(), ())
     if gen1_verdict != ProofState.NOT_PROVEN:
         raise AssertionError(f"gen1 compute_proof_verdict incorrectly computed {gen1_verdict} for a partial proof")
     raise PartialProofCorrectlyRejected("partial Proof Graph correctly yields NOT_PROVEN in both Gen1 and Rust")
@@ -651,7 +670,7 @@ def _g2_12_missing_assurance_kill_check() -> None:
     if rust_verdict != "NOT_PROVEN":
         raise AssertionError(f"rust proof_graph kernel incorrectly computed {rust_verdict} with missing assurance")
     gen1_graph = ProofGraph.from_dict(graph_dict)
-    gen1_verdict = compute_proof_verdict(gen1_graph, frozenset({"independent_authority_review"}), frozenset())
+    gen1_verdict = compute_proof_verdict(gen1_graph, frozenset({"independent_authority_review"}), ())
     if gen1_verdict != ProofState.NOT_PROVEN:
         raise AssertionError(f"gen1 compute_proof_verdict incorrectly computed {gen1_verdict} with missing assurance")
     raise MissingAssuranceCorrectlyRejected("fully proven graph with missing assurance correctly yields NOT_PROVEN in both Gen1 and Rust")
@@ -709,6 +728,98 @@ def _g2_12_stale_hermetic_proof_kill_check() -> None:
     record = HermeticProofRecord(**record_dict)
     live = HermeticProofRecord(**live_dict)
     verify_fresh_hermetic_proof(record, live)
+
+
+def _g2_12_invalid_graph_kill_check() -> None:
+    # Round-2 review finding: a structurally invalid Proof Graph (here, an
+    # empty `nodes` array) must be rejected by verdict computation itself,
+    # not silently reach `is_fully_proven()`'s vacuous `all()` semantics
+    # and be treated as PROVEN by omission.
+    empty_graph_dict = {"graph_generation": 1, "obligation_ir_digest": "d" * 4, "nodes": []}
+    try:
+        rust_compute_proof_verdict(empty_graph_dict, [], [])
+    except ProofGraphCliError:
+        pass
+    else:
+        raise AssertionError("rust proof_graph kernel incorrectly computed a verdict for an empty (invalid) graph")
+
+    empty_graph = ProofGraph(graph_generation=1, obligation_ir_digest="d" * 4, nodes=())
+    try:
+        compute_proof_verdict(empty_graph, frozenset(), ())
+    except ConstitutionalError:
+        pass
+    else:
+        raise AssertionError("gen1 compute_proof_verdict incorrectly computed a verdict for an empty (invalid) graph")
+
+    raise InvalidGraphCorrectlyRejected("a structurally invalid Proof Graph is rejected by verdict computation in both Gen1 and Rust")
+
+
+def _g2_12_missing_routing_row_kill_check() -> None:
+    # Round-2 review finding: a present obligation class with no routing
+    # row (missing key, or an explicit empty list) must fail closed, not
+    # silently contribute nothing to the required assurance set --
+    # otherwise a caller could bypass the exact bound Assurance Matrix by
+    # omission.
+    try:
+        rust_derive_mandatory_assurance(["SECURITY"], {})
+    except ProofGraphCliError:
+        pass
+    else:
+        raise AssertionError("rust proof_graph kernel incorrectly derived assurance for a class with no routing row")
+
+    try:
+        rust_derive_mandatory_assurance(["SECURITY"], {"SECURITY": []})
+    except ProofGraphCliError:
+        pass
+    else:
+        raise AssertionError("rust proof_graph kernel incorrectly derived assurance for a class with an empty routing row")
+
+    policy = _total_policy(obligation_class_to_assurance_routing={oc: () for oc in ObligationClass})
+    try:
+        policy.validate()
+    except ConstitutionalError:
+        pass
+    else:
+        raise AssertionError("gen1 ConstitutionalPolicySet incorrectly validated with an empty assurance-routing row")
+
+    raise MissingRoutingRowCorrectlyRejected("a present obligation class with a missing/empty routing row is rejected in both Gen1 and Rust")
+
+
+def _g2_12_fabricated_assurance_kill_check() -> None:
+    # Round-2 review finding: a satisfied-assurance claim whose
+    # `assurance_type` string matches the required id, but whose supplied
+    # copy does not genuinely reconcile against the independently retained
+    # copy, must not count as satisfied -- G2-00 SS11.2: "Gen 2 cannot
+    # manufacture external PASS by Chronicle assertion."
+    binding = {
+        "assurance_type": "independent_authority_review", "expected_campaign_generation": 1, "expected_milestone_id": "m1",
+        "expected_obligation_ids": ["OB-1"], "supplied_request_digest": "r", "supplied_response_digest": "s",
+        "supplied_authority_identity": "auth-1", "supplied_authority_generation": 1, "supplied_campaign_generation": 1,
+        "supplied_milestone_id": "m1", "supplied_obligation_ids": ["OB-1"],
+        "retained_request_digest": "r", "retained_response_digest": "TAMPERED", "retained_authority_identity": "auth-1",
+        "retained_authority_generation": 1,
+    }
+    graph_dict = {
+        "graph_generation": 1, "obligation_ir_digest": "d" * 4,
+        "nodes": [{"obligation_id": "OB-1", "state": "PROVEN", "falsification_class": "STANDARD", "evidence_refs": ["ev-1"], "predecessor_obligation_ids": []}],
+    }
+    rust_verdict = rust_compute_proof_verdict(graph_dict, ["independent_authority_review"], [binding])
+    if rust_verdict != "NOT_PROVEN":
+        raise AssertionError(f"rust proof_graph kernel incorrectly computed {rust_verdict} for an unreconciled assurance claim")
+
+    gen1_graph = ProofGraph.from_dict(graph_dict)
+    claim = AssuranceBindingClaim(
+        assurance_type=binding["assurance_type"], expected_campaign_generation=1, expected_milestone_id="m1",
+        expected_obligation_ids=("OB-1",), supplied_request_digest="r", supplied_response_digest="s",
+        supplied_authority_identity="auth-1", supplied_authority_generation=1, supplied_campaign_generation=1,
+        supplied_milestone_id="m1", supplied_obligation_ids=("OB-1",), retained_request_digest="r",
+        retained_response_digest="TAMPERED", retained_authority_identity="auth-1", retained_authority_generation=1,
+    )
+    gen1_verdict = compute_proof_verdict(gen1_graph, frozenset({"independent_authority_review"}), (claim,))
+    if gen1_verdict != ProofState.NOT_PROVEN:
+        raise AssertionError(f"gen1 compute_proof_verdict incorrectly computed {gen1_verdict} for an unreconciled assurance claim")
+
+    raise FabricatedAssuranceCorrectlyRejected("an unreconciled assurance-type claim does not satisfy required assurance in both Gen1 and Rust")
 
 
 def build_initial_mutation_suite() -> MutationSuite:
@@ -1297,6 +1408,49 @@ def build_initial_mutation_suite() -> MutationSuite:
             "proof_graph",
             _g2_12_stale_hermetic_proof_kill_check,
             ConstitutionalError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G12-GRAPHVALIDITY-001",
+            MutationCategory.PARTIAL_PROOF_SEMANTICS,
+            "A structurally invalid Proof Graph (empty nodes) is rejected by verdict computation "
+            "itself in both the real compiled Rust proof_graph kernel and the real Gen-1 "
+            "compute_proof_verdict, rather than silently reaching is_fully_proven()'s vacuous "
+            "all() semantics -- round-2 review finding.",
+            "G2-00 SS11; G2-12",
+            "proof_graph",
+            _g2_12_invalid_graph_kill_check,
+            InvalidGraphCorrectlyRejected,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G12-ROUTING-001",
+            MutationCategory.ASSURANCE_OMISSION,
+            "A present obligation class with a missing or empty assurance-routing row is rejected "
+            "outright (fail closed) by both the real compiled Rust proof_graph kernel and the real "
+            "Gen-1 ConstitutionalPolicySet's default-deny totality check, rather than silently "
+            "contributing no required assurance -- round-2 review finding.",
+            "G2-00 SS11.2; G2-02; G2-12",
+            "proof_graph",
+            _g2_12_missing_routing_row_kill_check,
+            MissingRoutingRowCorrectlyRejected,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G12-ASSURANCE-002",
+            MutationCategory.ASSURANCE_OMISSION,
+            "An assurance-satisfaction claim whose assurance_type string matches the required id "
+            "but whose supplied copy does not reconcile against the independently retained copy "
+            "does not satisfy required assurance in either the real compiled Rust proof_graph "
+            "kernel or the real Gen-1 compute_proof_verdict -- Gen 2 cannot manufacture external "
+            "PASS by a bare string claim (G2-00 SS11.2; round-2 review finding).",
+            "G2-00 SS11.2; G2-12",
+            "proof_graph",
+            _g2_12_fabricated_assurance_kill_check,
+            FabricatedAssuranceCorrectlyRejected,
         )
     )
 

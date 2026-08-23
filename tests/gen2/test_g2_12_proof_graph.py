@@ -23,6 +23,7 @@ import pytest
 
 from tenfold.gen2.campaign_compiler import check_falsification_topology_baseline
 from tenfold.gen2.constitutional import (
+    AmbiguityImpactDomain,
     ConstitutionalError,
     ConstitutionalPolicySet,
     FalsificationClass,
@@ -32,8 +33,10 @@ from tenfold.gen2.constitutional import (
     ProofGraph,
     ProofGraphNode,
     ProofState,
+    RequirementClass,
 )
 from tenfold.gen2.proof_graph import (
+    AssuranceBindingClaim,
     HermeticProofRecord,
     admit_evidence,
     compute_proof_verdict,
@@ -82,10 +85,59 @@ def _node(obligation_id: str, state: ProofState, *, falsification_class: Falsifi
     )
 
 
+def _claim_dict(assurance_type: str, *, reconciled: bool = True) -> dict:
+    """A JSON-shaped `AssuranceBindingClaim` whose supplied copy genuinely
+    reconciles against the retained copy and expected binding (unless
+    `reconciled=False`, which tampers the retained copy) -- the only way a
+    claim counts toward satisfied assurance after the round-2 fix."""
+    d = {
+        "assurance_type": assurance_type,
+        "expected_campaign_generation": 1,
+        "expected_milestone_id": "m1",
+        "expected_obligation_ids": ["OB-1"],
+        "supplied_request_digest": "req-digest",
+        "supplied_response_digest": "resp-digest",
+        "supplied_authority_identity": "external-authority-1",
+        "supplied_authority_generation": 1,
+        "supplied_campaign_generation": 1,
+        "supplied_milestone_id": "m1",
+        "supplied_obligation_ids": ["OB-1"],
+        "retained_request_digest": "req-digest",
+        "retained_response_digest": "resp-digest",
+        "retained_authority_identity": "external-authority-1",
+        "retained_authority_generation": 1,
+    }
+    if not reconciled:
+        d["retained_response_digest"] = "TAMPERED"
+    return d
+
+
+def _claim_from_dict(d: dict) -> AssuranceBindingClaim:
+    return AssuranceBindingClaim(
+        assurance_type=d["assurance_type"],
+        expected_campaign_generation=d["expected_campaign_generation"],
+        expected_milestone_id=d["expected_milestone_id"],
+        expected_obligation_ids=tuple(d["expected_obligation_ids"]),
+        supplied_request_digest=d["supplied_request_digest"],
+        supplied_response_digest=d["supplied_response_digest"],
+        supplied_authority_identity=d["supplied_authority_identity"],
+        supplied_authority_generation=d["supplied_authority_generation"],
+        supplied_campaign_generation=d["supplied_campaign_generation"],
+        supplied_milestone_id=d["supplied_milestone_id"],
+        supplied_obligation_ids=tuple(d["supplied_obligation_ids"]),
+        retained_request_digest=d["retained_request_digest"],
+        retained_response_digest=d["retained_response_digest"],
+        retained_authority_identity=d["retained_authority_identity"],
+        retained_authority_generation=d["retained_authority_generation"],
+    )
+
+
 # ============================================================================
 # Differential corpus: overall proof verdict (Gen1-equivalent/Rust parity).
 # G2-12 acceptance: "Partial proof never yields PROVEN; missing assurance
-# yields NOT_PROVEN."
+# yields NOT_PROVEN." `satisfied_ids` names the assurance types a genuinely
+# reconciled `AssuranceBindingClaim` is built for -- there is no longer a
+# way to hand either implementation a bare "satisfied" string.
 # ============================================================================
 
 _VERDICT_CORPUS = (
@@ -98,11 +150,13 @@ _VERDICT_CORPUS = (
 )
 
 
-@pytest.mark.parametrize("nodes,required,satisfied,expected", _VERDICT_CORPUS)
-def test_g2_12_gen1_rust_parity_on_verdict_corpus(nodes, required, satisfied, expected) -> None:
+@pytest.mark.parametrize("nodes,required,satisfied_ids,expected", _VERDICT_CORPUS)
+def test_g2_12_gen1_rust_parity_on_verdict_corpus(nodes, required, satisfied_ids, expected) -> None:
     graph = ProofGraph(graph_generation=1, obligation_ir_digest="d" * 4, nodes=tuple(nodes))
-    gen1_verdict = compute_proof_verdict(graph, required, satisfied)
-    rust_verdict = rust_compute_proof_verdict(graph.to_dict(), sorted(required), sorted(satisfied))
+    binding_dicts = [_claim_dict(a) for a in sorted(satisfied_ids)]
+    binding_claims = tuple(_claim_from_dict(d) for d in binding_dicts)
+    gen1_verdict = compute_proof_verdict(graph, required, binding_claims)
+    rust_verdict = rust_compute_proof_verdict(graph.to_dict(), sorted(required), binding_dicts)
     assert gen1_verdict == expected, f"gen1 divergence from expectation: {gen1_verdict} != {expected}"
     assert rust_verdict == expected.value, f"rust divergence from expectation: {rust_verdict} != {expected.value}"
 
@@ -115,8 +169,33 @@ def test_g2_12_verdict_binary_never_partial_credit() -> None:
         _node("OB-9", ProofState.EVIDENCE_PENDING),
     )
     graph = ProofGraph(graph_generation=1, obligation_ir_digest="d" * 4, nodes=nodes)
-    assert compute_proof_verdict(graph, frozenset(), frozenset()) == ProofState.NOT_PROVEN
+    assert compute_proof_verdict(graph, frozenset(), ()) == ProofState.NOT_PROVEN
     assert rust_compute_proof_verdict(graph.to_dict(), [], []) == "NOT_PROVEN"
+
+
+def test_g2_12_gen1_rust_parity_verdict_rejects_a_structurally_invalid_graph() -> None:
+    """Round-2 review finding: an empty-nodes graph must not reach
+    is_fully_proven()'s vacuous all() semantics and be treated as PROVEN
+    by omission -- verdict computation validates the graph first."""
+    empty_graph = ProofGraph(graph_generation=1, obligation_ir_digest="d" * 4, nodes=())
+    with pytest.raises(ConstitutionalError):
+        compute_proof_verdict(empty_graph, frozenset(), ())
+    with pytest.raises(ProofGraphCliError):
+        rust_compute_proof_verdict(empty_graph.to_dict(), [], [])
+
+
+def test_g2_12_gen1_rust_parity_verdict_does_not_count_an_unreconciled_assurance_claim() -> None:
+    """Round-2 review finding: an assurance-satisfaction claim whose
+    assurance_type string matches the required id, but whose supplied copy
+    does not reconcile against the retained copy, must not satisfy that
+    requirement -- G2-00 SS11.2: "Gen 2 cannot manufacture external PASS
+    by Chronicle assertion.\""""
+    graph = ProofGraph(graph_generation=1, obligation_ir_digest="d" * 4, nodes=(_node("OB-1", ProofState.PROVEN, evidence_refs=("ev-1",)),))
+    required = frozenset({"independent_authority_review"})
+    unreconciled_dict = _claim_dict("independent_authority_review", reconciled=False)
+    unreconciled_claim = _claim_from_dict(unreconciled_dict)
+    assert compute_proof_verdict(graph, required, (unreconciled_claim,)) == ProofState.NOT_PROVEN
+    assert rust_compute_proof_verdict(graph.to_dict(), sorted(required), [unreconciled_dict]) == "NOT_PROVEN"
 
 
 # ============================================================================
@@ -213,27 +292,43 @@ def test_g2_12_gen1_rust_parity_admit_evidence_rejects_illegal_transition() -> N
 _ROUTING = {"BEHAVIOUR": ["independent_authority_review"], "SECURITY": ["independent_authority_review", "external_penetration_test"]}
 
 
+def _full_policy(routing: dict[ObligationClass, tuple[str, ...]]) -> ConstitutionalPolicySet:
+    """A `ConstitutionalPolicySet` total over every required row of every
+    family (G2-02 acceptance: "missing policy rows reject") -- `validate()`
+    rejects anything less, and `derive_mandatory_assurance` now calls
+    `validate()` first (round-2 fix), so every Gen1-side test below needs a
+    genuinely total policy, not a sparse stand-in."""
+    return ConstitutionalPolicySet(
+        policy_generation=1,
+        requirement_class_to_obligation_classes={rc: (ObligationClass(rc.value),) for rc in RequirementClass},
+        obligation_class_to_proof_event_predicates={oc: (f"predicate-{oc.value}",) for oc in ObligationClass},
+        obligation_class_to_falsification_class={oc: FalsificationClass.STANDARD for oc in ObligationClass},
+        obligation_class_to_assurance_routing=routing,
+        requirement_classification_to_ambiguity_impact_domains={rc: (AmbiguityImpactDomain.ACCEPTANCE,) for rc in RequirementClass},
+        assurance_matrix_generation=1,
+        assurance_matrix_digest="m" * 64,
+        non_weakenable_exemptions=(),
+    )
+
+
+# A total routing map for Gen1's real ConstitutionalPolicySet: every class
+# not exercised by the corpus below gets an unused placeholder row purely
+# so policy.validate()'s totality check passes; only BEHAVIOUR/SECURITY's
+# values (mirroring _ROUTING exactly) are ever exercised by `present`.
+_FULL_ROUTING_FOR_GEN1: dict[ObligationClass, tuple[str, ...]] = {oc: ("unused-placeholder-assurance",) for oc in ObligationClass}
+_FULL_ROUTING_FOR_GEN1.update({ObligationClass(k): tuple(v) for k, v in _ROUTING.items()})
+
+
 @pytest.mark.parametrize(
     "present,expected",
     [
         (["BEHAVIOUR"], frozenset({"independent_authority_review"})),
         (["SECURITY"], frozenset({"independent_authority_review", "external_penetration_test"})),
         (["BEHAVIOUR", "SECURITY"], frozenset({"independent_authority_review", "external_penetration_test"})),
-        (["ARCHITECTURE"], frozenset()),
     ],
 )
 def test_g2_12_gen1_rust_verifier_three_way_parity_on_mandatory_assurance(present, expected) -> None:
-    policy = ConstitutionalPolicySet(
-        policy_generation=1,
-        requirement_class_to_obligation_classes={},
-        obligation_class_to_proof_event_predicates={},
-        obligation_class_to_falsification_class={},
-        obligation_class_to_assurance_routing={ObligationClass(k): tuple(v) for k, v in _ROUTING.items()},
-        requirement_classification_to_ambiguity_impact_domains={},
-        assurance_matrix_generation=1,
-        assurance_matrix_digest="m" * 64,
-        non_weakenable_exemptions=(),
-    )
+    policy = _full_policy(_FULL_ROUTING_FOR_GEN1)
     ir = ObligationIR(
         ir_generation=1,
         requirement_closure_digest="r" * 64,
@@ -250,6 +345,41 @@ def test_g2_12_gen1_rust_verifier_three_way_parity_on_mandatory_assurance(presen
     assert gen1_result == expected, f"gen1 divergence: {gen1_result} != {expected}"
     assert rust_result == expected, f"rust divergence: {rust_result} != {expected}"
     assert verifier_result == expected, f"verifier divergence: {verifier_result} != {expected}"
+
+
+def test_g2_12_rust_derive_mandatory_assurance_rejects_a_present_class_with_no_routing_row() -> None:
+    """Round-2 review finding: a present obligation class entirely absent
+    from the routing map must fail closed, not silently contribute
+    nothing to the required set."""
+    with pytest.raises(ProofGraphCliError):
+        rust_derive_mandatory_assurance(["ARCHITECTURE"], _ROUTING)
+
+
+def test_g2_12_rust_derive_mandatory_assurance_rejects_a_present_class_with_an_empty_routing_row() -> None:
+    """Round-2 review finding: an explicit-but-empty row is also
+    default-deny, matching ConstitutionalPolicySet.validate()'s own
+    "a missing key or an empty tuple ... are both treated as a missing
+    row" semantics."""
+    with pytest.raises(ProofGraphCliError):
+        rust_derive_mandatory_assurance(["SECURITY"], {"SECURITY": []})
+
+
+def test_g2_12_gen1_derive_mandatory_assurance_rejects_an_invalid_policy() -> None:
+    """Round-2 review finding: `derive_mandatory_assurance` previously
+    accepted any policy object unvalidated, silently treating a missing
+    routing row as "no assurance required" via a bare `.get(class, ())`.
+    It now calls `policy.validate()` first, so an invalid policy (every
+    routing row empty here) is rejected outright."""
+    invalid_policy = _full_policy({oc: () for oc in ObligationClass})
+    ir = ObligationIR(
+        ir_generation=1,
+        requirement_closure_digest="r" * 64,
+        classification_closure_digest="c" * 64,
+        policy_closure_digest="p" * 64,
+        nodes=(ObligationIRNode("OB-1", "REQ-1", ObligationClass.SECURITY, "predicate", FalsificationClass.STANDARD),),
+    )
+    with pytest.raises(ConstitutionalError):
+        derive_mandatory_assurance(ir, invalid_policy)
 
 
 # ============================================================================
@@ -334,8 +464,15 @@ def test_g2_12_standing_gate_b_reconciliation_verifier_agrees_with_kernel_and_ge
         for i, state in enumerate(node_states)
     )
     graph = ProofGraph(1, "d" * 4, nodes)
-    gen1_result = compute_proof_verdict(graph, frozenset(required), frozenset(satisfied)).value
-    rust_result = rust_compute_proof_verdict(graph.to_dict(), sorted(required), sorted(satisfied))
+    # `independent_compute_proof_verdict`'s raw `satisfied` list names
+    # assurance types the reconciliation process has *already* determined
+    # to be satisfied; the real kernel's `compute_proof_verdict` performs
+    # that reconciliation itself, so a genuinely reconciled claim is built
+    # for each id in `satisfied` to make the two comparable on this corpus.
+    binding_dicts = [_claim_dict(a) for a in sorted(satisfied)]
+    binding_claims = tuple(_claim_from_dict(d) for d in binding_dicts)
+    gen1_result = compute_proof_verdict(graph, frozenset(required), binding_claims).value
+    rust_result = rust_compute_proof_verdict(graph.to_dict(), sorted(required), binding_dicts)
 
     assert verifier_result == gen1_result == rust_result == expected
 

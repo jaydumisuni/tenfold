@@ -12,16 +12,16 @@
 //! Subcommands (each prints one line: JSON/ACCEPT on success (exit 0), or
 //! "ERROR: <message>" (exit 1); a usage error exits 2):
 //!
-//! - `verdict` — reads `{"graph": ProofGraph, "required_assurance": [str], "satisfied_assurance": [str]}` from stdin, prints the verdict ("PROVEN"/"NOT_PROVEN").
+//! - `verdict` — reads `{"graph": ProofGraph, "required_assurance": [str], "assurance_bindings": [AssuranceBindingClaim]}` from stdin, prints the verdict ("PROVEN"/"NOT_PROVEN").
 //! - `topology-baseline` — reads `{"baseline": ProofGraph, "candidate": ProofGraph}` from stdin, prints ACCEPT/ERROR.
 //! - `admit-evidence` — reads `{"node": ProofGraphNode, "new_state": ProofState, "evidence_refs": [str]}` from stdin, prints the transitioned node JSON or ERROR.
-//! - `mandatory-assurance` — reads `{"present_obligation_classes": [ObligationClass], "routing": {ObligationClass: [str]}}` from stdin, prints the required assurance array.
+//! - `mandatory-assurance` — reads `{"present_obligation_classes": [ObligationClass], "routing": {ObligationClass: [str]}}` from stdin, prints the required assurance array or ERROR if a present class has no routing row.
 //! - `hermetic-check` — reads `{"record": HermeticProofRecord, "live": HermeticProofRecord}` from stdin, prints ACCEPT/ERROR.
 
 use obligation_ir::ObligationClass;
 use proof_graph::{
-    admit_check_falsification_topology_baseline, admit_compute_proof_verdict, admit_evidence, admit_verify_fresh_hermetic_proof,
-    derive_mandatory_assurance, HermeticProofRecord, ProofGraph, ProofGraphNode, ProofState,
+    admit_check_falsification_topology_baseline, admit_compute_proof_verdict, admit_derive_mandatory_assurance, admit_evidence,
+    admit_verify_fresh_hermetic_proof, AssuranceBindingClaim, HermeticProofRecord, ProofGraph, ProofGraphNode, ProofState,
 };
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -51,7 +51,7 @@ fn read_stdin() -> Result<String, ExitCode> {
 struct VerdictInput {
     graph: ProofGraph,
     required_assurance: Vec<String>,
-    satisfied_assurance: Vec<String>,
+    assurance_bindings: Vec<AssuranceBindingClaim>,
 }
 
 #[derive(Deserialize)]
@@ -99,8 +99,7 @@ fn main() -> ExitCode {
                 }
             };
             let required: HashSet<String> = input.required_assurance.into_iter().collect();
-            let satisfied: HashSet<String> = input.satisfied_assurance.into_iter().collect();
-            match admit_compute_proof_verdict(&admitted_table(), &input.graph, &required, &satisfied) {
+            match admit_compute_proof_verdict(&admitted_table(), &input.graph, &required, &input.assurance_bindings) {
                 Ok(verdict) => {
                     println!("{verdict:?}");
                     ExitCode::SUCCESS
@@ -179,18 +178,21 @@ fn main() -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            if let Err(e) = admitted_table().admit("proof_graph") {
-                println!("ERROR: {e}");
-                return ExitCode::from(1);
-            }
             let present: HashSet<ObligationClass> = input.present_obligation_classes.into_iter().collect();
-            let required = derive_mandatory_assurance(&present, &input.routing);
-            let mut sorted: Vec<String> = required.into_iter().collect();
-            sorted.sort_unstable();
-            match serde_json::to_string(&sorted) {
-                Ok(json) => {
-                    println!("{json}");
-                    ExitCode::SUCCESS
+            match admit_derive_mandatory_assurance(&admitted_table(), &present, &input.routing) {
+                Ok(required) => {
+                    let mut sorted: Vec<String> = required.into_iter().collect();
+                    sorted.sort_unstable();
+                    match serde_json::to_string(&sorted) {
+                        Ok(json) => {
+                            println!("{json}");
+                            ExitCode::SUCCESS
+                        }
+                        Err(e) => {
+                            println!("ERROR: {e}");
+                            ExitCode::from(1)
+                        }
+                    }
                 }
                 Err(e) => {
                     println!("ERROR: {e}");
