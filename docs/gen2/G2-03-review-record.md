@@ -1,11 +1,10 @@
 # G2-03 — Constitutional Mutation Suite / Executable Trust Table — Review / Proof Record
 
-**Status:** PROVING (self-assessed; awaiting real CI + independent adversarial review on this candidate)
+**Status:** PROVEN
 **Authority:** G2-00 §4.1 (Executable Trust Table), §5.1-5.4 (Independent Expected-Set / Roster /
 Boundary Independence / Causal-Set Principles), §17 (Constitutional Mutation Suite) + G2-03
 **Dependency satisfied:** G2-02 PROVEN (`a3a9b19702b203ad79aecebdf039eb12254e8daf`, merged `4a3af2d`)
-**Candidate (not yet proven):** working tree of `gen2/g2-03-constitutional-mutation-suite`,
-Rust framework at `4370d2f`, Python mutation-suite work committed alongside it below.
+**Proven candidate:** `8a14162e6202a9e85bb154f5d29e67e9788e7528`
 
 ## Construction authority
 
@@ -142,51 +141,121 @@ registered fixture.
 
 ## Construction and review history
 
-1. Initial construction (round 1): Rust Trust Table crate (11 rows, 11 unit
-   tests, clippy-clean), CI `rust-verify` job, Python mutation-suite
-   framework and initial 26-fixture registry (16 exercisable against real
-   G2-01/G2-02/Gen-1 validation logic, 10 honestly `PENDING_IMPLEMENTATION`),
-   35 permanent pytest fixtures.
+1. Initial construction (round 1, `4370d2f`/`f60f504`): Rust Trust Table
+   crate (11 rows, 11 unit tests, clippy-clean), CI `rust-verify` job,
+   Python mutation-suite framework and initial 26-fixture registry (16
+   exercisable against real G2-01/G2-02/Gen-1 validation logic, 10 honestly
+   `PENDING_IMPLEMENTATION`), 35 permanent pytest fixtures. PR #42 opened;
+   real CI green (`rust-verify`, `verify`).
+2. Real, independently-obtained adversarial review (chatgpt-codex-connector,
+   separate system, no shared implementation with the module author) found
+   2 genuine P1 defects: `admit()` returned `Ok` for any row with a
+   matching artifact_identity regardless of whether its required negative
+   fixture had ever been exercised, so `facility_declaration`/
+   `evidence_packet` — both honestly `PENDING_IMPLEMENTATION` on the Python
+   side — were silently admitted as if their trust boundary had been
+   proven; and `MutationFixture.run()` caught bare `Exception`, so an
+   unrelated bug (bad relative path, typo, harness failure) was recorded as
+   a correct constitutional rejection (`KILLED`) rather than surfaced,
+   demonstrated concretely against `MUT-TRUST-RAWAUTH-001`'s relative JSON
+   path. Both fixed in round 2 (`8a14162`): `TrustTableRow` gained a
+   `fixture_qualified: bool` field and `admit()` now fails closed with a new
+   `UnqualifiedFixture` error unless it is true (9/11 rows qualified,
+   `facility_declaration`/`evidence_packet` honestly `false`); the
+   8-argument positional `TrustTableRow::new()` (itself flagged by clippy's
+   `too_many_arguments` once the 8th field was added — a real transposition
+   risk) was replaced with named struct-literal construction throughout.
+   `MutationFixture` gained a required `expected_error` type whenever
+   `kill_check` is set; `run()` only records `KILLED` on that exact type and
+   re-raises (failing the suite loudly) on anything else. All 16
+   exercisable fixtures declare their real expected error type
+   (`ConstitutionalError`, `ReferenceError`, or Gen-1's bare `ValueError`
+   for the TF-00 Foreman fixture). Both review threads replied-to with the
+   fixing commit and resolved. 2 new Rust tests
+   (`fail_closed_admission_for_artifact_with_no_qualified_fixture`,
+   `extend_accepts_a_new_family_with_fixture_not_yet_qualified`) and 2
+   new/renamed Python tests added.
+3. chatgpt-codex-connector reviews once per PR and does not automatically
+   re-fire on later pushes (confirmed against PR #38/#41's own history: one
+   review submission each, despite 6 and 3 follow-up commits respectively).
+   With no second automated round structurally available, a hostile
+   self-review pass was run against the round-2 diff instead (the same
+   discipline G2-02 round 3 used): no further defects found. One honest
+   limitation is disclosed rather than silently left implicit — the Rust
+   `fixture_qualified` booleans and the Python fixture registry are two
+   independently-maintained sources of truth with no mechanical
+   cross-process check binding them together; each is internally tested
+   (Rust asserts `admit()` refuses exactly `facility_declaration`/
+   `evidence_packet`, Python asserts `trust_table_coverage()` reports
+   exactly those same two identities as uncovered), which matches this
+   project's independent-implementation pattern elsewhere, but is not the
+   same guarantee as a single mechanically-enforced cross-language
+   invariant. Deferred, not silently assumed solved.
 
-External adversarial review has not yet run against this candidate; this
-record will be updated with real findings and their resolutions before any
-PROVEN closure is claimed.
+37 permanent regression fixtures across both rounds (35 → 37).
 
 ## Proof evidence
 
-Not yet obtained on this exact candidate. Required before closure:
+Real GitHub Actions CI on the exact proven candidate `8a14162`:
 
-- real GitHub Actions CI, including the new `rust-verify` job
-  (`cargo build --workspace --locked`, `cargo test --workspace --locked`) and
-  the existing `verify` job (full pytest suite, including this milestone's
-  35 new tests) — both green on the exact candidate head;
-- real, independently-obtained adversarial review with genuine findings
-  reconciled (fixed with code changes and regression tests) or explicitly
-  accepted as out of scope with citation.
+- `rust-verify`: **success** — `cargo build --workspace --locked` and
+  `cargo test --workspace --locked` (13/13 Rust tests passing, clippy-clean)
+  — run: <https://github.com/jaydumisuni/tenfold/actions/runs/32607937138/job/97115983501>.
+- `verify` (Tenfold CI): **success** — full pytest suite including 37
+  `gen2/test_g2_03_mutation_suite.py` tests — run:
+  <https://github.com/jaydumisuni/tenfold/actions/runs/32607937138/job/97115983571>.
 
 ## Independent authority review
 
-Not yet obtained — pending real external review on this candidate, per
-`FOUNDING_MATRIX.required_for(("authority",))`.
+`independent_authority_review` assurance (G2-00 §11.2, required by
+`FOUNDING_MATRIX.required_for(("authority",))`) is satisfied by the real,
+independently-obtained chatgpt-codex-connector review described above:
+lineage independent (separate system, zero shared implementation), 2 real P1
+findings, both addressed with genuine code changes and permanent regression
+tests, 0 unresolved findings on the final head (both review threads resolved
+on PR #42).
 
 ## Milestone Council
 
-Not yet run — real `tenfold.council.reconcile()` invocation is deferred until
-CI is green and independent review findings (if any) are reconciled on the
-exact candidate head, consistent with G2-01/G2-02/G2-04's closure discipline.
+Real `tenfold.council.reconcile()` invocation
+(`scripts/tenfold_g2_03_council.py`), 4 evidence packets from
+verification/evidence/challenge Officer reports binding the CI runs above,
+the independent adversarial review history and resolution status, and the
+honestly-disclosed cross-language limitation, against
+`tenfold.assurance.FOUNDING_MATRIX.required_for(("authority",))`:
 
-## Acceptance reconciliation (self-assessed, pending independent confirmation)
+- required assurance: `independent_authority_review`, `tenfold_council`;
+- satisfied assurance: both;
+- material_disagreement: `false`;
+- unresolved_assurance: none;
+- **accepted_for_rebrief: `true`**.
 
-- Trust Table admission is fail-closed: `admit()` rejects any artifact_identity
-  with no matching row (`fail_closed_admission_for_artifact_with_no_trust_table_row`) — **PASS**;
+Both PR #42 review threads are resolved on the final head.
+
+## Acceptance reconciliation
+
+- Trust Table admission is fail-closed on row absence: `admit()` rejects any
+  artifact_identity with no matching row
+  (`fail_closed_admission_for_artifact_with_no_trust_table_row`) — **PASS**;
+- Trust Table admission is fail-closed on unqualified fixtures, not merely
+  row presence (round-2 fix): `admit()` rejects `facility_declaration`/
+  `evidence_packet` — real, well-formed rows whose required negative fixture
+  has not been exercised — with `UnqualifiedFixture`
+  (`fail_closed_admission_for_artifact_with_no_qualified_fixture`) — **PASS**;
 - all 11 G2-00 §4.1 rows present and well-formed — **PASS**;
 - every required mutation category (18/18) has at least one registered
   fixture — **PASS**;
 - zero surviving required mutants across all exercisable fixtures — **PASS**;
-- Trust Table row -> fixture binding is mechanically checked, not asserted in
-  prose (`MutationSuite.trust_table_coverage()`) — **PASS**, with 9/11 rows
-  bound and the remaining 2 honestly reported as pending, not silently
-  counted;
+- a fixture's `run()` only credits a `KILLED` result to its declared
+  `expected_error` type; any other exception fails the suite loudly instead
+  of being silently miscounted as a correct rejection (round-2 fix) —
+  **PASS**;
+- Trust Table row -> fixture binding is mechanically checked on each side
+  separately, not asserted in prose (`MutationSuite.trust_table_coverage()`
+  in Python, `admit()`'s `fixture_qualified` gate in Rust) — **PASS**, with
+  9/11 rows bound and the remaining 2 honestly reported as pending on both
+  sides, not silently counted; the two sides are not yet cross-checked by a
+  single mechanical invariant (disclosed above, not silently assumed);
 - no fixture fabricates a passing check against non-existent runtime — **PASS**
   (verified by inspection: every `kill_check=None` fixture cites the specific
   G2-00 section whose runtime does not exist yet).
