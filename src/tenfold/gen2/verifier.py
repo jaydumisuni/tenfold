@@ -964,3 +964,38 @@ def independent_compute_proof_verdict(node_states: list[str], required_assurance
     if not set(required_assurance) <= set(satisfied_assurance):
         return "NOT_PROVEN"
     return "PROVEN"
+
+
+# ============================================================================
+# G2-13: Runtime Obligations, Invariants and Observer -- Standing Gate B
+# addition (G2-00 SS12.1, same 6-step sequence documented at the G2-12
+# section above). Steps 1/3 are this function itself (derived from G2-00
+# SS8.7 directly, never from rust/runtime_obligation's implementation);
+# steps 2/4 are recorded as real VerifierSpecificationDelta/ComponentLineage
+# instances in tests/gen2/test_g2_13_runtime_obligations_invariants_observer.py
+# alongside the real reconciliation (steps 5-6) against both
+# tenfold.gen2.runtime_obligation and the real compiled Rust kernel.
+# ============================================================================
+
+
+def independent_derive_expected_runtime_obligation_set(effects: list[dict]) -> frozenset[tuple[str, str]]:
+    """Independent re-derivation of G2-00 SS8.7's "The verifier computes
+    EXPECTED_RUNTIME_OBLIGATION_SET independently", operating on raw
+    effect-observation dicts rather than importing
+    `tenfold.gen2.runtime_obligation.UnresolvedEffectObservation`. An
+    effect is unresolved -- and so creates a RECONCILIATION obligation --
+    when it is not yet terminal or its observation conflicts with
+    Chronicle's own record; if technical reconciliation cannot determine
+    reality, an EXTERNAL_ADJUDICATION obligation is also expected. Returns
+    a set of (effect_id, class_kind) pairs, never a runtime claim of which
+    class applies.
+    """
+    expected: set[tuple[str, str]] = set()
+    for effect in effects:
+        unresolved = not effect["terminal"] or effect["has_conflicting_observation"]
+        if not unresolved:
+            continue
+        expected.add((effect["effect_id"], "RECONCILIATION"))
+        if not effect["technical_reconciliation_possible"]:
+            expected.add((effect["effect_id"], "EXTERNAL_ADJUDICATION"))
+    return frozenset(expected)
