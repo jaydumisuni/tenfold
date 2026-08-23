@@ -20,6 +20,7 @@ from tenfold.gen2.closure_runtime import (
     EscapeRateReport,
     PathCChallenge,
     PathCDisposition,
+    ReconciledRequirementClosure,
     RetrospectiveProbeRecord,
     RetrospectiveProbeRegistry,
     RetrospectiveProbeStatus,
@@ -32,10 +33,12 @@ from tenfold.gen2.closure_runtime import (
     requires_path_c_challenge,
 )
 
+SOURCE_DIGEST = "s" * 64
 
-def _entry(candidate_id: str, reviewer: str, method: str, digest: str, *, procedure_generation: int = 1, tooling: str = "v1") -> CandidateLedgerEntry:
+
+def _entry(candidate_id: str, reviewer: str, method: str, *, procedure_generation: int = 1, tooling: str = "v1") -> CandidateLedgerEntry:
     return CandidateLedgerEntry(
-        candidate_id, "REQ-1", reviewer, method, tooling, procedure_generation, digest, CandidatePathDisposition.ACCEPTED
+        candidate_id, "REQ-1", reviewer, method, tooling, procedure_generation, SOURCE_DIGEST, CandidatePathDisposition.ACCEPTED
     )
 
 
@@ -45,7 +48,7 @@ def _entry(candidate_id: str, reviewer: str, method: str, digest: str, *, proced
 
 
 def test_g2_05_common_cause_risk_false_with_single_path() -> None:
-    ledger = CandidateLedger("REQ-1", (_entry("C-1", "alice", "manual", "d" * 64),))
+    ledger = CandidateLedger("REQ-1", (_entry("C-1", "alice", "manual"),))
     assert has_common_cause_risk(ledger) is False
 
 
@@ -53,8 +56,8 @@ def test_g2_05_common_cause_risk_true_on_shared_tooling() -> None:
     ledger = CandidateLedger(
         "REQ-1",
         (
-            _entry("C-1", "alice", "manual", "d" * 64, tooling="shared-v1"),
-            _entry("C-2", "bob", "automated", "e" * 64, tooling="shared-v1"),
+            _entry("C-1", "alice", "manual", tooling="shared-v1"),
+            _entry("C-2", "bob", "automated", tooling="shared-v1"),
         ),
     )
     assert has_common_cause_risk(ledger) is True
@@ -64,8 +67,8 @@ def test_g2_05_common_cause_risk_true_on_shared_procedure_generation() -> None:
     ledger = CandidateLedger(
         "REQ-1",
         (
-            _entry("C-1", "alice", "manual", "d" * 64, procedure_generation=3, tooling="v1"),
-            _entry("C-2", "bob", "automated", "e" * 64, procedure_generation=3, tooling="v2"),
+            _entry("C-1", "alice", "manual", procedure_generation=3, tooling="v1"),
+            _entry("C-2", "bob", "automated", procedure_generation=3, tooling="v2"),
         ),
     )
     assert has_common_cause_risk(ledger) is True
@@ -75,11 +78,25 @@ def test_g2_05_common_cause_risk_false_when_fully_independent() -> None:
     ledger = CandidateLedger(
         "REQ-1",
         (
-            _entry("C-1", "alice", "manual", "d" * 64, procedure_generation=1, tooling="v1"),
-            _entry("C-2", "bob", "automated", "e" * 64, procedure_generation=2, tooling="v2"),
+            _entry("C-1", "alice", "manual", procedure_generation=1, tooling="v1"),
+            _entry("C-2", "bob", "automated", procedure_generation=2, tooling="v2"),
         ),
     )
     assert has_common_cause_risk(ledger) is False
+
+
+def test_g2_05_common_cause_risk_detects_pairwise_duplicate_among_three_paths() -> None:
+    # Round-2 fix: ("shared", "other", "shared") has 2 distinct values, not
+    # all-identical, but still contains a real shared-tooling pair.
+    ledger = CandidateLedger(
+        "REQ-1",
+        (
+            _entry("C-1", "alice", "manual", tooling="shared"),
+            _entry("C-2", "bob", "automated", tooling="other"),
+            _entry("C-3", "carol", "reread", tooling="shared"),
+        ),
+    )
+    assert has_common_cause_risk(ledger) is True
 
 
 # ============================================================================
@@ -107,85 +124,135 @@ def test_g2_05_path_c_challenge_valid_cases_pass() -> None:
 
 
 def test_g2_05_requires_path_c_challenge_true_on_zero_disagreement_high_risk() -> None:
-    ledger = CandidateLedger(
-        "REQ-1",
-        (_entry("C-1", "alice", "manual", "d" * 64), _entry("C-2", "bob", "automated", "d" * 64)),
-    )
-    assert requires_path_c_challenge(ledger, high_risk=True) is True
+    ledger = CandidateLedger("REQ-1", (_entry("C-1", "alice", "manual"), _entry("C-2", "bob", "automated")))
+    digests = {"C-1": "content-d" * 8, "C-2": "content-d" * 8}
+    assert requires_path_c_challenge(ledger, high_risk=True, derived_content_digests=digests) is True
 
 
 def test_g2_05_requires_path_c_challenge_false_when_paths_disagree() -> None:
-    ledger = CandidateLedger(
-        "REQ-1",
-        (_entry("C-1", "alice", "manual", "d" * 64), _entry("C-2", "bob", "automated", "e" * 64)),
-    )
-    assert requires_path_c_challenge(ledger, high_risk=True) is False
+    ledger = CandidateLedger("REQ-1", (_entry("C-1", "alice", "manual"), _entry("C-2", "bob", "automated")))
+    digests = {"C-1": "content-a" * 7, "C-2": "content-b" * 7}
+    assert requires_path_c_challenge(ledger, high_risk=True, derived_content_digests=digests) is False
 
 
 def test_g2_05_requires_path_c_challenge_false_when_not_high_risk() -> None:
-    ledger = CandidateLedger(
-        "REQ-1",
-        (_entry("C-1", "alice", "manual", "d" * 64), _entry("C-2", "bob", "automated", "d" * 64)),
-    )
-    assert requires_path_c_challenge(ledger, high_risk=False) is False
+    ledger = CandidateLedger("REQ-1", (_entry("C-1", "alice", "manual"), _entry("C-2", "bob", "automated")))
+    digests = {"C-1": "content-d" * 8, "C-2": "content-d" * 8}
+    assert requires_path_c_challenge(ledger, high_risk=False, derived_content_digests=digests) is False
 
 
-def _closure_manifest(ledger: CandidateLedger) -> RequirementClosureManifest:
-    req = Requirement("REQ-1", "text", "authority@ref", (RequirementClass.BEHAVIOUR,), 1)
-    return RequirementClosureManifest(1, "s" * 64, (req,), (ledger,), "manual", ("alice", "bob"))
+def test_g2_05_requires_path_c_challenge_rejects_missing_content_digest() -> None:
+    # Round-2 fix: same source_digest no longer means zero-disagreement —
+    # a caller must supply the actual derived-content comparison.
+    ledger = CandidateLedger("REQ-1", (_entry("C-1", "alice", "manual"), _entry("C-2", "bob", "automated")))
+    with pytest.raises(ConstitutionalError, match="missing derived_content_digest"):
+        requires_path_c_challenge(ledger, high_risk=True, derived_content_digests={"C-1": "x" * 8})
+
+
+def _closure_manifest(ledger: CandidateLedger, *, requirement_classes=(RequirementClass.BEHAVIOUR,)) -> RequirementClosureManifest:
+    req = Requirement("REQ-1", "text", "authority@ref", requirement_classes, 1)
+    return RequirementClosureManifest(1, SOURCE_DIGEST, (req,), (ledger,), "manual", ("alice", "bob"))
 
 
 def test_g2_05_reconcile_requirement_closure_rejects_missing_path_c() -> None:
-    ledger = CandidateLedger(
-        "REQ-1",
-        (_entry("C-1", "alice", "manual", "d" * 64), _entry("C-2", "bob", "automated", "d" * 64)),
-    )
+    ledger = CandidateLedger("REQ-1", (_entry("C-1", "alice", "manual"), _entry("C-2", "bob", "automated")))
     manifest = _closure_manifest(ledger)
+    digests = {"C-1": "content-d" * 8, "C-2": "content-d" * 8}
     with pytest.raises(ConstitutionalError, match="requires a Path C omission challenge"):
-        reconcile_requirement_closure(manifest, high_risk_requirement_ids=frozenset({"REQ-1"}), path_c_challenges=())
+        reconcile_requirement_closure(
+            manifest, high_risk_requirement_ids=frozenset({"REQ-1"}), derived_content_digests=digests, path_c_challenges=()
+        )
 
 
-def test_g2_05_reconcile_requirement_closure_accepts_recorded_path_c() -> None:
-    ledger = CandidateLedger(
-        "REQ-1",
-        (_entry("C-1", "alice", "manual", "d" * 64), _entry("C-2", "bob", "automated", "d" * 64)),
-    )
+def test_g2_05_reconcile_requirement_closure_accepts_recorded_clean_path_c() -> None:
+    ledger = CandidateLedger("REQ-1", (_entry("C-1", "alice", "manual"), _entry("C-2", "bob", "automated")))
     manifest = _closure_manifest(ledger)
+    digests = {"C-1": "content-d" * 8, "C-2": "content-d" * 8}
     challenge = PathCChallenge("PC-1", "REQ-1", "carol", "adversarial-reread", 1, (), PathCDisposition.CHALLENGE_CLEAN)
-    reconcile_requirement_closure(manifest, high_risk_requirement_ids=frozenset({"REQ-1"}), path_c_challenges=(challenge,))
+    result = reconcile_requirement_closure(
+        manifest, high_risk_requirement_ids=frozenset({"REQ-1"}), derived_content_digests=digests, path_c_challenges=(challenge,)
+    )
+    assert isinstance(result, ReconciledRequirementClosure)
+    assert result.path_c_challenges == (challenge,)
+    assert isinstance(result.digest, str) and result.digest
+
+
+def test_g2_05_reconcile_requirement_closure_rejects_omission_found_verdict() -> None:
+    # Round-2 fix: a Path C challenge that found an omission must block
+    # reconciliation, not merely satisfy "a challenge exists."
+    ledger = CandidateLedger("REQ-1", (_entry("C-1", "alice", "manual"), _entry("C-2", "bob", "automated")))
+    manifest = _closure_manifest(ledger)
+    digests = {"C-1": "content-d" * 8, "C-2": "content-d" * 8}
+    challenge = PathCChallenge("PC-1", "REQ-1", "carol", "adversarial-reread", 1, ("missed a case",), PathCDisposition.OMISSION_FOUND)
+    with pytest.raises(ConstitutionalError, match="found an omission"):
+        reconcile_requirement_closure(
+            manifest, high_risk_requirement_ids=frozenset({"REQ-1"}), derived_content_digests=digests, path_c_challenges=(challenge,)
+        )
 
 
 def test_g2_05_reconcile_requirement_closure_rejects_duplicate_path_c_for_same_requirement() -> None:
-    ledger = CandidateLedger(
-        "REQ-1",
-        (_entry("C-1", "alice", "manual", "d" * 64), _entry("C-2", "bob", "automated", "d" * 64)),
-    )
+    ledger = CandidateLedger("REQ-1", (_entry("C-1", "alice", "manual"), _entry("C-2", "bob", "automated")))
     manifest = _closure_manifest(ledger)
+    digests = {"C-1": "content-d" * 8, "C-2": "content-d" * 8}
     c1 = PathCChallenge("PC-1", "REQ-1", "carol", "reread", 1, (), PathCDisposition.CHALLENGE_CLEAN)
     c2 = PathCChallenge("PC-2", "REQ-1", "dave", "reread", 1, (), PathCDisposition.CHALLENGE_CLEAN)
     with pytest.raises(ConstitutionalError, match="duplicate Path C challenge"):
-        reconcile_requirement_closure(manifest, high_risk_requirement_ids=frozenset({"REQ-1"}), path_c_challenges=(c1, c2))
+        reconcile_requirement_closure(
+            manifest, high_risk_requirement_ids=frozenset({"REQ-1"}), derived_content_digests=digests, path_c_challenges=(c1, c2)
+        )
 
 
 def test_g2_05_reconcile_requirement_closure_rejects_orphaned_path_c_challenge() -> None:
-    ledger = CandidateLedger(
-        "REQ-1",
-        (_entry("C-1", "alice", "manual", "d" * 64), _entry("C-2", "bob", "automated", "d" * 64)),
-    )
+    ledger = CandidateLedger("REQ-1", (_entry("C-1", "alice", "manual"), _entry("C-2", "bob", "automated")))
     manifest = _closure_manifest(ledger)
+    digests = {"C-1": "content-d" * 8, "C-2": "content-d" * 8}
     orphan = PathCChallenge("PC-1", "REQ-GHOST", "carol", "reread", 1, (), PathCDisposition.CHALLENGE_CLEAN)
     real = PathCChallenge("PC-2", "REQ-1", "carol", "reread", 1, (), PathCDisposition.CHALLENGE_CLEAN)
     with pytest.raises(ConstitutionalError, match="unknown requirement_id"):
-        reconcile_requirement_closure(manifest, high_risk_requirement_ids=frozenset({"REQ-1"}), path_c_challenges=(orphan, real))
+        reconcile_requirement_closure(
+            manifest, high_risk_requirement_ids=frozenset({"REQ-1"}), derived_content_digests=digests, path_c_challenges=(orphan, real)
+        )
 
 
 def test_g2_05_reconcile_requirement_closure_no_path_c_needed_when_paths_disagree() -> None:
-    ledger = CandidateLedger(
-        "REQ-1",
-        (_entry("C-1", "alice", "manual", "d" * 64), _entry("C-2", "bob", "automated", "e" * 64)),
-    )
+    ledger = CandidateLedger("REQ-1", (_entry("C-1", "alice", "manual"), _entry("C-2", "bob", "automated")))
     manifest = _closure_manifest(ledger)
-    reconcile_requirement_closure(manifest, high_risk_requirement_ids=frozenset({"REQ-1"}), path_c_challenges=())
+    digests = {"C-1": "content-a" * 7, "C-2": "content-b" * 7}
+    reconcile_requirement_closure(
+        manifest, high_risk_requirement_ids=frozenset({"REQ-1"}), derived_content_digests=digests, path_c_challenges=()
+    )
+
+
+def test_g2_05_reconcile_requirement_closure_rejects_inconsistent_source_binding() -> None:
+    # Round-2 fix: an entry's source_digest must match the closure's own
+    # source_authority_digest — a mismatch is rejected separately from any
+    # content-level disagreement check.
+    tampered_entry = CandidateLedgerEntry(
+        "C-1", "REQ-1", "alice", "manual", "v1", 1, "wrong-source-digest" * 4, CandidatePathDisposition.ACCEPTED
+    )
+    ledger = CandidateLedger("REQ-1", (tampered_entry, _entry("C-2", "bob", "automated")))
+    manifest = _closure_manifest(ledger)
+    with pytest.raises(ConstitutionalError, match="inconsistent with the closure's own source_authority_digest"):
+        reconcile_requirement_closure(
+            manifest,
+            high_risk_requirement_ids=frozenset({"REQ-1"}),
+            derived_content_digests={"C-1": "x" * 8, "C-2": "x" * 8},
+            path_c_challenges=(),
+        )
+
+
+def test_g2_05_reconcile_requirement_closure_rejects_structural_high_risk_omitted_from_roster() -> None:
+    # Round-2 fix: an empty/partial high_risk_requirement_ids must not
+    # silently skip a requirement carrying a structurally high-risk class.
+    ledger = CandidateLedger("REQ-1", (_entry("C-1", "alice", "manual"), _entry("C-2", "bob", "automated")))
+    manifest = _closure_manifest(ledger, requirement_classes=(RequirementClass.SECURITY,))
+    with pytest.raises(ConstitutionalError, match="structurally high-risk class"):
+        reconcile_requirement_closure(
+            manifest,
+            high_risk_requirement_ids=frozenset(),
+            derived_content_digests={"C-1": "x" * 8, "C-2": "x" * 8},
+            path_c_challenges=(),
+        )
 
 
 # ============================================================================
@@ -246,6 +313,34 @@ def test_g2_05_merge_rejects_collision_with_unrelated_existing_requirement() -> 
     merge = ClassificationMergeRecord("REQ-3", ("REQ-1", "REQ-2"), (e1, e2))
     with pytest.raises(ConstitutionalError, match="collides with an existing, unrelated"):
         merge_classification_entries(closure, merge)
+
+
+def test_g2_05_merge_rejects_input_closure_with_lost_lineage() -> None:
+    # Round-2 fix: a closure that already reports lineage_preserved=False
+    # must not be merged — that would launder a pre-existing violation into
+    # a result that unconditionally reports lineage_preserved=True.
+    e1 = _classification_entry("REQ-1", "alice", (RequirementClass.BEHAVIOUR,))
+    e2 = _classification_entry("REQ-2", "bob", (RequirementClass.SECURITY,))
+    closure = ClassificationClosure(1, "d" * 64, (e1, e2), False)
+    merge = ClassificationMergeRecord("REQ-MERGED", ("REQ-1", "REQ-2"), (e1, e2))
+    with pytest.raises(ConstitutionalError, match="lineage_preserved must be true"):
+        merge_classification_entries(closure, merge)
+
+
+def test_g2_05_merge_supports_multiple_independent_classification_paths_per_source() -> None:
+    # Round-2 fix: a requirement can legitimately carry more than one
+    # ClassificationEntry (independent classifiers); merge must not assume
+    # exactly one entry per source_requirement_id.
+    e1a = _classification_entry("REQ-1", "alice", (RequirementClass.BEHAVIOUR,))
+    e1b = _classification_entry("REQ-1", "dave", (RequirementClass.ARCHITECTURE,))
+    e2 = _classification_entry("REQ-2", "bob", (RequirementClass.SECURITY,))
+    closure = ClassificationClosure(1, "d" * 64, (e1a, e1b, e2), True)
+    merge = ClassificationMergeRecord("REQ-MERGED", ("REQ-1", "REQ-2"), (e1a, e1b, e2))
+    merged = merge_classification_entries(closure, merge)
+    merged_entry = next(e for e in merged.entries if e.requirement_id == "REQ-MERGED")
+    assert set(merged_entry.classes) == {RequirementClass.BEHAVIOUR, RequirementClass.ARCHITECTURE, RequirementClass.SECURITY}
+    ids = [e.requirement_id for e in merged.entries]
+    assert ids.count("REQ-1") == 2
 
 
 def test_g2_05_merge_record_requires_at_least_two_sources() -> None:

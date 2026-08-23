@@ -238,12 +238,18 @@ def _g2_05_path_c_omission_kill_check() -> None:
     # agree completely (zero disagreement) must have a recorded Path C
     # omission challenge before the closure reconciles — agreement alone is
     # not evidence of completeness.
+    source_digest = "s" * 64
     req = Requirement("REQ-1", "text", "authority@ref", (RequirementClass.BEHAVIOUR,), 1)
-    entry_a = CandidateLedgerEntry("C-A", "REQ-1", "alice", "manual", "v1", 1, "d" * 64, CandidatePathDisposition.ACCEPTED)
-    entry_b = CandidateLedgerEntry("C-B", "REQ-1", "bob", "automated", "v2", 1, "d" * 64, CandidatePathDisposition.ACCEPTED)
+    entry_a = CandidateLedgerEntry("C-A", "REQ-1", "alice", "manual", "v1", 1, source_digest, CandidatePathDisposition.ACCEPTED)
+    entry_b = CandidateLedgerEntry("C-B", "REQ-1", "bob", "automated", "v2", 1, source_digest, CandidatePathDisposition.ACCEPTED)
     ledger = CandidateLedger("REQ-1", (entry_a, entry_b))
-    manifest = RequirementClosureManifest(1, "s" * 64, (req,), (ledger,), "manual", ("alice", "bob"))
-    reconcile_requirement_closure(manifest, high_risk_requirement_ids=frozenset({"REQ-1"}), path_c_challenges=())
+    manifest = RequirementClosureManifest(1, source_digest, (req,), (ledger,), "manual", ("alice", "bob"))
+    reconcile_requirement_closure(
+        manifest,
+        high_risk_requirement_ids=frozenset({"REQ-1"}),
+        derived_content_digests={"C-A": "same-content" * 5, "C-B": "same-content" * 5},
+        path_c_challenges=(),
+    )
 
 
 def _g2_05_merge_lineage_tamper_kill_check() -> None:

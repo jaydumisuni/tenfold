@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Mapping
 
+from ..contracts import canonical_digest
 from .constitutional import (
     CandidateLedger,
     ClassificationClosure,
@@ -45,6 +46,7 @@ from .constitutional import (
     ConstitutionalError,
     EscapeClass,
     EscapeObservation,
+    RequirementClass,
     RequirementClosureManifest,
 )
 
@@ -66,6 +68,16 @@ def _positive_int(value: object, field: str, schema_name: str) -> int:
 # ============================================================================
 
 
+def _has_pairwise_duplicate(values: list) -> bool:
+    """True if *any two* values coincide, not only if *every* value does.
+    With three-plus paths, `("shared", "other", "shared")` has two distinct
+    values (`len(set(...)) == 2`) yet still contains a real shared-value
+    pair — checking for a strict all-identical reduction would silently
+    miss that pair, undercounting exactly the risk this function exists to
+    surface."""
+    return len(set(values)) < len(values)
+
+
 def has_common_cause_risk(ledger: CandidateLedger) -> bool:
     """`reviewer_A != reviewer_B AND derivation_method_A != derivation_method_B`
     (G2-00 SS6.1's independence test, already enforced by
@@ -76,13 +88,14 @@ def has_common_cause_risk(ledger: CandidateLedger) -> bool:
     omission. This flags that risk for authority review; it does not decide
     sufficiency on its own — G2-00 SS6.1 is explicit that "zero disagreement
     is not evidence of completeness," and this function does not silently
-    launder that warning away."""
+    launder that warning away. Detects *any* shared pair among three-plus
+    paths, not only full agreement across all of them."""
     paths = ledger.independent_paths()
     if len(paths) < 2:
         return False
-    tooling_versions = {p.tooling_version for p in paths}
-    procedure_generations = {p.procedure_generation for p in paths}
-    return len(tooling_versions) == 1 or len(procedure_generations) == 1
+    tooling_versions = [p.tooling_version for p in paths]
+    procedure_generations = [p.procedure_generation for p in paths]
+    return _has_pairwise_duplicate(tooling_versions) or _has_pairwise_duplicate(procedure_generations)
 
 
 # ============================================================================
@@ -126,36 +139,133 @@ class PathCChallenge:
                 "(a clean challenge that recorded findings contradicts its own verdict)"
             )
 
+    def to_dict(self) -> dict:
+        return {
+            "challenge_id": self.challenge_id,
+            "requirement_id": self.requirement_id,
+            "challenger": self.challenger,
+            "method": self.method,
+            "generation": self.generation,
+            "findings": list(self.findings),
+            "disposition": self.disposition.value,
+        }
 
-def requires_path_c_challenge(ledger: CandidateLedger, *, high_risk: bool) -> bool:
+
+# G2-00 SS6.3: "external mutation requires mutation obligations; credential-
+# bearing execution requires security obligations; irreversible effects
+# require recovery/reconciliation obligations." These are the only classes
+# G2-00's own text ties to a structural, mechanically-observable risk floor;
+# used here as the independently-derived minimum a caller's high-risk
+# roster must include, so a requirement carrying one of them cannot be
+# silently left off that roster.
+_STRUCTURALLY_HIGH_RISK_CLASSES: frozenset[RequirementClass] = frozenset(
+    {RequirementClass.MUTATION, RequirementClass.SECURITY, RequirementClass.RECOVERY}
+)
+
+
+def requires_path_c_challenge(
+    ledger: CandidateLedger, *, high_risk: bool, derived_content_digests: Mapping[str, str]
+) -> bool:
     """G2-00 SS6.1: "High-risk zero-disagreement may trigger Path C." Zero
     disagreement means independence was achieved (two-plus accepted/merged
-    paths, different reviewer and method) but the paths' derived content is
-    identical — agreement with nothing to reconcile, which is the specific
-    condition Path C exists to interrogate rather than accept at face
-    value."""
+    paths, different reviewer and method) but the paths' *derived content*
+    is identical — agreement with nothing to reconcile, which is the
+    specific condition Path C exists to interrogate rather than accept at
+    face value.
+
+    `derived_content_digests` maps `candidate_id` -> a digest of what that
+    path concluded the requirement to say, which is deliberately not
+    `CandidateLedgerEntry.source_digest`: G2-00 SS6.1 records `source_digest`
+    as what raw material a path *read*, not what it *derived* from that
+    material — two paths reading the same source can still derive different
+    requirement text (real disagreement), and two paths reading different
+    sources can still converge on the same conclusion (real agreement).
+    Comparing `source_digest` would measure the wrong thing; this comparison
+    is over content each path is independently attested to have concluded.
+    """
     if not high_risk:
         return False
     paths = ledger.independent_paths()
     if len(paths) < 2:
         return False
-    source_digests = {p.source_digest for p in paths}
-    return len(source_digests) == 1
+    missing = sorted(p.candidate_id for p in paths if p.candidate_id not in derived_content_digests)
+    if missing:
+        raise ConstitutionalError(
+            f"requires_path_c_challenge: missing derived_content_digest for candidate(s) {missing}"
+        )
+    content_digests = {derived_content_digests[p.candidate_id] for p in paths}
+    return len(content_digests) == 1
+
+
+@dataclass(frozen=True)
+class ReconciledRequirementClosure:
+    """The result of `reconcile_requirement_closure`: binds the underlying
+    `RequirementClosureManifest` together with the Path C challenges that
+    were required and supplied to reach reconciliation into one digested
+    artifact. A cold-boot or independent verifier can reconstruct the
+    acceptance decision (was Path C required, was it satisfied, did it find
+    an omission) from `digest` alone — `reconcile_requirement_closure`
+    previously returned `None`, leaving that decision recoverable only from
+    an ephemeral function argument no artifact retained."""
+
+    manifest: RequirementClosureManifest
+    path_c_challenges: tuple[PathCChallenge, ...]
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(
+            {
+                "manifest_digest": self.manifest.digest,
+                "path_c_challenges": [
+                    c.to_dict() for c in sorted(self.path_c_challenges, key=lambda c: c.challenge_id)
+                ],
+            }
+        )
 
 
 def reconcile_requirement_closure(
     manifest: RequirementClosureManifest,
     *,
-    high_risk_requirement_ids: frozenset[str] = frozenset(),
+    high_risk_requirement_ids: frozenset[str],
+    derived_content_digests: Mapping[str, str],
     path_c_challenges: tuple[PathCChallenge, ...] = (),
-) -> None:
-    """Requirement Closure reconciliation runtime (G2-00 SS6.1): runs the
-    manifest's own independent-derivation check, then additionally enforces
-    that every high-risk requirement whose independent paths agree
-    completely (`requires_path_c_challenge`) has a recorded, well-formed
-    Path C challenge bound to it. A missing challenge is a reconciliation
-    failure, not a silently-accepted gap."""
+) -> ReconciledRequirementClosure:
+    """Requirement Closure reconciliation runtime (G2-00 SS6.1). No default
+    for `high_risk_requirement_ids`: an empty or partial roster must be a
+    caller's explicit, examinable claim, never a silently-accepted default
+    that skips every independence and Path C check it gates. The roster is
+    additionally cross-checked against `_STRUCTURALLY_HIGH_RISK_CLASSES` —
+    a requirement carrying MUTATION/SECURITY/RECOVERY cannot be omitted from
+    it. Runs the manifest's own independent-derivation check, verifies every
+    Candidate Ledger entry's `source_digest` matches the manifest's own
+    `source_authority_digest` (an inconsistent source binding is rejected
+    here, separately from content-level disagreement), then enforces that
+    every high-risk requirement whose independent paths agree completely on
+    derived content (`requires_path_c_challenge`) has a recorded, well-formed
+    Path C challenge whose disposition is not `OMISSION_FOUND` — a challenge
+    that found an omission blocks reconciliation, it does not satisfy the
+    gate that asked for it."""
     manifest.validate(high_risk_requirement_ids=high_risk_requirement_ids)
+
+    structurally_high_risk = {
+        r.requirement_id for r in manifest.requirements if set(r.classes) & _STRUCTURALLY_HIGH_RISK_CLASSES
+    }
+    omitted_from_roster = structurally_high_risk - high_risk_requirement_ids
+    if omitted_from_roster:
+        raise ConstitutionalError(
+            f"reconcile_requirement_closure: requirement(s) {sorted(omitted_from_roster)} carry a "
+            "structurally high-risk class (MUTATION/SECURITY/RECOVERY) but are missing from "
+            "high_risk_requirement_ids"
+        )
+
+    for ledger in manifest.candidate_ledgers:
+        for entry in ledger.entries:
+            if entry.source_digest != manifest.source_authority_digest:
+                raise ConstitutionalError(
+                    f"reconcile_requirement_closure: candidate {entry.candidate_id} for requirement "
+                    f"{entry.requirement_id} binds source_digest {entry.source_digest!r}, inconsistent "
+                    f"with the closure's own source_authority_digest {manifest.source_authority_digest!r}"
+                )
 
     known_requirement_ids = {r.requirement_id for r in manifest.requirements}
     challenges_by_requirement: dict[str, PathCChallenge] = {}
@@ -178,13 +288,21 @@ def reconcile_requirement_closure(
     ledgers_by_requirement = {ledger.requirement_id: ledger for ledger in manifest.candidate_ledgers}
     for requirement_id in high_risk_requirement_ids:
         ledger = ledgers_by_requirement[requirement_id]
-        if requires_path_c_challenge(ledger, high_risk=True):
+        if requires_path_c_challenge(ledger, high_risk=True, derived_content_digests=derived_content_digests):
             challenge = challenges_by_requirement.get(requirement_id)
             if challenge is None:
                 raise ConstitutionalError(
                     f"reconcile_requirement_closure: requirement {requirement_id} has zero-disagreement "
                     "independent paths and requires a Path C omission challenge, but none was recorded"
                 )
+            if challenge.disposition == PathCDisposition.OMISSION_FOUND:
+                raise ConstitutionalError(
+                    f"reconcile_requirement_closure: requirement {requirement_id}'s Path C challenge "
+                    f"{challenge.challenge_id} found an omission — reconciliation is blocked until the "
+                    "closure is updated and the requirement set reopened"
+                )
+
+    return ReconciledRequirementClosure(manifest=manifest, path_c_challenges=path_c_challenges)
 
 
 # ============================================================================
@@ -225,6 +343,11 @@ def merge_classification_entries(
     original entry is retained in the result closure alongside the new
     merged entry, so lineage is provably preserved rather than merely
     flagged as preserved."""
+    # A closure that already reports lost lineage (lineage_preserved=False)
+    # must not be merged at all: validate() unconditionally rejects that
+    # state, so calling it here refuses to launder a pre-existing violation
+    # into a merge result that reports lineage_preserved=True regardless.
+    closure.validate()
     merge.validate()
     existing_ids = {e.requirement_id for e in closure.entries}
     if merge.merged_requirement_id in existing_ids and merge.merged_requirement_id not in merge.source_requirement_ids:
@@ -232,16 +355,20 @@ def merge_classification_entries(
             f"merge_classification_entries: merged_requirement_id {merge.merged_requirement_id!r} collides "
             "with an existing, unrelated classification entry"
         )
+    # G2-00 SS6.2: "Significant requirements receive independent
+    # classification derivation" — a requirement_id can legitimately have
+    # multiple ClassificationEntry records (one per independent classifier),
+    # so "every requested id is represented" is the correct check, not an
+    # exact entry-count match against source_requirement_ids.
     original_entries = tuple(e for e in closure.entries if e.requirement_id in merge.source_requirement_ids)
-    if len(original_entries) != len(merge.source_requirement_ids):
-        found = {e.requirement_id for e in original_entries}
-        missing = set(merge.source_requirement_ids) - found
+    found_ids = {e.requirement_id for e in original_entries}
+    missing = set(merge.source_requirement_ids) - found_ids
+    if missing:
         raise ConstitutionalError(
             f"merge_classification_entries: source requirement(s) missing from closure: {sorted(missing)}"
         )
-    if sorted(original_entries, key=lambda e: e.requirement_id) != sorted(
-        merge.lineage_entries, key=lambda e: e.requirement_id
-    ):
+    sort_key = lambda e: (e.requirement_id, e.classifier)  # noqa: E731
+    if sorted(original_entries, key=sort_key) != sorted(merge.lineage_entries, key=sort_key):
         raise ConstitutionalError(
             "merge_classification_entries: lineage_entries do not match the closure's original entries "
             "for the merged requirements — merge would alter or lose classification lineage"
@@ -272,18 +399,27 @@ def merge_classification_entries(
 
 
 def enumerate_policy_escape_blast_radius(
-    policy_generation: int, campaign_program_policy_generations: Mapping[str, int]
+    policy_generation: int, authoritative_campaign_program_registry: Mapping[str, int]
 ) -> tuple[str, ...]:
     """G2-00 SS6.7: "Policy Escape mechanically enumerates all Campaign
-    Programs bound to that Policy Generation." `campaign_program_policy_generations`
-    maps campaign_program_id -> the Policy Generation it was compiled
-    against (from each program's Compilation Certificate); this function is
-    the actual enumeration, not a hand-supplied list a caller could get
-    wrong or forget to update."""
+    Programs bound to that Policy Generation."
+
+    KNOWN LIMITATION, disclosed rather than silently assumed solved: no
+    Campaign Program registry runtime exists anywhere in this codebase yet
+    (that is later-milestone scope, at earliest G2-07's Proof-Carrying
+    Campaign Compiler) — there is nothing this function could query to
+    independently confirm `authoritative_campaign_program_registry` is
+    complete. This function's enumeration is mechanically *correct* given a
+    complete roster; it cannot itself detect an *incomplete* one, and a
+    caller supplying a partial roster will silently understate the blast
+    radius. The parameter is named `authoritative_...` to make that
+    completeness requirement a caller-visible contract rather than an
+    implicit assumption; revisit this the moment a real registry exists to
+    validate against."""
     return tuple(
         sorted(
             program_id
-            for program_id, generation in campaign_program_policy_generations.items()
+            for program_id, generation in authoritative_campaign_program_registry.items()
             if generation == policy_generation
         )
     )
@@ -293,16 +429,18 @@ def record_policy_escape(
     escape_id: str,
     policy_generation: int,
     discovered_by: str,
-    campaign_program_policy_generations: Mapping[str, int],
+    authoritative_campaign_program_registry: Mapping[str, int],
 ) -> EscapeObservation:
     """Construct a POLICY_ESCAPE `EscapeObservation` with its
     `bound_campaign_program_ids` computed by the blast-radius engine rather
-    than supplied by the caller. `EscapeObservation.validate()` already
-    rejects a POLICY_ESCAPE with empty `bound_campaign_program_ids` (G2-02);
-    if the Policy Generation has no bound programs, that rejection now
-    correctly fires from a mechanically-computed empty set instead of a
-    forgotten manual list."""
-    bound = enumerate_policy_escape_blast_radius(policy_generation, campaign_program_policy_generations)
+    than supplied by the caller directly. `EscapeObservation.validate()`
+    already rejects a POLICY_ESCAPE with empty `bound_campaign_program_ids`
+    (G2-02); if the Policy Generation has no bound programs, that rejection
+    now correctly fires from a mechanically-computed empty set instead of a
+    forgotten manual list. See `enumerate_policy_escape_blast_radius` for
+    the disclosed limitation: the registry's completeness is still the
+    caller's responsibility until a real Campaign Program registry exists."""
+    bound = enumerate_policy_escape_blast_radius(policy_generation, authoritative_campaign_program_registry)
     observation = EscapeObservation(
         escape_id=escape_id,
         escape_class=EscapeClass.POLICY_ESCAPE,
