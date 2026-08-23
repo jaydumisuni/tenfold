@@ -10,11 +10,11 @@
 //!
 //! - `expected-set` — reads `{"effects": [UnresolvedEffectObservation]}` from stdin, prints the derived `[ExpectedRuntimeObligation]` array.
 //! - `missing` — reads `{"expected": [ExpectedRuntimeObligation], "registered": [ExpectedRuntimeObligation]}` from stdin, prints the missing `[ExpectedRuntimeObligation]` array.
-//! - `hazard-check` — reads a `HazardRecord` JSON object from stdin, prints ACCEPT/ERROR.
+//! - `hazard-check` — reads `{"hazard": HazardRecord, "known": KnownHazardReferents}` from stdin, prints ACCEPT/ERROR.
 
 use runtime_obligation::{
     admit_check_hazard_record, admit_derive_expected_runtime_obligations, find_missing_runtime_obligations, ExpectedRuntimeObligation,
-    HazardRecord, UnresolvedEffectObservation,
+    HazardRecord, KnownHazardReferents, UnresolvedEffectObservation,
 };
 use serde::Deserialize;
 use std::io::Read;
@@ -48,6 +48,13 @@ struct ExpectedSetInput {
 struct MissingInput {
     expected: Vec<ExpectedRuntimeObligation>,
     registered: Vec<ExpectedRuntimeObligation>,
+}
+
+#[derive(Deserialize)]
+struct HazardCheckInput {
+    hazard: HazardRecord,
+    #[serde(default)]
+    known: KnownHazardReferents,
 }
 
 fn main() -> ExitCode {
@@ -119,14 +126,14 @@ fn main() -> ExitCode {
                 Ok(b) => b,
                 Err(code) => return code,
             };
-            let hazard: HazardRecord = match serde_json::from_str(&buf) {
+            let input: HazardCheckInput = match serde_json::from_str(&buf) {
                 Ok(v) => v,
                 Err(e) => {
                     println!("ERROR: {e}");
                     return ExitCode::from(1);
                 }
             };
-            match admit_check_hazard_record(&admitted_table(), &hazard) {
+            match admit_check_hazard_record(&admitted_table(), &input.hazard, &input.known) {
                 Ok(()) => {
                     println!("ACCEPT");
                     ExitCode::SUCCESS

@@ -986,16 +986,20 @@ def independent_derive_expected_runtime_obligation_set(effects: list[dict]) -> f
     effect is unresolved -- and so creates a RECONCILIATION obligation --
     when it is not yet terminal or its observation conflicts with
     Chronicle's own record; if technical reconciliation cannot determine
-    reality, an EXTERNAL_ADJUDICATION obligation is also expected. Returns
-    a set of (effect_id, class_kind) pairs, never a runtime claim of which
-    class applies.
+    reality, an EXTERNAL_ADJUDICATION obligation is also expected.
+    Independent of resolution status, SS9.8's "Any unexplained residue
+    creates an EFFECT INTEGRITY OBLIGATION" is also derived when the
+    effect reports unexplained residue. Returns a set of
+    (effect_id, class_kind) pairs, never a runtime claim of which class
+    applies.
     """
     expected: set[tuple[str, str]] = set()
     for effect in effects:
         unresolved = not effect["terminal"] or effect["has_conflicting_observation"]
-        if not unresolved:
-            continue
-        expected.add((effect["effect_id"], "RECONCILIATION"))
-        if not effect["technical_reconciliation_possible"]:
-            expected.add((effect["effect_id"], "EXTERNAL_ADJUDICATION"))
+        if unresolved:
+            expected.add((effect["effect_id"], "RECONCILIATION"))
+            if not effect["technical_reconciliation_possible"]:
+                expected.add((effect["effect_id"], "EXTERNAL_ADJUDICATION"))
+        if effect["has_unexplained_residue"]:
+            expected.add((effect["effect_id"], "EFFECT_INTEGRITY"))
     return frozenset(expected)

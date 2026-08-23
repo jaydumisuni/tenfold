@@ -69,6 +69,23 @@ class RuntimeObligationClassDeclaration:
             raise RuntimeObligationError(f"{self.class_id}: independent_derivation_predicate must be non-empty")
         if not self.terminal_dispositions:
             raise RuntimeObligationError(f"{self.class_id}: terminal_dispositions must be non-empty")
+        # Round-2 review finding: G2-00 SS8.7 requires every declared class
+        # to genuinely carry "input evidence, proof requirements, assurance
+        # routing, blocking semantics" -- a declaration with these fields
+        # empty removes exactly the participation guarantees the class is
+        # supposed to bind an unresolved effect to.
+        if not self.input_evidence_refs:
+            raise RuntimeObligationError(f"{self.class_id}: input_evidence_refs must be non-empty")
+        if not self.proof_requirements:
+            raise RuntimeObligationError(f"{self.class_id}: proof_requirements must be non-empty")
+        if not self.assurance_routing:
+            raise RuntimeObligationError(f"{self.class_id}: assurance_routing must be non-empty")
+        if self.kind in (RuntimeObligationClassKind.RECONCILIATION, RuntimeObligationClassKind.EFFECT_INTEGRITY) and not self.blocking:
+            # G2-00 SS8.7: a RECONCILIATION obligation "participates in ...
+            # blocking"; SS9.8: an EFFECT_INTEGRITY obligation "blocks
+            # PROVEN" -- both are inherently blocking, not merely
+            # declarable either way.
+            raise RuntimeObligationError(f"{self.class_id}: {self.kind.value} obligations block PROVEN and must declare blocking=True")
 
 
 @dataclass(frozen=True)
@@ -109,28 +126,47 @@ class UnresolvedEffectObservation:
     terminal: bool
     has_conflicting_observation: bool
     technical_reconciliation_possible: bool
+    # G2-00 SS9.8: "Any unexplained residue creates an EFFECT INTEGRITY
+    # OBLIGATION and blocks PROVEN." True when an Effect Census reports
+    # unexplained residue for this effect -- an objective fact exactly
+    # like `terminal`/`has_conflicting_observation`. *Producing* a genuine
+    # value here is Effect Census's own job (Facility-dependent, not built
+    # until G2-14 onward); this module only derives the obligation once
+    # that fact is supplied.
+    has_unexplained_residue: bool
 
 
 @dataclass(frozen=True)
 class ExpectedRuntimeObligation:
+    # Round-2 review finding: full generation-bound identity, not just
+    # effect_id/class_kind -- otherwise a stale registered obligation from
+    # an old generation for a reused effect_id would satisfy a current
+    # expectation.
     effect_id: str
+    campaign_id: str
+    node_id: str
+    generation: int
     class_kind: RuntimeObligationClassKind
 
 
 def derive_expected_runtime_obligations(effects: tuple[UnresolvedEffectObservation, ...]) -> tuple[ExpectedRuntimeObligation, ...]:
     """G2-00 SS8.7: "An unresolved effect creates a RECONCILIATION
     OBLIGATION... If technical reconciliation cannot determine reality, an
-    EXTERNAL ADJUDICATION OBLIGATION may be required." An effect is
-    "unresolved" when it is not yet terminal, or Chronicle's record
-    conflicts with an independent observation of its target."""
+    EXTERNAL ADJUDICATION OBLIGATION may be required."; SS9.8: "Any
+    unexplained residue creates an EFFECT INTEGRITY OBLIGATION and blocks
+    PROVEN." An effect is "unresolved" when it is not yet terminal, or
+    Chronicle's record conflicts with an independent observation of its
+    target; residue is checked independently of resolution status."""
     expected: list[ExpectedRuntimeObligation] = []
     for effect in effects:
+        binding = (effect.effect_id, effect.campaign_id, effect.node_id, effect.generation)
         unresolved = not effect.terminal or effect.has_conflicting_observation
-        if not unresolved:
-            continue
-        expected.append(ExpectedRuntimeObligation(effect.effect_id, RuntimeObligationClassKind.RECONCILIATION))
-        if not effect.technical_reconciliation_possible:
-            expected.append(ExpectedRuntimeObligation(effect.effect_id, RuntimeObligationClassKind.EXTERNAL_ADJUDICATION))
+        if unresolved:
+            expected.append(ExpectedRuntimeObligation(*binding, RuntimeObligationClassKind.RECONCILIATION))
+            if not effect.technical_reconciliation_possible:
+                expected.append(ExpectedRuntimeObligation(*binding, RuntimeObligationClassKind.EXTERNAL_ADJUDICATION))
+        if effect.has_unexplained_residue:
+            expected.append(ExpectedRuntimeObligation(*binding, RuntimeObligationClassKind.EFFECT_INTEGRITY))
     return tuple(expected)
 
 
@@ -140,7 +176,8 @@ def find_missing_runtime_obligations(
     """G2-13 acceptance: "Missing Reconciliation/Effect Integrity
     obligations are independently detected." Any independently-derived
     expected obligation absent from what the runtime actually registered
-    is a detected omission."""
+    is a detected omission. Compares full generation-bound identity
+    (round-2 review finding), not merely effect_id/class_kind."""
     return tuple(e for e in expected if e not in registered)
 
 
@@ -233,6 +270,38 @@ class HazardRecord:
             )
 
 
+def check_hazard_disposition_resolves(
+    hazard: HazardRecord,
+    *,
+    known_runtime_obligation_ids: frozenset[str] = frozenset(),
+    known_invariant_candidate_ids: frozenset[str] = frozenset(),
+    known_runtime_obligation_candidate_ids: frozenset[str] = frozenset(),
+    known_governing_authority_refs: frozenset[str] = frozenset(),
+) -> None:
+    """Round-2 review finding: a merely non-blank `disposition_ref` (e.g.
+    `COVERED_BY_RUNTIME_OBLIGATION` pointing at `"does-not-exist"`) passed
+    `HazardRecord.validate()` even though nothing real backs it --
+    precisely the path by which a reachable hazard can disappear from
+    qualification. Checks `disposition_ref` actually resolves within the
+    real-referent set for the hazard's own disposition kind (A: known
+    runtime obligation ids, B: known accepted invariant candidate ids, C:
+    known runtime-obligation candidate ids, D: known governing-authority
+    references) -- the universe of genuinely known ids is supplied by the
+    caller (this module does not own the process that produces them)."""
+    hazard.validate()
+    referents_by_disposition = {
+        HazardDisposition.COVERED_BY_RUNTIME_OBLIGATION: known_runtime_obligation_ids,
+        HazardDisposition.MADE_UNREACHABLE_BY_INVARIANT: known_invariant_candidate_ids,
+        HazardDisposition.CREATES_RUNTIME_OBLIGATION_CANDIDATE: known_runtime_obligation_candidate_ids,
+        HazardDisposition.EXPLICITLY_ACCEPTED_BOUNDED: known_governing_authority_refs,
+    }
+    if hazard.disposition_ref not in referents_by_disposition[hazard.disposition]:
+        raise RuntimeObligationError(
+            f"HazardRecord {hazard.hazard_id}: disposition_ref {hazard.disposition_ref!r} does not resolve to a "
+            f"real {hazard.disposition.value} referent -- a hazard cannot disappear behind a fabricated reference"
+        )
+
+
 # ============================================================================
 # Observer (G2-00 SS13: "Observer is constitutional and read-only:
 # mutation authority = NONE. Every finding records observation generation,
@@ -265,6 +334,73 @@ class ObserverFinding:
         return current_generation <= self.freshness_expiry_generation
 
 
+class ObserverCoverageDomain(str, Enum):
+    """G2-00 SS13's full required minimum: "Observer covers at least
+    authority drift, Chronicle/checkpoint integrity, quarantine, accepted
+    uncertainty/hazards, Facility limitations, Effect Census mismatches,
+    shared-trust drift, EFFECT_REACH* drift, ambient-authority drift,
+    authority-plane preimage drift, mintable-bound drift, Gen1-reference
+    drift and recovery-qualification drift."."""
+
+    AUTHORITY_DRIFT = "AUTHORITY_DRIFT"
+    CHRONICLE_CHECKPOINT_INTEGRITY = "CHRONICLE_CHECKPOINT_INTEGRITY"
+    QUARANTINE = "QUARANTINE"
+    ACCEPTED_UNCERTAINTY_HAZARDS = "ACCEPTED_UNCERTAINTY_HAZARDS"
+    FACILITY_LIMITATIONS = "FACILITY_LIMITATIONS"
+    EFFECT_CENSUS_MISMATCHES = "EFFECT_CENSUS_MISMATCHES"
+    SHARED_TRUST_DRIFT = "SHARED_TRUST_DRIFT"
+    EFFECT_REACH_DRIFT = "EFFECT_REACH_DRIFT"
+    AMBIENT_AUTHORITY_DRIFT = "AMBIENT_AUTHORITY_DRIFT"
+    AUTHORITY_PLANE_PREIMAGE_DRIFT = "AUTHORITY_PLANE_PREIMAGE_DRIFT"
+    MINTABLE_BOUND_DRIFT = "MINTABLE_BOUND_DRIFT"
+    GEN1_REFERENCE_DRIFT = "GEN1_REFERENCE_DRIFT"
+    RECOVERY_QUALIFICATION_DRIFT = "RECOVERY_QUALIFICATION_DRIFT"
+
+
+# Round-2 review finding: which of G2-00 SS13's 13 required coverage
+# domains this milestone's Observer genuinely implements, versus which are
+# honestly deferred (and why) -- a structural, testable disclosure rather
+# than a silent gap the narrow purity tests alone could not surface. Every
+# deferred domain depends on machinery this milestone's own authority
+# (G2-00 SS8.7, SS13-14) does not build: Facility (G2-14 onward), Effect
+# Census/EFFECT_REACH* (SS9.8/9.3, Facility-dependent), mintable-bound
+# tracking, and cross-cutting reconciliation work (Chronicle/checkpoint,
+# authority-plane, shared-trust, Gen1-reference drift) spanning multiple
+# future milestones.
+IMPLEMENTED_OBSERVER_COVERAGE_DOMAINS: frozenset[ObserverCoverageDomain] = frozenset({ObserverCoverageDomain.ACCEPTED_UNCERTAINTY_HAZARDS})
+
+DEFERRED_OBSERVER_COVERAGE_DOMAINS: dict[ObserverCoverageDomain, str] = {
+    ObserverCoverageDomain.AUTHORITY_DRIFT: "requires a live cross-generation authority snapshot comparison not yet built",
+    ObserverCoverageDomain.CHRONICLE_CHECKPOINT_INTEGRITY: "requires cross-referencing rust/chronicle's live state (G2-10) against external checkpoints, not yet wired to Observer",
+    ObserverCoverageDomain.QUARANTINE: "no quarantine mechanism exists yet in this codebase",
+    ObserverCoverageDomain.FACILITY_LIMITATIONS: "Facility does not exist until G2-14 onward",
+    ObserverCoverageDomain.EFFECT_CENSUS_MISMATCHES: "Effect Census (G2-00 SS9.8) is Facility-dependent, not built until G2-14 onward",
+    ObserverCoverageDomain.SHARED_TRUST_DRIFT: "requires cross-referencing the Shared Trust Surface Manifest (G2-04) against live component digests, not yet wired to Observer",
+    ObserverCoverageDomain.EFFECT_REACH_DRIFT: "EFFECT_REACH* (G2-00 SS9.3) is Facility-dependent, not built until G2-14 onward",
+    ObserverCoverageDomain.AMBIENT_AUTHORITY_DRIFT: "Execution Context ambient-authority tracking (G2-00 SS9.2) does not exist yet in this codebase",
+    ObserverCoverageDomain.AUTHORITY_PLANE_PREIMAGE_DRIFT: "no authority-plane causal preimage tracking exists yet in this codebase",
+    ObserverCoverageDomain.MINTABLE_BOUND_DRIFT: "no mintable-bound tracking exists yet in this codebase",
+    ObserverCoverageDomain.GEN1_REFERENCE_DRIFT: "requires re-diffing the live repository against the G2-01 Gen1ReferenceBundle, not yet wired to Observer",
+    ObserverCoverageDomain.RECOVERY_QUALIFICATION_DRIFT: "no recovery/takeover qualification runtime exists yet (G2-00 SS4 assigns recovery/takeover to a later milestone)",
+}
+
+
+def check_observer_coverage_roster_is_fully_accounted_for() -> None:
+    """Every domain in `ObserverCoverageDomain` must be either genuinely
+    implemented or explicitly, individually deferred with a reason --
+    never silently unaccounted for. A future milestone extending Observer
+    coverage must move a domain from `DEFERRED_OBSERVER_COVERAGE_DOMAINS`
+    into `IMPLEMENTED_OBSERVER_COVERAGE_DOMAINS`, and this check would
+    catch a domain accidentally left in neither set."""
+    accounted = IMPLEMENTED_OBSERVER_COVERAGE_DOMAINS | frozenset(DEFERRED_OBSERVER_COVERAGE_DOMAINS)
+    unaccounted = frozenset(ObserverCoverageDomain) - accounted
+    if unaccounted:
+        raise RuntimeObligationError(f"ObserverCoverageDomain member(s) neither implemented nor deferred: {sorted(d.value for d in unaccounted)}")
+    overlap = IMPLEMENTED_OBSERVER_COVERAGE_DOMAINS & frozenset(DEFERRED_OBSERVER_COVERAGE_DOMAINS)
+    if overlap:
+        raise RuntimeObligationError(f"ObserverCoverageDomain member(s) claimed as both implemented and deferred: {sorted(d.value for d in overlap)}")
+
+
 class Observer:
     """Read-only by construction: every method here only reads its
     arguments and returns pure `ObserverFinding` data -- there is no method
@@ -285,10 +421,13 @@ class Observer:
         for obligation in missing_obligations:
             findings.append(
                 ObserverFinding(
-                    finding_id=f"OBS-MISSING-{obligation.effect_id}-{obligation.class_kind.value}",
+                    finding_id=f"OBS-MISSING-{obligation.effect_id}-{obligation.generation}-{obligation.class_kind.value}",
                     observation_generation=observation_generation,
-                    evidence_refs=(f"effect:{obligation.effect_id}",),
-                    category="reconciliation_effect_integrity_omission",
+                    evidence_refs=(f"effect:{obligation.effect_id}", f"generation:{obligation.generation}"),
+                    # Not one of ObserverCoverageDomain's 13 required minimum
+                    # domains -- an additional capability this Observer
+                    # provides beyond that roster, disclosed as such.
+                    category="additional_missing_runtime_obligation_detection",
                     freshness_expiry_generation=observation_generation + freshness_window,
                 )
             )
@@ -300,7 +439,7 @@ class Observer:
                         finding_id=f"OBS-ACCEPTED-HAZARD-{hazard.hazard_id}",
                         observation_generation=observation_generation,
                         evidence_refs=(f"hazard:{hazard.hazard_id}", f"ref:{hazard.disposition_ref}"),
-                        category="accepted_uncertainty_hazard",
+                        category=ObserverCoverageDomain.ACCEPTED_UNCERTAINTY_HAZARDS.value,
                         freshness_expiry_generation=observation_generation + freshness_window,
                     )
                 )

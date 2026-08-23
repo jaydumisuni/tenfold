@@ -14,14 +14,16 @@
 //! discipline `derive_mandatory_assurance` (G2-12) already established for
 //! never accepting a runtime routing claim in place of frozen derivation.
 //!
-//! §8.7 also names a third obligation class this crate declares but does
-//! not yet independently derive: `EFFECT_INTEGRITY` (§9.8: "Any unexplained
-//! residue creates an EFFECT INTEGRITY OBLIGATION and blocks PROVEN"). Its
-//! concrete derivation depends on Effect Census (§9.8), which requires
-//! real Facility integration not built until G2-14 onward -- disclosed
-//! honestly here rather than faked, matching the "PENDING_IMPLEMENTATION,
-//! not a fake pass" discipline this codebase already applies to mutation
-//! fixtures whose runtime does not exist yet.
+//! §9.8, verbatim: "Any unexplained residue creates an EFFECT INTEGRITY
+//! OBLIGATION and blocks PROVEN." `EFFECT_INTEGRITY` is derived here from
+//! `UnresolvedEffectObservation::has_unexplained_residue`, an objective
+//! fact exactly like `terminal`/`has_conflicting_observation` -- this
+//! crate derives the obligation once that fact is supplied; *producing* a
+//! genuine value for it (running an actual Effect Census) is Facility-
+//! dependent machinery not built until G2-14 onward, but the derivation
+//! predicate itself is real and independently re-derivable now, matching
+//! G2-13's own acceptance bar ("Missing Reconciliation/Effect Integrity
+//! obligations are independently detected") literally.
 //!
 //! The pre-existing Trust Table row named `"runtime_obligation"` (seeded in
 //! `initial_trust_table()` at G2-03, currently satisfied by the schema-
@@ -81,8 +83,8 @@ pub enum TerminalDisposition {
 // ============================================================================
 
 /// An objectively observable effect state -- every field is something
-/// Chronicle/reconciliation machinery can determine mechanically, never a
-/// caller's claim of which obligation class applies.
+/// Chronicle/reconciliation/Effect-Census machinery can determine
+/// mechanically, never a caller's claim of which obligation class applies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnresolvedEffectObservation {
     pub effect_id: String,
@@ -98,30 +100,58 @@ pub struct UnresolvedEffectObservation {
     /// True when technical reconciliation (digest/generation/sequence
     /// comparison) can determine reality unaided.
     pub technical_reconciliation_possible: bool,
+    /// True when an Effect Census (G2-00 SS9.8) reports unexplained
+    /// residue for this effect. Round-2 review finding: the derivation
+    /// predicate below now emits EFFECT_INTEGRITY whenever this is true,
+    /// independent of `terminal`/`has_conflicting_observation` -- residue
+    /// is a distinct axis from resolution status. Producing a genuine
+    /// value for this field is Effect Census's own job (G2-00 SS9.8,
+    /// Facility-dependent, not built until G2-14 onward); this crate only
+    /// derives the obligation once that objective fact is supplied,
+    /// mirroring exactly how it already treats `terminal`/
+    /// `has_conflicting_observation` as caller-supplied ground truth.
+    pub has_unexplained_residue: bool,
 }
 
+/// G2-13 round-2 review finding: without campaign/node/generation binding,
+/// a stale registered obligation for a reused `effect_id` from an old
+/// generation would satisfy a current expectation for the same
+/// `effect_id`. Every field `UnresolvedEffectObservation` carries as
+/// identity is threaded through so `find_missing_runtime_obligations`
+/// compares exact generation-bound identity, not merely `effect_id`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExpectedRuntimeObligation {
     pub effect_id: String,
+    pub campaign_id: String,
+    pub node_id: String,
+    pub generation: u64,
     pub class_kind: RuntimeObligationClassKind,
 }
 
 /// G2-00 SS8.7: "An unresolved effect creates a RECONCILIATION OBLIGATION...
 /// If technical reconciliation cannot determine reality, an EXTERNAL
-/// ADJUDICATION OBLIGATION may be required." An effect is "unresolved" when
-/// it is not yet terminal, or Chronicle's record conflicts with an
-/// independent observation of its target -- both are mechanically
+/// ADJUDICATION OBLIGATION may be required."; SS9.8: "Any unexplained
+/// residue creates an EFFECT INTEGRITY OBLIGATION and blocks PROVEN." An
+/// effect is "unresolved" when it is not yet terminal, or Chronicle's
+/// record conflicts with an independent observation of its target; residue
+/// is checked independently of resolution status -- both are mechanically
 /// observable, never a runtime claim.
 pub fn derive_expected_runtime_obligations(effects: &[UnresolvedEffectObservation]) -> Vec<ExpectedRuntimeObligation> {
     let mut expected = Vec::new();
     for effect in effects {
+        let binding = || (effect.effect_id.clone(), effect.campaign_id.clone(), effect.node_id.clone(), effect.generation);
         let unresolved = !effect.terminal || effect.has_conflicting_observation;
-        if !unresolved {
-            continue;
+        if unresolved {
+            let (effect_id, campaign_id, node_id, generation) = binding();
+            expected.push(ExpectedRuntimeObligation { effect_id, campaign_id, node_id, generation, class_kind: RuntimeObligationClassKind::RECONCILIATION });
+            if !effect.technical_reconciliation_possible {
+                let (effect_id, campaign_id, node_id, generation) = binding();
+                expected.push(ExpectedRuntimeObligation { effect_id, campaign_id, node_id, generation, class_kind: RuntimeObligationClassKind::EXTERNAL_ADJUDICATION });
+            }
         }
-        expected.push(ExpectedRuntimeObligation { effect_id: effect.effect_id.clone(), class_kind: RuntimeObligationClassKind::RECONCILIATION });
-        if !effect.technical_reconciliation_possible {
-            expected.push(ExpectedRuntimeObligation { effect_id: effect.effect_id.clone(), class_kind: RuntimeObligationClassKind::EXTERNAL_ADJUDICATION });
+        if effect.has_unexplained_residue {
+            let (effect_id, campaign_id, node_id, generation) = binding();
+            expected.push(ExpectedRuntimeObligation { effect_id, campaign_id, node_id, generation, class_kind: RuntimeObligationClassKind::EFFECT_INTEGRITY });
         }
     }
     expected
@@ -131,6 +161,8 @@ pub fn derive_expected_runtime_obligations(effects: &[UnresolvedEffectObservatio
 /// are independently detected." Given the independently-derived expected
 /// set and the set the runtime actually registered, any expected
 /// obligation absent from the registered set is a detected omission.
+/// Compares full generation-bound identity (round-2 review finding), not
+/// merely `effect_id`/`class_kind`.
 pub fn find_missing_runtime_obligations(
     expected: &[ExpectedRuntimeObligation],
     registered: &[ExpectedRuntimeObligation],
@@ -186,6 +218,44 @@ impl HazardRecord {
     }
 }
 
+/// Round-2 review finding: a merely non-blank `disposition_ref` (e.g.
+/// `COVERED_BY_RUNTIME_OBLIGATION` pointing at `"does-not-exist"`) passed
+/// `validate()` even though nothing real backs it -- precisely the path by
+/// which a reachable hazard can disappear from qualification. This checks
+/// `disposition_ref` actually resolves within the real-referent set for
+/// the hazard's own disposition kind (A: known runtime obligation ids, B:
+/// known accepted invariant candidate ids, C: known runtime-obligation
+/// candidate ids, D: known governing-authority references) -- the
+/// universe of genuinely known ids is supplied by the caller, since this
+/// crate does not own the Registry/Ledger schemas themselves (Python-only,
+/// no Rust ownership under G2-00 SS4).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KnownHazardReferents {
+    pub runtime_obligation_ids: Vec<String>,
+    pub invariant_candidate_ids: Vec<String>,
+    pub runtime_obligation_candidate_ids: Vec<String>,
+    pub governing_authority_refs: Vec<String>,
+}
+
+pub fn check_hazard_disposition_resolves(hazard: &HazardRecord, known: &KnownHazardReferents) -> Result<(), RuntimeObligationError> {
+    hazard.validate()?;
+    let referents: &[String] = match hazard.disposition {
+        HazardDisposition::COVERED_BY_RUNTIME_OBLIGATION => &known.runtime_obligation_ids,
+        HazardDisposition::MADE_UNREACHABLE_BY_INVARIANT => &known.invariant_candidate_ids,
+        HazardDisposition::CREATES_RUNTIME_OBLIGATION_CANDIDATE => &known.runtime_obligation_candidate_ids,
+        HazardDisposition::EXPLICITLY_ACCEPTED_BOUNDED => &known.governing_authority_refs,
+    };
+    if !referents.iter().any(|r| r == &hazard.disposition_ref) {
+        return Err(err(format!(
+            "HazardRecord {}: disposition_ref {:?} does not resolve to a real {:?} referent -- a hazard cannot \
+             disappear behind a fabricated reference",
+            hazard.hazard_id, hazard.disposition_ref, hazard.disposition
+        )));
+    }
+    Ok(())
+}
+
 // ============================================================================
 // Trust Table admission (G2-00 SS4.1).
 // ============================================================================
@@ -194,20 +264,23 @@ pub fn trust_table_row() -> trust_table::TrustTableRow {
     trust_table::TrustTableRow {
         artifact_identity: "runtime_obligation_derivation".into(),
         independently_checks: vec![
-            "expected-runtime-obligation-set derivation from objectively observable effect state".into(),
-            "missing (omitted) runtime obligation detection".into(),
-            "hazard disposition completeness (A/B/C/D, non-empty referent)".into(),
+            "expected-runtime-obligation-set derivation (RECONCILIATION/EXTERNAL_ADJUDICATION/EFFECT_INTEGRITY) from objectively observable effect state".into(),
+            "missing (omitted) runtime obligation detection, exact on generation-bound identity".into(),
+            "hazard disposition completeness (A/B/C/D, non-empty referent resolving to a real known referent)".into(),
         ],
         trusts_only: "the objective effect-observation fields (terminal, conflicting-observation, \
-            technical-reconciliation-possible) supplied by the caller as ground truth"
+            technical-reconciliation-possible, unexplained-residue) and the caller-supplied universe of \
+            known hazard-disposition referents, both as ground truth"
             .into(),
         trust_bounded_reason: "the derivation predicate itself is frozen policy, mechanically re-derived here \
             from the objective effect fields rather than from a runtime claim of which obligation class \
-            applies; the genuineness of those objective fields is bounded by whichever Chronicle/reconciliation \
-            machinery produced them, not re-derived here"
+            applies, and a hazard's disposition_ref is mechanically checked against the caller-supplied \
+            known-referent universe rather than merely being non-blank; the genuineness of those objective \
+            fields and the known-referent universe itself is bounded by whichever Chronicle/reconciliation/ \
+            Registry machinery produced them, not re-derived here"
             .into(),
         authority_generation: 1,
-        required_negative_fixture: "omitted required runtime obligation / hazard with no disposition referent".into(),
+        required_negative_fixture: "omitted required runtime obligation / hazard with a fabricated disposition referent".into(),
         failure_result: "reject".into(),
         fixture_qualified: true,
     }
@@ -221,9 +294,13 @@ pub fn admit_derive_expected_runtime_obligations(
     Ok(derive_expected_runtime_obligations(effects))
 }
 
-pub fn admit_check_hazard_record(table: &trust_table::TrustTable, hazard: &HazardRecord) -> Result<(), RuntimeObligationError> {
+pub fn admit_check_hazard_record(
+    table: &trust_table::TrustTable,
+    hazard: &HazardRecord,
+    known: &KnownHazardReferents,
+) -> Result<(), RuntimeObligationError> {
     table.admit("runtime_obligation_derivation").map_err(|e| err(e.to_string()))?;
-    hazard.validate()
+    check_hazard_disposition_resolves(hazard, known)
 }
 
 #[cfg(test)]
@@ -237,6 +314,10 @@ mod tests {
     }
 
     fn effect(id: &str, terminal: bool, conflicting: bool, reconcilable: bool) -> UnresolvedEffectObservation {
+        effect_with_residue(id, terminal, conflicting, reconcilable, false)
+    }
+
+    fn effect_with_residue(id: &str, terminal: bool, conflicting: bool, reconcilable: bool, residue: bool) -> UnresolvedEffectObservation {
         UnresolvedEffectObservation {
             effect_id: id.to_string(),
             campaign_id: "camp-1".to_string(),
@@ -245,7 +326,12 @@ mod tests {
             terminal,
             has_conflicting_observation: conflicting,
             technical_reconciliation_possible: reconcilable,
+            has_unexplained_residue: residue,
         }
+    }
+
+    fn obligation(effect_id: &str, generation: u64, class_kind: RuntimeObligationClassKind) -> ExpectedRuntimeObligation {
+        ExpectedRuntimeObligation { effect_id: effect_id.to_string(), campaign_id: "camp-1".to_string(), node_id: "node-1".to_string(), generation, class_kind }
     }
 
     // ---- Trust Table admission ----
@@ -279,14 +365,14 @@ mod tests {
     fn non_terminal_effect_derives_a_reconciliation_obligation() {
         let effects = vec![effect("e1", false, false, true)];
         let expected = derive_expected_runtime_obligations(&effects);
-        assert_eq!(expected, vec![ExpectedRuntimeObligation { effect_id: "e1".to_string(), class_kind: RuntimeObligationClassKind::RECONCILIATION }]);
+        assert_eq!(expected, vec![obligation("e1", 1, RuntimeObligationClassKind::RECONCILIATION)]);
     }
 
     #[test]
     fn conflicting_observation_derives_a_reconciliation_obligation_even_if_terminal() {
         let effects = vec![effect("e1", true, true, true)];
         let expected = derive_expected_runtime_obligations(&effects);
-        assert_eq!(expected, vec![ExpectedRuntimeObligation { effect_id: "e1".to_string(), class_kind: RuntimeObligationClassKind::RECONCILIATION }]);
+        assert_eq!(expected, vec![obligation("e1", 1, RuntimeObligationClassKind::RECONCILIATION)]);
     }
 
     #[test]
@@ -295,10 +381,7 @@ mod tests {
         let expected = derive_expected_runtime_obligations(&effects);
         assert_eq!(
             expected,
-            vec![
-                ExpectedRuntimeObligation { effect_id: "e1".to_string(), class_kind: RuntimeObligationClassKind::RECONCILIATION },
-                ExpectedRuntimeObligation { effect_id: "e1".to_string(), class_kind: RuntimeObligationClassKind::EXTERNAL_ADJUDICATION },
-            ]
+            vec![obligation("e1", 1, RuntimeObligationClassKind::RECONCILIATION), obligation("e1", 1, RuntimeObligationClassKind::EXTERNAL_ADJUDICATION)]
         );
     }
 
@@ -307,6 +390,23 @@ mod tests {
         let effects = vec![effect("e1", true, false, true), effect("e2", false, false, true), effect("e3", false, false, false)];
         let expected = derive_expected_runtime_obligations(&effects);
         assert_eq!(expected.len(), 3);
+    }
+
+    #[test]
+    fn unexplained_residue_derives_an_effect_integrity_obligation() {
+        let effects = vec![effect_with_residue("e1", true, false, true, true)];
+        let expected = derive_expected_runtime_obligations(&effects);
+        assert_eq!(expected, vec![obligation("e1", 1, RuntimeObligationClassKind::EFFECT_INTEGRITY)]);
+    }
+
+    #[test]
+    fn unresolved_effect_with_residue_derives_both_reconciliation_and_effect_integrity() {
+        let effects = vec![effect_with_residue("e1", false, false, true, true)];
+        let expected = derive_expected_runtime_obligations(&effects);
+        assert_eq!(
+            expected,
+            vec![obligation("e1", 1, RuntimeObligationClassKind::RECONCILIATION), obligation("e1", 1, RuntimeObligationClassKind::EFFECT_INTEGRITY)]
+        );
     }
 
     // ---- missing-obligation detection ----
@@ -332,15 +432,36 @@ mod tests {
     fn missing_runtime_obligations_finds_only_the_external_adjudication_half_when_reconciliation_was_registered() {
         let effects = vec![effect("e1", false, false, false)];
         let expected = derive_expected_runtime_obligations(&effects);
-        let registered = vec![ExpectedRuntimeObligation { effect_id: "e1".to_string(), class_kind: RuntimeObligationClassKind::RECONCILIATION }];
+        let registered = vec![obligation("e1", 1, RuntimeObligationClassKind::RECONCILIATION)];
         let missing = find_missing_runtime_obligations(&expected, &registered);
-        assert_eq!(missing, vec![ExpectedRuntimeObligation { effect_id: "e1".to_string(), class_kind: RuntimeObligationClassKind::EXTERNAL_ADJUDICATION }]);
+        assert_eq!(missing, vec![obligation("e1", 1, RuntimeObligationClassKind::EXTERNAL_ADJUDICATION)]);
+    }
+
+    #[test]
+    fn missing_runtime_obligations_treats_a_stale_generation_registration_as_not_covering_the_current_one() {
+        // Round-2 review finding: a registered obligation for the same
+        // effect_id/class_kind but an OLD generation must not be treated
+        // as satisfying the CURRENT generation's expectation.
+        let effects = vec![effect("e1", false, false, true)];
+        let expected = derive_expected_runtime_obligations(&effects);
+        let stale_registered = vec![obligation("e1", 0, RuntimeObligationClassKind::RECONCILIATION)];
+        let missing = find_missing_runtime_obligations(&expected, &stale_registered);
+        assert_eq!(missing, expected);
     }
 
     // ---- hazard disposition ----
 
+    fn known_referents() -> KnownHazardReferents {
+        KnownHazardReferents {
+            runtime_obligation_ids: vec!["OBL-1".to_string()],
+            invariant_candidate_ids: vec!["INV-1".to_string()],
+            runtime_obligation_candidate_ids: vec!["CAND-1".to_string()],
+            governing_authority_refs: vec!["AUTH-1".to_string()],
+        }
+    }
+
     #[test]
-    fn hazard_record_validates_with_a_real_disposition_referent() {
+    fn hazard_record_validates_with_a_non_empty_disposition_ref() {
         let hazard = HazardRecord {
             hazard_id: "H-1".to_string(),
             description: "unbounded retry storm".to_string(),
@@ -373,6 +494,43 @@ mod tests {
     }
 
     #[test]
+    fn check_hazard_disposition_resolves_accepts_a_real_referent() {
+        let hazard = HazardRecord {
+            hazard_id: "H-1".to_string(),
+            description: "d".to_string(),
+            disposition: HazardDisposition::COVERED_BY_RUNTIME_OBLIGATION,
+            disposition_ref: "OBL-1".to_string(),
+        };
+        check_hazard_disposition_resolves(&hazard, &known_referents()).unwrap();
+    }
+
+    #[test]
+    fn check_hazard_disposition_resolves_rejects_a_fabricated_referent() {
+        // Round-2 review finding: a non-blank disposition_ref that does
+        // not name a real known referent must be rejected.
+        let hazard = HazardRecord {
+            hazard_id: "H-1".to_string(),
+            description: "d".to_string(),
+            disposition: HazardDisposition::COVERED_BY_RUNTIME_OBLIGATION,
+            disposition_ref: "does-not-exist".to_string(),
+        };
+        assert!(check_hazard_disposition_resolves(&hazard, &known_referents()).is_err());
+    }
+
+    #[test]
+    fn check_hazard_disposition_resolves_checks_the_referent_set_matching_the_disposition_kind() {
+        // A referent that is real for a DIFFERENT disposition kind must
+        // not be accepted for this one.
+        let hazard = HazardRecord {
+            hazard_id: "H-1".to_string(),
+            description: "d".to_string(),
+            disposition: HazardDisposition::MADE_UNREACHABLE_BY_INVARIANT,
+            disposition_ref: "OBL-1".to_string(), // real, but only as a runtime_obligation_id
+        };
+        assert!(check_hazard_disposition_resolves(&hazard, &known_referents()).is_err());
+    }
+
+    #[test]
     fn admit_check_hazard_record_fails_closed_when_table_has_no_row() {
         let table = trust_table::TrustTable::new();
         let hazard = HazardRecord {
@@ -381,17 +539,17 @@ mod tests {
             disposition: HazardDisposition::COVERED_BY_RUNTIME_OBLIGATION,
             disposition_ref: "OBL-1".to_string(),
         };
-        assert!(admit_check_hazard_record(&table, &hazard).is_err());
+        assert!(admit_check_hazard_record(&table, &hazard, &known_referents()).is_err());
     }
 
     #[test]
-    fn admit_check_hazard_record_succeeds_when_table_carries_the_row_and_hazard_is_valid() {
+    fn admit_check_hazard_record_succeeds_when_table_carries_the_row_and_hazard_resolves() {
         let hazard = HazardRecord {
             hazard_id: "H-1".to_string(),
             description: "d".to_string(),
             disposition: HazardDisposition::CREATES_RUNTIME_OBLIGATION_CANDIDATE,
             disposition_ref: "CAND-1".to_string(),
         };
-        admit_check_hazard_record(&admitted_table(), &hazard).unwrap();
+        admit_check_hazard_record(&admitted_table(), &hazard, &known_referents()).unwrap();
     }
 }

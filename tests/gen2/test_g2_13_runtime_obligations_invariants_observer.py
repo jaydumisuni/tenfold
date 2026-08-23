@@ -26,6 +26,8 @@ from tenfold.gen2.constitutional import (
     RequirementClass,
 )
 from tenfold.gen2.runtime_obligation import (
+    DEFERRED_OBSERVER_COVERAGE_DOMAINS,
+    IMPLEMENTED_OBSERVER_COVERAGE_DOMAINS,
     ExpectedRuntimeObligation,
     HazardDisposition,
     HazardRecord,
@@ -34,6 +36,7 @@ from tenfold.gen2.runtime_obligation import (
     InvariantCandidateLedger,
     InvariantSource,
     Observer,
+    ObserverCoverageDomain,
     ObserverFinding,
     RuntimeObligationCandidateDisposition,
     RuntimeObligationCandidateEntry,
@@ -45,6 +48,8 @@ from tenfold.gen2.runtime_obligation import (
     TerminalDisposition,
     UnresolvedEffectObservation,
     _check_source_has_no_mutation_authority,
+    check_hazard_disposition_resolves,
+    check_observer_coverage_roster_is_fully_accounted_for,
     check_observer_has_no_mutation_authority,
     derive_expected_runtime_obligations,
     find_missing_runtime_obligations,
@@ -80,18 +85,28 @@ from tenfold.gen2.state_model import (
 )
 
 
-def _effect_dict(effect_id: str, *, terminal: bool, conflicting: bool = False, reconcilable: bool = True) -> dict:
+def _effect_dict(effect_id: str, *, terminal: bool, conflicting: bool = False, reconcilable: bool = True, residue: bool = False, generation: int = 1) -> dict:
     return {
-        "effect_id": effect_id, "campaign_id": "camp-1", "node_id": "node-1", "generation": 1,
+        "effect_id": effect_id, "campaign_id": "camp-1", "node_id": "node-1", "generation": generation,
         "terminal": terminal, "has_conflicting_observation": conflicting, "technical_reconciliation_possible": reconcilable,
+        "has_unexplained_residue": residue,
     }
 
 
-def _effect(effect_id: str, *, terminal: bool, conflicting: bool = False, reconcilable: bool = True) -> UnresolvedEffectObservation:
+def _effect(effect_id: str, *, terminal: bool, conflicting: bool = False, reconcilable: bool = True, residue: bool = False, generation: int = 1) -> UnresolvedEffectObservation:
     return UnresolvedEffectObservation(
-        effect_id=effect_id, campaign_id="camp-1", node_id="node-1", generation=1,
+        effect_id=effect_id, campaign_id="camp-1", node_id="node-1", generation=generation,
         terminal=terminal, has_conflicting_observation=conflicting, technical_reconciliation_possible=reconcilable,
+        has_unexplained_residue=residue,
     )
+
+
+def _obligation(effect_id: str, class_kind: RuntimeObligationClassKind, generation: int = 1) -> ExpectedRuntimeObligation:
+    return ExpectedRuntimeObligation(effect_id=effect_id, campaign_id="camp-1", node_id="node-1", generation=generation, class_kind=class_kind)
+
+
+def _obligation_dict(effect_id: str, class_kind: str, generation: int = 1) -> dict:
+    return {"effect_id": effect_id, "campaign_id": "camp-1", "node_id": "node-1", "generation": generation, "class_kind": class_kind}
 
 
 # ============================================================================
@@ -99,18 +114,20 @@ def _effect(effect_id: str, *, terminal: bool, conflicting: bool = False, reconc
 # ============================================================================
 
 _DERIVATION_CORPUS = (
-    (("e1", True, False, True), ()),
-    (("e1", False, False, True), (("e1", "RECONCILIATION"),)),
-    (("e1", True, True, True), (("e1", "RECONCILIATION"),)),
-    (("e1", False, False, False), (("e1", "RECONCILIATION"), ("e1", "EXTERNAL_ADJUDICATION"))),
+    (("e1", True, False, True, False), ()),
+    (("e1", False, False, True, False), (("e1", "RECONCILIATION"),)),
+    (("e1", True, True, True, False), (("e1", "RECONCILIATION"),)),
+    (("e1", False, False, False, False), (("e1", "RECONCILIATION"), ("e1", "EXTERNAL_ADJUDICATION"))),
+    (("e1", True, False, True, True), (("e1", "EFFECT_INTEGRITY"),)),
+    (("e1", False, False, False, True), (("e1", "RECONCILIATION"), ("e1", "EXTERNAL_ADJUDICATION"), ("e1", "EFFECT_INTEGRITY"))),
 )
 
 
 @pytest.mark.parametrize("params,expected_pairs", _DERIVATION_CORPUS)
 def test_g2_13_gen1_rust_parity_on_derivation_corpus(params, expected_pairs) -> None:
-    effect_id, terminal, conflicting, reconcilable = params
-    gen1_result = derive_expected_runtime_obligations((_effect(effect_id, terminal=terminal, conflicting=conflicting, reconcilable=reconcilable),))
-    rust_result = rust_derive_expected_runtime_obligations([_effect_dict(effect_id, terminal=terminal, conflicting=conflicting, reconcilable=reconcilable)])
+    effect_id, terminal, conflicting, reconcilable, residue = params
+    gen1_result = derive_expected_runtime_obligations((_effect(effect_id, terminal=terminal, conflicting=conflicting, reconcilable=reconcilable, residue=residue),))
+    rust_result = rust_derive_expected_runtime_obligations([_effect_dict(effect_id, terminal=terminal, conflicting=conflicting, reconcilable=reconcilable, residue=residue)])
 
     gen1_pairs = frozenset((e.effect_id, e.class_kind.value) for e in gen1_result)
     rust_pairs = frozenset((e["effect_id"], e["class_kind"]) for e in rust_result)
@@ -126,6 +143,17 @@ def test_g2_13_gen1_rust_parity_multiple_effects_derive_independently() -> None:
     )
     assert len(gen1_result) == 3
     assert len(rust_result) == 3
+
+
+def test_g2_13_gen1_rust_parity_obligations_carry_full_generation_bound_identity() -> None:
+    """Round-2 review finding: ExpectedRuntimeObligation must carry
+    campaign_id/node_id/generation, not just effect_id/class_kind."""
+    effect = _effect("e1", terminal=False, generation=7)
+    gen1_result = derive_expected_runtime_obligations((effect,))
+    assert gen1_result == (_obligation("e1", RuntimeObligationClassKind.RECONCILIATION, generation=7),)
+
+    rust_result = rust_derive_expected_runtime_obligations([_effect_dict("e1", terminal=False, generation=7)])
+    assert rust_result == [_obligation_dict("e1", "RECONCILIATION", generation=7)]
 
 
 # ============================================================================
@@ -157,14 +185,30 @@ def test_g2_13_gen1_rust_parity_missing_is_empty_once_everything_is_registered()
 def test_g2_13_gen1_rust_parity_missing_finds_only_the_unregistered_half() -> None:
     effect = _effect("e1", terminal=False, reconcilable=False)
     gen1_expected = derive_expected_runtime_obligations((effect,))
-    registered = (ExpectedRuntimeObligation("e1", RuntimeObligationClassKind.RECONCILIATION),)
+    registered = (_obligation("e1", RuntimeObligationClassKind.RECONCILIATION),)
     gen1_missing = find_missing_runtime_obligations(gen1_expected, registered)
-    assert gen1_missing == (ExpectedRuntimeObligation("e1", RuntimeObligationClassKind.EXTERNAL_ADJUDICATION),)
+    assert gen1_missing == (_obligation("e1", RuntimeObligationClassKind.EXTERNAL_ADJUDICATION),)
 
     rust_expected = rust_derive_expected_runtime_obligations([_effect_dict("e1", terminal=False, reconcilable=False)])
-    rust_registered = [{"effect_id": "e1", "class_kind": "RECONCILIATION"}]
+    rust_registered = [_obligation_dict("e1", "RECONCILIATION")]
     rust_missing = rust_find_missing_runtime_obligations(rust_expected, rust_registered)
-    assert rust_missing == [{"effect_id": "e1", "class_kind": "EXTERNAL_ADJUDICATION"}]
+    assert rust_missing == [_obligation_dict("e1", "EXTERNAL_ADJUDICATION")]
+
+
+def test_g2_13_gen1_rust_parity_missing_treats_a_stale_generation_registration_as_not_covering() -> None:
+    """Round-2 review finding: a registered obligation for the same
+    effect_id/class_kind but an OLD generation must not be treated as
+    satisfying the CURRENT generation's expectation."""
+    effect = _effect("e1", terminal=False, generation=2)
+    gen1_expected = derive_expected_runtime_obligations((effect,))
+    stale_registered = (_obligation("e1", RuntimeObligationClassKind.RECONCILIATION, generation=1),)
+    gen1_missing = find_missing_runtime_obligations(gen1_expected, stale_registered)
+    assert gen1_missing == gen1_expected
+
+    rust_expected = rust_derive_expected_runtime_obligations([_effect_dict("e1", terminal=False, generation=2)])
+    rust_stale_registered = [_obligation_dict("e1", "RECONCILIATION", generation=1)]
+    rust_missing = rust_find_missing_runtime_obligations(rust_expected, rust_stale_registered)
+    assert rust_missing == rust_expected
 
 
 # ============================================================================
@@ -173,11 +217,39 @@ def test_g2_13_gen1_rust_parity_missing_finds_only_the_unregistered_half() -> No
 # ============================================================================
 
 
+_HAZARD_KNOWN = {
+    HazardDisposition.COVERED_BY_RUNTIME_OBLIGATION: ("known_runtime_obligation_ids", "runtime_obligation_ids", "OBL-1"),
+    HazardDisposition.MADE_UNREACHABLE_BY_INVARIANT: ("known_invariant_candidate_ids", "invariant_candidate_ids", "INV-1"),
+    HazardDisposition.CREATES_RUNTIME_OBLIGATION_CANDIDATE: ("known_runtime_obligation_candidate_ids", "runtime_obligation_candidate_ids", "CAND-1"),
+    HazardDisposition.EXPLICITLY_ACCEPTED_BOUNDED: ("known_governing_authority_refs", "governing_authority_refs", "AUTH-1"),
+}
+
+
 @pytest.mark.parametrize("disposition", list(HazardDisposition))
-def test_g2_13_gen1_rust_parity_hazard_accepts_a_real_disposition_referent(disposition: HazardDisposition) -> None:
-    hazard = HazardRecord(hazard_id="H-1", description="d", disposition=disposition, disposition_ref="REF-1")
+def test_g2_13_gen1_rust_parity_hazard_accepts_a_real_known_referent(disposition: HazardDisposition) -> None:
+    gen1_kwarg, rust_key, referent = _HAZARD_KNOWN[disposition]
+    hazard = HazardRecord(hazard_id="H-1", description="d", disposition=disposition, disposition_ref=referent)
     hazard.validate()
-    rust_check_hazard_record({"hazard_id": "H-1", "description": "d", "disposition": disposition.value, "disposition_ref": "REF-1"})
+    check_hazard_disposition_resolves(hazard, **{gen1_kwarg: frozenset({referent})})
+    rust_check_hazard_record(
+        {"hazard_id": "H-1", "description": "d", "disposition": disposition.value, "disposition_ref": referent},
+        known={rust_key: [referent]},
+    )
+
+
+@pytest.mark.parametrize("disposition", list(HazardDisposition))
+def test_g2_13_gen1_rust_parity_hazard_rejects_a_fabricated_referent(disposition: HazardDisposition) -> None:
+    """Round-2 review finding: a merely non-blank disposition_ref that does
+    not resolve to a real known referent must be rejected."""
+    gen1_kwarg, rust_key, referent = _HAZARD_KNOWN[disposition]
+    hazard = HazardRecord(hazard_id="H-1", description="d", disposition=disposition, disposition_ref="does-not-exist")
+    with pytest.raises(RuntimeObligationError):
+        check_hazard_disposition_resolves(hazard, **{gen1_kwarg: frozenset({referent})})
+    with pytest.raises(RuntimeObligationCliError):
+        rust_check_hazard_record(
+            {"hazard_id": "H-1", "description": "d", "disposition": disposition.value, "disposition_ref": "does-not-exist"},
+            known={rust_key: [referent]},
+        )
 
 
 def test_g2_13_gen1_rust_parity_hazard_rejects_empty_disposition_ref() -> None:
@@ -213,7 +285,7 @@ def test_g2_13_the_mutation_detector_genuinely_flags_a_mutating_synthetic_module
 
 def test_g2_13_observer_observe_returns_pure_findings_and_never_mutates_its_inputs() -> None:
     observer = Observer()
-    missing = (ExpectedRuntimeObligation("e1", RuntimeObligationClassKind.RECONCILIATION),)
+    missing = (_obligation("e1", RuntimeObligationClassKind.RECONCILIATION),)
     hazards = (HazardRecord("H-1", "d", HazardDisposition.EXPLICITLY_ACCEPTED_BOUNDED, "authority-ref"),)
     findings = observer.observe(missing_obligations=missing, hazards=hazards, observation_generation=3, freshness_window=5)
     assert len(findings) == 2
@@ -224,6 +296,20 @@ def test_g2_13_observer_observe_returns_pure_findings_and_never_mutates_its_inpu
     # inputs are untouched (frozen dataclasses, but confirm identity too)
     assert missing[0].effect_id == "e1"
     assert hazards[0].disposition_ref == "authority-ref"
+    accepted_hazard_finding = next(f for f in findings if f.category == ObserverCoverageDomain.ACCEPTED_UNCERTAINTY_HAZARDS.value)
+    assert accepted_hazard_finding.finding_id == "OBS-ACCEPTED-HAZARD-H-1"
+
+
+def test_g2_13_observer_coverage_roster_is_fully_accounted_for() -> None:
+    """Round-2 review finding: every one of G2-00 SS13's 13 required
+    coverage domains is either genuinely implemented or explicitly,
+    individually deferred with a reason -- a structural, testable
+    disclosure rather than a silent gap."""
+    check_observer_coverage_roster_is_fully_accounted_for()
+    assert IMPLEMENTED_OBSERVER_COVERAGE_DOMAINS == frozenset({ObserverCoverageDomain.ACCEPTED_UNCERTAINTY_HAZARDS})
+    assert set(DEFERRED_OBSERVER_COVERAGE_DOMAINS) | IMPLEMENTED_OBSERVER_COVERAGE_DOMAINS == set(ObserverCoverageDomain)
+    for reason in DEFERRED_OBSERVER_COVERAGE_DOMAINS.values():
+        assert reason.strip()
 
 
 def test_g2_13_observer_finding_freshness_boundary_is_inclusive() -> None:
@@ -276,8 +362,36 @@ def test_g2_13_runtime_obligation_registry_unknown_class_id_raises() -> None:
 def test_g2_13_runtime_obligation_class_declaration_rejects_empty_terminal_dispositions() -> None:
     decl = RuntimeObligationClassDeclaration(
         class_id="X", class_generation=1, kind=RuntimeObligationClassKind.RECONCILIATION,
-        independent_derivation_predicate="p", input_evidence_refs=(), proof_requirements=(), assurance_routing=(),
+        independent_derivation_predicate="p", input_evidence_refs=("ev",), proof_requirements=("proof",), assurance_routing=("aa",),
         blocking=True, terminal_dispositions=(),
+    )
+    with pytest.raises(RuntimeObligationError):
+        decl.validate()
+
+
+@pytest.mark.parametrize("field", ["input_evidence_refs", "proof_requirements", "assurance_routing"])
+def test_g2_13_runtime_obligation_class_declaration_rejects_empty_participation_fields(field: str) -> None:
+    """Round-2 review finding: a declaration removing evidence/proof/
+    assurance-routing participation is not a legitimate obligation class,
+    regardless of terminal_dispositions being present."""
+    kwargs = dict(
+        class_id="X", class_generation=1, kind=RuntimeObligationClassKind.EXTERNAL_ADJUDICATION,
+        independent_derivation_predicate="p", input_evidence_refs=("ev",), proof_requirements=("proof",), assurance_routing=("aa",),
+        blocking=False, terminal_dispositions=(TerminalDisposition.UNCERTAINTY_ACCEPTED_BY_AUTHORITY,),
+    )
+    kwargs[field] = ()
+    with pytest.raises(RuntimeObligationError):
+        RuntimeObligationClassDeclaration(**kwargs).validate()
+
+
+@pytest.mark.parametrize("kind", [RuntimeObligationClassKind.RECONCILIATION, RuntimeObligationClassKind.EFFECT_INTEGRITY])
+def test_g2_13_runtime_obligation_class_declaration_requires_blocking_for_reconciliation_and_effect_integrity(kind: RuntimeObligationClassKind) -> None:
+    """Round-2 review finding: G2-00 SS8.7/SS9.8 both say these obligation
+    kinds block PROVEN -- a declaration cannot opt out via blocking=False."""
+    decl = RuntimeObligationClassDeclaration(
+        class_id="X", class_generation=1, kind=kind, independent_derivation_predicate="p",
+        input_evidence_refs=("ev",), proof_requirements=("proof",), assurance_routing=("aa",),
+        blocking=False, terminal_dispositions=(TerminalDisposition.ADOPTED,),
     )
     with pytest.raises(RuntimeObligationError):
         decl.validate()
@@ -404,6 +518,8 @@ def test_g2_13_standing_gate_b_specification_delta_and_lineage_are_recorded() ->
         [_effect_dict("e1", terminal=True, conflicting=True)],
         [_effect_dict("e1", terminal=False, reconcilable=False)],
         [_effect_dict("e1", terminal=False), _effect_dict("e2", terminal=True)],
+        [_effect_dict("e1", terminal=True, residue=True)],
+        [_effect_dict("e1", terminal=False, reconcilable=False, residue=True)],
     ],
 )
 def test_g2_13_standing_gate_b_reconciliation_verifier_agrees_with_kernel_and_gen1(effect_dicts) -> None:
@@ -418,6 +534,7 @@ def test_g2_13_standing_gate_b_reconciliation_verifier_agrees_with_kernel_and_ge
             effect_id=d["effect_id"], campaign_id=d["campaign_id"], node_id=d["node_id"], generation=d["generation"],
             terminal=d["terminal"], has_conflicting_observation=d["has_conflicting_observation"],
             technical_reconciliation_possible=d["technical_reconciliation_possible"],
+            has_unexplained_residue=d["has_unexplained_residue"],
         )
         for d in effect_dicts
     )

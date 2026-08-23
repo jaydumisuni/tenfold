@@ -67,5 +67,6 @@ def rust_find_missing_runtime_obligations(expected: list[dict], registered: list
     return json.loads(_run("missing", input_text=json.dumps({"expected": expected, "registered": registered})))
 
 
-def rust_check_hazard_record(hazard: dict) -> None:
-    _run("hazard-check", input_text=json.dumps(hazard))
+def rust_check_hazard_record(hazard: dict, known: dict | None = None) -> None:
+    payload = {"hazard": hazard, "known": known or {}}
+    _run("hazard-check", input_text=json.dumps(payload))
