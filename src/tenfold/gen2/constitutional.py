@@ -1320,6 +1320,10 @@ class ObligationIR:
     def load(cls, text: str) -> "ObligationIR":
         return cls.from_dict(_load_canonical_json(text))
 
+    @classmethod
+    def load(cls, text: str) -> "ObligationIR":
+        return cls.from_dict(_load_canonical_json(text))
+
 
 @dataclass(frozen=True)
 class ConstitutionalCampaignProgram:

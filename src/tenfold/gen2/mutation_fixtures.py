@@ -271,6 +271,16 @@ def _g2_05_policy_escape_blast_radius_kill_check() -> None:
     record_policy_escape("ESC-1", 99, "retrospective-probe", {"P-1": 1, "P-2": 2})
 
 
+def _g2_06_canonical_duplicate_key_kill_check() -> None:
+    # G2-06 / G2-00 SS7.1: canonical decoding must reject ambiguous
+    # duplicate object keys rather than silently keeping the last one.
+    text = (
+        '{"ir_generation":1,"ir_generation":2,"requirement_closure_digest":"a"'
+        ',"classification_closure_digest":"b","policy_closure_digest":"c","nodes":[]}'
+    )
+    ObligationIR.load(text)
+
+
 def build_initial_mutation_suite() -> MutationSuite:
     suite = MutationSuite()
 
@@ -622,6 +632,19 @@ def build_initial_mutation_suite() -> MutationSuite:
             "G2-00 SS6.7; G2-05",
             "constitutional_policy",
             _g2_05_policy_escape_blast_radius_kill_check,
+            ConstitutionalError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G06-CANONICAL-001",
+            MutationCategory.PARTIAL_PROOF_SEMANTICS,
+            "An ObligationIR encoding carries the same top-level key twice "
+            "(ir_generation), an ambiguous duplicate G2-00 SS7.1 requires canonical "
+            "decoding to reject rather than silently keeping the last occurrence.",
+            "G2-00 SS7.1; G2-06",
+            "obligation_ir",
+            _g2_06_canonical_duplicate_key_kill_check,
             ConstitutionalError,
         )
     )

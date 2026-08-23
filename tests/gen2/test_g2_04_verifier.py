@@ -144,6 +144,25 @@ def test_g2_04_independent_verifier_detects_duplicate_requirement_id() -> None:
     assert any("duplicate requirement_id" in d for d in defects)
 
 
+def test_g2_04_independent_verifier_non_dict_requirement_element_does_not_crash() -> None:
+    # G2-06 round-1 self-review finding: a requirements[] element that is
+    # not even a dict (adversarial encoding) must be reported as a defect,
+    # not crash the verifier with AttributeError from a bare req.get(...).
+    manifest = _valid_manifest()
+    raw = copy.deepcopy(manifest.to_dict())
+    raw["requirements"].append(["not", "a", "dict"])
+    defects = independent_verify_requirement_closure_manifest(raw)
+    assert any("must be a JSON object" in d for d in defects)
+
+
+def test_g2_04_independent_verifier_non_dict_ledger_element_does_not_crash() -> None:
+    manifest = _valid_manifest()
+    raw = copy.deepcopy(manifest.to_dict())
+    raw["candidate_ledgers"].append(42)
+    defects = independent_verify_requirement_closure_manifest(raw)
+    assert any("must be a JSON object" in d for d in defects)
+
+
 def test_g2_04_independent_verifier_detects_entry_bound_to_wrong_requirement() -> None:
     # The exact escalation named by review: an entry inside REQ-1's ledger
     # that itself claims requirement_id=REQ-2 must not count toward REQ-1's
