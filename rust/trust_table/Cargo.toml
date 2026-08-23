@@ -1,0 +1,11 @@
+[package]
+name = "tenfold-trust-table"
+version = "0.1.0"
+edition = "2021"
+description = "Executable Rust Trust Table (G2-00 SS4.1) — the fail-closed authority-bearing artifact admission gate for Tenfold Gen 2.0."
+
+[dependencies]
+
+[lib]
+name = "trust_table"
+path = "src/lib.rs"

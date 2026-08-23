@@ -79,6 +79,16 @@ from .verifier import (
     independent_verify_requirement_closure_manifest,
     scan_for_undeclared_common_mode_dependencies,
 )
+from .mutation_suite import (
+    FixtureStatus,
+    MutationCategory,
+    MutationError,
+    MutationFixture,
+    MutationScoreReport,
+    MutationSuite,
+    REQUIRED_MUTATION_CATEGORIES,
+)
+from .mutation_fixtures import build_initial_mutation_suite
 
 __all__ = [
     "ArtifactBinding",
@@ -149,4 +159,12 @@ __all__ = [
     "independent_verify_closed_schema",
     "independent_verify_requirement_closure_manifest",
     "scan_for_undeclared_common_mode_dependencies",
+    "FixtureStatus",
+    "MutationCategory",
+    "MutationError",
+    "MutationFixture",
+    "MutationScoreReport",
+    "MutationSuite",
+    "REQUIRED_MUTATION_CATEGORIES",
+    "build_initial_mutation_suite",
 ]
