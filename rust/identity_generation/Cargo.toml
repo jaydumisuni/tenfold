@@ -1,0 +1,18 @@
+[package]
+name = "tenfold-identity-generation"
+version = "0.1.0"
+edition = "2021"
+description = "Identity / Generation Authority Core (G2-00 SS14-16, G2-09) for Tenfold Gen 2.0."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+trust_table = { package = "tenfold-trust-table", path = "../trust_table" }
+
+[lib]
+name = "identity_generation"
+path = "src/lib.rs"
+
+[[bin]]
+name = "identity_generation_cli"
+path = "src/bin/identity_generation_cli.rs"

@@ -65,6 +65,11 @@ from .campaign_compiler import (
     compile_campaign_program,
     reconcile_compiled_campaign,
 )
+from .identity_generation import (
+    IdentityGenerationError,
+    check_generation_not_stale,
+    reinstate_under_fresh_generation,
+)
 
 
 def _total_policy(**overrides) -> ConstitutionalPolicySet:
@@ -343,6 +348,30 @@ def _g2_08_coverage_omission_kill_check() -> None:
     defects = independent_check_typed_coverage(raw, [])
     if defects:
         raise VerifierError("; ".join(defects))
+
+
+def _g2_09_stale_generation_kill_check() -> None:
+    # G2-09 acceptance: "stale/duplicate-generation fixtures reject." A
+    # claimed generation behind the live one (the "stale" shape) must be
+    # rejected by the real exact-equality check, matching Gen-1's own
+    # repeated claimed-!=-live pattern (facility.py/durability.py/
+    # recovery.py/coupling.py/assurance_engine.py/ptah_facility.py/
+    # consultation.py).
+    check_generation_not_stale(claimed=4, live=5)
+
+
+def _g2_09_duplicate_generation_kill_check() -> None:
+    # G2-09 acceptance: "stale/duplicate-generation fixtures reject." The
+    # "duplicate" shape: after a fresh generation (9) has genuinely been
+    # minted via the real reinstatement primitive, an attempt to re-claim
+    # one of the specific generations that reinstatement was built to
+    # never resurrect (6, from previously_used_generations) against the
+    # new live generation must still be rejected by the same real
+    # exact-equality check — resurrecting a stale/duplicate generation is
+    # never silently treated as current.
+    used_generations = frozenset({6, 7, 8})
+    fresh = reinstate_under_fresh_generation(5, used_generations)
+    check_generation_not_stale(claimed=6, live=fresh)
 
 
 def build_initial_mutation_suite() -> MutationSuite:
@@ -749,6 +778,32 @@ def build_initial_mutation_suite() -> MutationSuite:
             "campaign_program",
             _g2_08_coverage_omission_kill_check,
             VerifierError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G09-STALEGEN-001",
+            MutationCategory.GENERATION_FENCING_VIOLATION,
+            "A claimed generation behind the live generation (the 'stale' shape of G2-09's "
+            "'stale/duplicate-generation fixtures reject' acceptance bar) is rejected by the "
+            "real exact-equality generation check.",
+            "G2-00 SS15; G2-09",
+            "identity_generation",
+            _g2_09_stale_generation_kill_check,
+            IdentityGenerationError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G09-DUPGEN-001",
+            MutationCategory.GENERATION_FENCING_VIOLATION,
+            "After a fresh generation is genuinely minted via the real reinstatement primitive, "
+            "an attempt to re-claim one of the specific generations it was built to never "
+            "resurrect (the 'duplicate' shape of G2-09's acceptance bar) is rejected.",
+            "G2-00 SS15; G2-09",
+            "identity_generation",
+            _g2_09_duplicate_generation_kill_check,
+            IdentityGenerationError,
         )
     )
 
