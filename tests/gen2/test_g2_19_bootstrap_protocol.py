@@ -46,6 +46,7 @@ from tenfold.gen2.bootstrap_protocol import (
     check_evidence_packet_generation_current,
     check_facility_result_matches_request,
     validate_bootstrap_corpus,
+    verify_chronicle_entry_self_digest,
 )
 from tenfold.gen2.bootstrap_protocol_bridge import (
     BootstrapProtocolCliError,
@@ -282,6 +283,29 @@ def test_g2_19_corpus_rejects_an_unreconciled_assurance_result_in_python_and_rus
         validate_bootstrap_corpus(corpus)
 
 
+def test_g2_19_python_independently_verifies_the_chronicle_entry_digest() -> None:
+    """Self-caught before external review: Python's own corpus check
+    must genuinely recompute the ChronicleEntry digest, not merely check
+    that fields are non-empty. Both the frozen corpus's real entry and an
+    entry with a tampered digest are exercised directly against
+    verify_chronicle_entry_self_digest."""
+    corpus = json.loads(_CORPUS_PATH.read_text(encoding="utf-8"))
+    assert verify_chronicle_entry_self_digest(corpus["chronicle_event"]) is True
+
+    tampered = dict(corpus["chronicle_event"])
+    tampered["entry_digest"] = "tampered" * 8
+    assert verify_chronicle_entry_self_digest(tampered) is False
+
+
+def test_g2_19_corpus_rejects_a_tampered_chronicle_digest_in_python_and_rust() -> None:
+    corpus = json.loads(_CORPUS_PATH.read_text(encoding="utf-8"))
+    corpus["chronicle_event"]["entry_digest"] = "tampered" * 8
+    with pytest.raises(BootstrapProtocolCliError):
+        rust_validate_bootstrap_corpus(corpus)
+    with pytest.raises(BootstrapProtocolError):
+        validate_bootstrap_corpus(corpus)
+
+
 def test_g2_19_corpus_genuinely_produced_via_real_chronicle_append() -> None:
     """The corpus's chronicle_event is not hand-fabricated: a fresh real
     Chronicle append with the same fields must reproduce the exact same
@@ -308,7 +332,7 @@ def test_g2_19_corpus_genuinely_produced_via_real_chronicle_append() -> None:
 def test_g2_19_bootstrap_protocol_fixtures_are_genuinely_killed() -> None:
     suite = build_initial_mutation_suite()
     results = suite.run_all()
-    for fixture_id in ("MUT-G19-TASKPACKET-001", "MUT-G19-EVIDENCEGEN-001", "MUT-G19-FACILITYMISMATCH-001"):
+    for fixture_id in ("MUT-G19-TASKPACKET-001", "MUT-G19-EVIDENCEGEN-001", "MUT-G19-FACILITYMISMATCH-001", "MUT-G19-CHRONICLETAMPER-001"):
         assert results[fixture_id] == FixtureStatus.KILLED
 
 

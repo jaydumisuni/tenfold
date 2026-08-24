@@ -15,6 +15,7 @@ passing check.
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import time
@@ -238,11 +239,13 @@ from .bootstrap_protocol import (
     TaskPacketV1,
     check_evidence_packet_generation_current,
     check_facility_result_matches_request,
+    validate_bootstrap_corpus,
 )
 from .bootstrap_protocol_bridge import (
     BootstrapProtocolCliError,
     rust_check_evidence_packet_generation_current,
     rust_check_facility_result_matches_request,
+    rust_validate_bootstrap_corpus,
     rust_validate_task_packet,
 )
 from tenfold.contracts import NodeState
@@ -1837,6 +1840,29 @@ def _g2_19_facility_result_mismatch_kill_check() -> None:
     check_facility_result_matches_request(request, result)
 
 
+def _g2_19_tampered_chronicle_digest_kill_check() -> None:
+    # Self-caught before external review, learning directly from G2-16/17's
+    # own review findings: Python's own corpus check must genuinely
+    # recompute the ChronicleEntry digest, not merely check that fields
+    # are non-empty. The frozen corpus's real chronicle_event, with its
+    # entry_digest corrupted, is rejected by both the real compiled Rust
+    # bootstrap_protocol kernel (chronicle::ChronicleEntry::
+    # verify_self_digest) and the real independent Python re-derivation
+    # (verify_chronicle_entry_self_digest).
+    corpus_path = Path(__file__).resolve().parents[3] / "docs" / "gen2" / "g2-19-bootstrap-corpus.json"
+    corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+    corpus["chronicle_event"]["entry_digest"] = "tampered" * 8
+
+    try:
+        rust_validate_bootstrap_corpus(corpus)
+    except BootstrapProtocolCliError:
+        pass
+    else:
+        raise AssertionError("rust bootstrap_protocol kernel incorrectly admitted a ChronicleEntry with a tampered entry_digest")
+
+    validate_bootstrap_corpus(corpus)
+
+
 def build_initial_mutation_suite() -> MutationSuite:
     suite = MutationSuite()
 
@@ -2902,6 +2928,19 @@ def build_initial_mutation_suite() -> MutationSuite:
             "G2-00 SS3, SS4; G2-19",
             "facility_request_result",
             _g2_19_facility_result_mismatch_kill_check,
+            BootstrapProtocolError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G19-CHRONICLETAMPER-001",
+            MutationCategory.CHRONICLE_DURABILITY_TAIL_LOSS,
+            "The frozen bootstrap corpus's real chronicle_event, with its entry_digest tampered, "
+            "is rejected by both the real compiled Rust bootstrap_protocol kernel and the real "
+            "independent Python digest re-derivation (self-caught before external review, G2-19).",
+            "G2-00 SS8; G2-19",
+            "bootstrap_protocol_corpus",
+            _g2_19_tampered_chronicle_digest_kill_check,
             BootstrapProtocolError,
         )
     )

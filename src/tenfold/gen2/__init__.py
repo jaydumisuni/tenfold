@@ -393,6 +393,7 @@ from .bootstrap_protocol import (
     check_evidence_packet_generation_current,
     check_facility_result_matches_request,
     validate_bootstrap_corpus,
+    verify_chronicle_entry_self_digest,
 )
 from .bootstrap_protocol_bridge import (
     BootstrapProtocolCliBuildError,
@@ -744,6 +745,7 @@ __all__ = [
     "check_evidence_packet_generation_current",
     "check_facility_result_matches_request",
     "validate_bootstrap_corpus",
+    "verify_chronicle_entry_self_digest",
     "BootstrapProtocolCliBuildError",
     "BootstrapProtocolCliError",
     "rust_check_evidence_packet_generation_current",

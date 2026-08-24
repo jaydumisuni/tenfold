@@ -26,6 +26,7 @@ fn admitted_table() -> trust_table::TrustTable {
     let mut table = trust_table::initial_trust_table();
     table.extend(bootstrap_protocol::task_packet_trust_table_row()).expect("task_packet row is well-formed and non-duplicate");
     table.extend(bootstrap_protocol::facility_request_result_trust_table_row()).expect("facility_request_result row is well-formed and non-duplicate");
+    table.extend(bootstrap_protocol::bootstrap_protocol_corpus_trust_table_row()).expect("bootstrap_protocol_corpus row is well-formed and non-duplicate");
     table
 }
 

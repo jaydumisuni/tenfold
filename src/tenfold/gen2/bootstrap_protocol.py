@@ -22,6 +22,8 @@ through G2-18.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -253,6 +255,43 @@ def _require_nonempty(value: str, what: str) -> None:
         raise BootstrapProtocolError(f"{what} must be non-empty")
 
 
+def _rust_debug_quote(s: str) -> str:
+    """Replicates Rust's `{:?}` Debug-format string escaping for the
+    realistic identifier/hex-digest-shaped strings ChronicleEntry fields
+    carry in this system. Rust's Debug impl for `&str` and Python's
+    `json.dumps` apply the same escaping rules for plain content without
+    embedded control characters (backslash and double-quote escaped,
+    everything else literal) -- disclosed limitation: full byte-for-byte
+    parity for non-ASCII/control-character content is not verified, since
+    genuine chronicle event fields in this system are always identifier/
+    hex-digest shaped, never arbitrary user text."""
+    return json.dumps(s)
+
+
+def _canonical_chronicle_entry_preimage(sequence: int, event_type: str, payload_digest: str, previous_entry_digest: str | None, writer_id: str, writer_generation: int) -> str:
+    """Independent re-derivation of `rust/chronicle`'s private
+    `canonical_entry_preimage` (G2-00 SS8; G2-10), written from reading
+    that same function, not imported -- the whole point of an
+    independent digest check is that it does not call into the artifact
+    it verifies."""
+    prev = "null" if previous_entry_digest is None else _rust_debug_quote(previous_entry_digest)
+    return (
+        f'{{"sequence":{sequence},"event_type":{_rust_debug_quote(event_type)},"payload_digest":{_rust_debug_quote(payload_digest)},'
+        f'"previous_entry_digest":{prev},"writer_id":{_rust_debug_quote(writer_id)},"writer_generation":{writer_generation}}}'
+    )
+
+
+def verify_chronicle_entry_self_digest(entry: dict) -> bool:
+    """Independently re-derives a ChronicleEntry's `entry_digest` from its
+    own fields and compares -- the Python side's own genuine digest
+    verification, mirroring `rust/chronicle::ChronicleEntry::
+    verify_self_digest` without calling into it. Returns False (never
+    raises) on mismatch, so a caller can accumulate findings."""
+    preimage = _canonical_chronicle_entry_preimage(entry["sequence"], entry["event_type"], entry["payload_digest"], entry.get("previous_entry_digest"), entry["writer_id"], entry["writer_generation"])
+    recomputed = hashlib.sha256(preimage.encode("utf-8")).hexdigest()
+    return recomputed == entry["entry_digest"]
+
+
 def _validate_lease_dict(lease: dict) -> None:
     for field_name in ("lease_id", "campaign_id", "owner_lane", "namespace"):
         _require_nonempty(lease.get(field_name, ""), f"WriteLease: {field_name}")
@@ -312,3 +351,5 @@ def validate_bootstrap_corpus(corpus: dict) -> None:
     ce = corpus["chronicle_event"]
     for field_name in ("event_type", "payload_digest", "writer_id", "entry_digest"):
         _require_nonempty(ce.get(field_name, ""), f"ChronicleEntry: {field_name}")
+    if not verify_chronicle_entry_self_digest(ce):
+        raise BootstrapProtocolError("ChronicleEntry: stored entry_digest does not match recomputed digest")

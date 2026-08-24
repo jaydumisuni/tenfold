@@ -399,6 +399,31 @@ pub fn facility_request_result_trust_table_row() -> trust_table::TrustTableRow {
     }
 }
 
+/// Represents the frozen `tenfold.bootstrap.v1` corpus as a whole --
+/// distinct from the three per-family rows (`task_packet`,
+/// `evidence_packet`, `facility_request_result`), which independently
+/// check their own field: this row is what `admit_validate_bootstrap_
+/// corpus` requires in addition to those three, so cross-family binding
+/// (protocol_version, the facility request/result pair, and chronicle
+/// entry digest integrity) has its own recorded justification rather
+/// than being an unnamed side effect of validating three unrelated rows.
+pub fn bootstrap_protocol_corpus_trust_table_row() -> trust_table::TrustTableRow {
+    trust_table::TrustTableRow {
+        artifact_identity: "bootstrap_protocol_corpus".into(),
+        independently_checks: vec![
+            "frozen protocol_version match".into(),
+            "cross-family binding: facility_result genuinely corresponds to facility_request".into(),
+            "chronicle_event entry_digest integrity (re-derived, not merely checked for presence)".into(),
+        ],
+        trusts_only: "Python-discovered corpus content for the six families this crate delegates to (identity_generation, dispatch_lease, proof_graph, chronicle)".into(),
+        trust_bounded_reason: "G2-19: the corpus binds nine families together under one frozen version tag; this row is the recorded justification for that cross-family binding specifically, on top of (not instead of) each family's own row".into(),
+        authority_generation: 1,
+        required_negative_fixture: "tampered chronicle entry digest admitted as genuine".into(),
+        failure_result: "reject".into(),
+        fixture_qualified: true,
+    }
+}
+
 pub fn admit_validate_task_packet(table: &trust_table::TrustTable, packet: &TaskPacketV1) -> Result<(), BootstrapProtocolError> {
     table.admit("task_packet").map_err(|e| err(e.to_string()))?;
     packet.validate()
@@ -418,6 +443,7 @@ pub fn admit_validate_bootstrap_corpus(table: &trust_table::TrustTable, corpus: 
     table.admit("task_packet").map_err(|e| err(e.to_string()))?;
     table.admit("evidence_packet").map_err(|e| err(e.to_string()))?;
     table.admit("facility_request_result").map_err(|e| err(e.to_string()))?;
+    table.admit("bootstrap_protocol_corpus").map_err(|e| err(e.to_string()))?;
     validate_bootstrap_corpus(corpus)
 }
 
@@ -429,6 +455,7 @@ mod tests {
         let mut table = trust_table::initial_trust_table();
         table.extend(task_packet_trust_table_row()).unwrap();
         table.extend(facility_request_result_trust_table_row()).unwrap();
+        table.extend(bootstrap_protocol_corpus_trust_table_row()).unwrap();
         table
     }
 
@@ -676,6 +703,24 @@ mod tests {
     fn trust_table_rows_are_well_formed() {
         assert!(task_packet_trust_table_row().is_well_formed());
         assert!(facility_request_result_trust_table_row().is_well_formed());
+        assert!(bootstrap_protocol_corpus_trust_table_row().is_well_formed());
+    }
+
+    #[test]
+    fn admit_validate_bootstrap_corpus_fails_closed_when_only_the_per_family_rows_are_admitted() {
+        // The corpus-level row is required in addition to the three
+        // per-family rows, not implied by them.
+        let mut table = trust_table::initial_trust_table();
+        table.extend(task_packet_trust_table_row()).unwrap();
+        table.extend(facility_request_result_trust_table_row()).unwrap();
+        assert!(admit_validate_bootstrap_corpus(&table, &valid_corpus()).is_err());
+    }
+
+    #[test]
+    fn admit_validate_bootstrap_corpus_rejects_a_tampered_chronicle_digest() {
+        let mut c = valid_corpus();
+        c.chronicle_event.entry_digest = "tampered".repeat(8);
+        assert!(admit_validate_bootstrap_corpus(&admitted_table(), &c).is_err());
     }
 
     #[test]
