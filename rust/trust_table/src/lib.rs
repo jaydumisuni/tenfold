@@ -318,6 +318,33 @@ pub fn initial_trust_table() -> TrustTable {
             failure_result: "reject".into(),
             fixture_qualified: true,
         },
+        TrustTableRow {
+            artifact_identity: "council_pin".into(),
+            // G2-23 Council-pinning deliverable: "Convert Council from
+            // live Gen1 dependency into reproducible pinned inherited
+            // component." Council (`tenfold.council`/`tenfold.officers`)
+            // is a pure-Python reconciliation artifact with no Rust
+            // re-derivation crate of its own -- this row exists so an
+            // invocation cannot enter Gen2 without being admitted, even
+            // though the pin-drift/interface/no-Gen1-dependency checks
+            // themselves are mechanically re-derived on the Python side
+            // (`tenfold.gen2.council_pin`), the same "mechanically
+            // checkable, semantically bounded" shape as this table's own
+            // `constitutional_policy`/`requirement_closure` rows.
+            independently_checks: vec![
+                "artifact source digest matches the pinned record".into(),
+                "Python/runtime version matches the pinned record".into(),
+                "frozen interface signature digest matches the pinned record".into(),
+                "bound external/frozen policy digest matches the pinned record".into(),
+                "pin generation is not stale".into(),
+            ],
+            trusts_only: "that the pinned record was itself genuinely computed from the real installed artifact at pin time".into(),
+            trust_bounded_reason: "every drift check (source digest, runtime version, interface signature, policy digest, generation) is mechanically re-derived from the live installed artifact and compared; whether the ORIGINAL pin-time computation was itself genuine is bounded by whoever ran build_council_pin_record, not re-derived a second time here".into(),
+            authority_generation: 1,
+            required_negative_fixture: "invocation attempted against a drifted/stale pinned record".into(),
+            failure_result: "reject".into(),
+            fixture_qualified: true,
+        },
     ];
     for row in rows {
         table.extend(row).expect("initial_trust_table rows are well-formed and non-duplicate by construction");
@@ -330,9 +357,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn initial_table_has_all_eleven_minimum_families() {
+    fn initial_table_has_all_twelve_minimum_families() {
         let table = initial_trust_table();
-        assert_eq!(table.len(), 11);
+        assert_eq!(table.len(), 12);
     }
 
     #[test]
@@ -356,6 +383,7 @@ mod tests {
             "external_assurance",
             "runtime_obligation",
             "facility_declaration",
+            "council_pin",
         ] {
             assert!(table.admit(identity).is_ok(), "expected {identity} to be admitted");
         }
@@ -494,7 +522,7 @@ mod tests {
             fixture_qualified: true,
         };
         assert!(table.extend(row).is_ok());
-        assert_eq!(table.len(), 12);
+        assert_eq!(table.len(), 13);
         assert!(table.admit("chronicle_event").is_ok());
     }
 

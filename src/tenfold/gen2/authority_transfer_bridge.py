@@ -73,3 +73,13 @@ def rust_transition_record(record: dict, new_stage: str, policy: dict) -> dict:
 
 def rust_check_valid_authority_owner_count(active_owners: list[str]) -> None:
     _run("owner-count", input_text=json.dumps({"active_owners": active_owners}))
+
+
+def rust_admit(artifact_identity: str) -> None:
+    """G2-23 Council-pinning deliverable: genuinely checks Trust Table
+    admission for `artifact_identity` (e.g. `"council_pin"`) against the
+    real compiled `initial_trust_table()` -- no record/stage involved.
+    Lets a Python-only artifact family with no dedicated Rust
+    re-derivation crate of its own still be genuinely, mechanically
+    admitted rather than trusted on the Python side alone."""
+    _run("admit", artifact_identity, input_text="")

@@ -15,6 +15,13 @@
 //! - `check-transition` -- reads `{"current": AuthorityTransferStage, "new_stage": AuthorityTransferStage}` from stdin.
 //! - `transition-record` -- reads `{"record": AuthorityTransferRecord, "new_stage": AuthorityTransferStage, "policy": AuthorityTransferStabilizationPolicy}` from stdin; prints the new record JSON on success.
 //! - `owner-count` -- reads `{"active_owners": [String, ...]}` from stdin.
+//! - `admit <artifact_identity>` (G2-23 Council-pinning deliverable) --
+//!   checks Trust Table admission for the given `artifact_identity`
+//!   against `initial_trust_table()` directly (no record/stage
+//!   involved); prints ACCEPT/REJECT. Generic so a Python-only artifact
+//!   family with no dedicated Rust re-derivation crate of its own (e.g.
+//!   `"council_pin"`) can still be genuinely, mechanically admitted
+//!   rather than trusted on the Python side alone.
 
 use identity_generation::{
     admit_check_authority_transfer_transition, admit_transition, authority_transfer_trust_table_row, check_valid_authority_owner_count, trust_table_row, AuthorityTransferRecord,
@@ -121,6 +128,21 @@ fn main() -> ExitCode {
             };
             match check_valid_authority_owner_count(&request.active_owners) {
                 Ok(()) => {
+                    println!("ACCEPT");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    println!("REJECT: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        "admit" => {
+            let Some(artifact_identity) = args.get(2) else {
+                return usage_error("admit <artifact_identity>");
+            };
+            match admitted_table().admit(artifact_identity) {
+                Ok(_) => {
                     println!("ACCEPT");
                     ExitCode::SUCCESS
                 }
