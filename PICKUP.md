@@ -22,7 +22,7 @@ This file records the repository recovery point. Always recover live GitHub stat
 - Canonical review/freeze record: `docs/09-gen2-review-record.md`.
 - Canonical chat-workspace execution rule: `docs/10-chat-workspace-execution.md`.
 - Complete generational evolution map: `docs/11-generational-evolution-map.md`.
-- Gen-2 implementation: **IN PROGRESS** (G2-01 PROVEN; G2-02 PROVEN; G2-03 PROVEN; G2-04 PROVEN; G2-05 PROVEN; G2-06 PROVEN; G2-07 PROVEN; G2-08 PROVEN; G2-09 PROVEN; G2-10 PROVEN; G2-11 PROVEN; G2-12 PROVEN; G2-13 PROVEN; G2-14 PROVEN; G2-15 PROVEN; G2-16 PROVEN; G2-17 PROVEN; G2-18 PROVEN).
+- Gen-2 implementation: **IN PROGRESS** (G2-01 PROVEN; G2-02 PROVEN; G2-03 PROVEN; G2-04 PROVEN; G2-05 PROVEN; G2-06 PROVEN; G2-07 PROVEN; G2-08 PROVEN; G2-09 PROVEN; G2-10 PROVEN; G2-11 PROVEN; G2-12 PROVEN; G2-13 PROVEN; G2-14 PROVEN; G2-15 PROVEN; G2-16 PROVEN; G2-17 PROVEN; G2-18 PROVEN; G2-19 PROVEN).
 - Gen-2 qualification: **IN PROGRESS**.
 - G2-01 — Gen-1 Reference and Inheritance Freeze: **PROVEN**. Proven candidate `8e33f7a4240e18141ae44d6733043660f64c1640`. Canonical review/proof record: `docs/gen2/G2-01-review-record.md`.
 - G2-02 — Constitutional Schema and Policy Foundation: **PROVEN**. Proven candidate `a3a9b19702b203ad79aecebdf039eb12254e8daf`. Canonical review/proof record: `docs/gen2/G2-02-review-record.md`.
@@ -42,7 +42,8 @@ This file records the repository recovery point. Always recover live GitHub stat
 - G2-16 — Capability Graph / Effective Automation / EFFECT_REACH*: **PROVEN**. Proven candidate `0daa0aa9cd8e79a28bee7ca8d716fa371388b1d5`. Canonical review/proof record: `docs/gen2/G2-16-review-record.md`.
 - G2-17 — Root / Issuing Authority Planes: **PROVEN**. Proven candidate `f7bb61d8e91a82a4bb9b8676283e59e92a8c7375`. Canonical review/proof record: `docs/gen2/G2-17-review-record.md`.
 - G2-18 — External Effects and Effect Census: **PROVEN**. Proven candidate `a0e01c8e5fc22de3ad6d1938ecae4296f1157737`. Canonical review/proof record: `docs/gen2/G2-18-review-record.md`.
-- Current next Gen-2 milestone: **G2-19 — Bootstrap Interoperability Protocol** (real dependency frontier: ready, since G2-18 is PROVEN).
+- G2-19 — Bootstrap Interoperability Protocol: **PROVEN**. Proven candidate `6fdb9705cae90df0544c90321240e77baa99e150`. Canonical review/proof record: `docs/gen2/G2-19-review-record.md`.
+- Current next Gen-2 milestone: **G2-20 — Full Authoritative State Model / Invariant Ownership Reconciliation** (real dependency frontier: ready, since G2-19 is PROVEN).
 - Construction runtime: **qualified Tenfold Gen 1** (authoritative through G2-23 per the frozen roadmap).
 
 Do not restart Gen-2 architecture design from chat memory. Recover G2-00, the Gen-2 roadmap, workspace rule and generational evolution map first. Reopen G2-00 only if implementation/evidence demonstrates a real frozen-authority violation or the Owner explicitly authorises an architecture change.
