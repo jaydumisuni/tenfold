@@ -219,6 +219,7 @@ dependencies = [
  "sha2",
  "tenfold-capability-graph",
  "tenfold-chronicle",
+ "tenfold-identity-generation",
  "tenfold-trust-table",
 ]
 

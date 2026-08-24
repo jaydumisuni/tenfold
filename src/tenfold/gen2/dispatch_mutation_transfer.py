@@ -40,7 +40,7 @@ that this would read as false migration evidence. There genuinely is no
 live-queryable "who currently holds this authority" state for this
 computation-based domain (unlike Chronicle's real `.lease` file G2-22
 could query) -- that architectural gap is not closed here. What IS fixed:
-`_verify_single_owner_and_fence` no longer just asserts the single-owner
+`verify_single_owner_and_fence` no longer just asserts the single-owner
 case; it also genuinely re-invokes `check_valid_authority_owner_count`
 with BOTH `from_ref` and `to_ref` simultaneously and requires that call
 to fail, proving the mechanism itself still correctly discriminates
@@ -48,6 +48,34 @@ single- from dual-ownership on this transfer's own declared endpoints
 immediately before commit, rather than merely being asserted to have
 passed. This is a genuine strengthening of the check's own self-
 verification, not a claim that live Gen1/Gen2 state was queried.
+
+`new_transfer_record`/`execute_slice_rehearsal`/`execute_slice_transfer`/
+`verify_single_owner_and_fence`/`authority_transfer_policy_to_dict` were
+already fully generic over transfer_id/from_ref/to_ref/differential_
+runner even when this module carried only its own two slices --
+`effect_transfer.py` (Effect, G2-23 part 2) and any later slice reuse
+them directly rather than re-deriving the same ~60-line orchestration a
+third and fourth time. `execute_slice_transfer` takes the Trust-Table-
+gated `admit_transition` as a parameter rather than importing
+`dispatch_lease_bridge` directly, so each slice still routes production
+transitions through its OWN crate's ref-bound wrapper (the Finding 1 fix)
+without this module needing to know which bridge that is.
+
+Round-2 review finding (G2-23 part 2, PR #76): reaching
+`IRREVERSIBLY_COMMITTED` while `verify_single_owner_and_fence` only
+self-checks a caller-constructed tuple -- never live state -- is a
+genuine overclaim for any slice that DOES have a real, live-fenceable
+resource (AGENTS.md: "Shadow Gen2... never a second valid authority
+owner"). `execute_slice_transfer` now takes an optional `verify_ownership`
+callback (default: `verify_single_owner_and_fence`) so a slice with a
+genuine live-fenceable resource -- `effect_transfer.py`'s Chronicle-
+backed `EFFECT_ISSUANCE_CLOSED` barrier writer lease, reusing G2-22's
+already-proven writer-fencing mechanism -- can supply a callback that
+genuinely derives and verifies live ownership instead of only
+self-checking. Dispatch/Mutation genuinely have no such live-fenceable
+resource (pure computations, no ownable state), so they keep the default
+-- this is not a regression of their own disclosed limitation, only a
+new capability for slices that can honestly do better.
 """
 
 from __future__ import annotations
@@ -113,7 +141,7 @@ def build_mutation_admission_transfer_policy(*, policy_generation: int = 1) -> A
     )
 
 
-def _new_record(transfer_id: str, from_ref: str, to_ref: str, policy: AuthorityTransferStabilizationPolicy) -> AuthorityTransferRecord:
+def new_transfer_record(transfer_id: str, from_ref: str, to_ref: str, policy: AuthorityTransferStabilizationPolicy) -> AuthorityTransferRecord:
     return AuthorityTransferRecord(
         transfer_id=transfer_id,
         from_authority_ref=from_ref,
@@ -130,8 +158,8 @@ class SliceRehearsalResult:
     fresh_generation: int
 
 
-def _execute_rehearsal(transfer_id: str, from_ref: str, to_ref: str, policy: AuthorityTransferStabilizationPolicy) -> SliceRehearsalResult:
-    record = _new_record(f"{transfer_id}-rehearsal", from_ref, to_ref, policy)
+def execute_slice_rehearsal(transfer_id: str, from_ref: str, to_ref: str, policy: AuthorityTransferStabilizationPolicy) -> SliceRehearsalResult:
+    record = new_transfer_record(f"{transfer_id}-rehearsal", from_ref, to_ref, policy)
     record = record.transition(AuthorityTransferStage.STAGED, policy=policy)
     record = record.transition(AuthorityTransferStage.ABORTED, policy=policy)
     fresh_generation = reinstate_under_fresh_generation(1, frozenset({1}))
@@ -140,12 +168,12 @@ def _execute_rehearsal(transfer_id: str, from_ref: str, to_ref: str, policy: Aut
 
 def execute_dispatch_state_transfer_rehearsal(*, policy: AuthorityTransferStabilizationPolicy | None = None) -> SliceRehearsalResult:
     policy = policy or build_dispatch_state_transfer_policy()
-    return _execute_rehearsal(DISPATCH_STATE_TRANSFER_ID, GEN1_DISPATCH_REF, GEN2_DISPATCH_REF, policy)
+    return execute_slice_rehearsal(DISPATCH_STATE_TRANSFER_ID, GEN1_DISPATCH_REF, GEN2_DISPATCH_REF, policy)
 
 
 def execute_mutation_admission_transfer_rehearsal(*, policy: AuthorityTransferStabilizationPolicy | None = None) -> SliceRehearsalResult:
     policy = policy or build_mutation_admission_transfer_policy()
-    return _execute_rehearsal(MUTATION_ADMISSION_TRANSFER_ID, GEN1_MUTATION_REF, GEN2_MUTATION_REF, policy)
+    return execute_slice_rehearsal(MUTATION_ADMISSION_TRANSFER_ID, GEN1_MUTATION_REF, GEN2_MUTATION_REF, policy)
 
 
 # ============================================================================
@@ -282,7 +310,7 @@ def authority_transfer_policy_to_dict(policy: AuthorityTransferStabilizationPoli
     }
 
 
-def _verify_single_owner_and_fence(from_ref: str, to_ref: str) -> None:
+def verify_single_owner_and_fence(from_ref: str, to_ref: str) -> str:
     """Genuinely exercises `check_valid_authority_owner_count` as a real
     fence rather than a bare, trivially-satisfiable assertion: proves the
     mechanism both accepts the single genuine owner (`to_ref`) and
@@ -293,7 +321,11 @@ def _verify_single_owner_and_fence(from_ref: str, to_ref: str) -> None:
     this cannot derive its input from external live state -- it proves
     the CHECK ITSELF still correctly discriminates single- from
     dual-ownership on this transfer's own declared endpoints, immediately
-    before commit."""
+    before commit. This is `execute_slice_transfer`'s default
+    `verify_ownership` -- a slice with a genuinely live-fenceable resource
+    (e.g. `effect_transfer.py`'s Chronicle-backed issuance barrier) passes
+    its own callback instead. Returns the evidence text for the
+    `observer_predicates` category."""
     check_valid_authority_owner_count((to_ref,))
     try:
         check_valid_authority_owner_count((from_ref, to_ref))
@@ -304,6 +336,11 @@ def _verify_single_owner_and_fence(from_ref: str, to_ref: str) -> None:
             f"ValidAuthorityOwnerCount mechanism failed to reject a dual-issuer claim ({from_ref!r}, {to_ref!r}); "
             "the preceding single-owner check cannot be trusted as a genuine fence"
         )
+    return (
+        f"ValidAuthorityOwnerCount == 1 for ({to_ref},) genuinely checked, AND the dual-issuer claim "
+        f"({from_ref}, {to_ref}) was genuinely re-checked and confirmed rejected -- proving the mechanism "
+        "itself discriminates single- from dual-ownership, not merely asserted against a caller-constructed tuple"
+    )
 
 
 def _admit_transition(artifact_identity: str, record: AuthorityTransferRecord, new_stage: AuthorityTransferStage, policy_dict: dict) -> AuthorityTransferRecord:
@@ -322,7 +359,7 @@ class SliceTransferExecutionResult:
     differential_entries: int
 
 
-def _execute_slice_transfer(
+def execute_slice_transfer(
     *,
     artifact_identity: str,
     transfer_id: str,
@@ -331,8 +368,10 @@ def _execute_slice_transfer(
     policy: AuthorityTransferStabilizationPolicy,
     rehearsal: SliceRehearsalResult,
     differential_runner,
+    admit_transition,
     chronicle_writer_id: str,
     work_dir: Path,
+    verify_ownership=verify_single_owner_and_fence,
 ) -> SliceTransferExecutionResult:
     policy_dict = authority_transfer_policy_to_dict(policy)
 
@@ -362,12 +401,12 @@ def _execute_slice_transfer(
 
     # The real transfer record, routed entirely through the real Rust
     # admission.
-    record = _new_record(transfer_id, from_ref, to_ref, policy)
-    record = _admit_transition(artifact_identity, record, AuthorityTransferStage.STAGED, policy_dict)
-    record = _admit_transition(artifact_identity, record, AuthorityTransferStage.SOFT_COMMITTED, policy_dict)
-    record = _admit_transition(artifact_identity, record, AuthorityTransferStage.STABILIZING, policy_dict)
+    record = new_transfer_record(transfer_id, from_ref, to_ref, policy)
+    record = admit_transition(artifact_identity, record, AuthorityTransferStage.STAGED, policy_dict)
+    record = admit_transition(artifact_identity, record, AuthorityTransferStage.SOFT_COMMITTED, policy_dict)
+    record = admit_transition(artifact_identity, record, AuthorityTransferStage.STABILIZING, policy_dict)
 
-    _verify_single_owner_and_fence(from_ref, to_ref)
+    ownership_evidence_text = verify_ownership(from_ref, to_ref)
 
     evidence = {
         "real_operations": (f"real_operations genuinely exercised: {agreements}/{entries} Gen1/Rust corpus entries agreed",),
@@ -375,21 +414,17 @@ def _execute_slice_transfer(
         "induced_failure": (f"{agreements}/{entries} adversarial corpus entries genuinely resolved as expected against both real Gen1 and real Rust",),
         "recovery_result": ("both real Gen1 and real Rust genuinely agreed on every corpus entry's verdict",),
         "external_checkpoint": (f"real Chronicle checkpoint at sequence={soft_committed_entry['sequence']} verified against a freshly re-opened head (sequence={reopened_last_sequence})",),
-        "observer_predicates": (
-            f"ValidAuthorityOwnerCount == 1 for ({to_ref},) genuinely checked, AND the dual-issuer claim "
-            f"({from_ref}, {to_ref}) was genuinely re-checked and confirmed rejected -- proving the mechanism "
-            "itself discriminates single- from dual-ownership, not merely asserted against a caller-constructed tuple",
-        ),
+        "observer_predicates": (ownership_evidence_text,),
         "abort_reinstatement_conditions": (f"rehearsal transfer_id={rehearsal.record.transfer_id} reached ABORTED; fresh_generation={rehearsal.fresh_generation}",),
         "irreversible_commit_conditions": ("ValidAuthorityOwnerCount == 1 and the rehearsal's fresh generation is genuinely non-stale, both re-checked immediately before commit",),
     }
     record = replace(record, stabilization_evidence=evidence)
-    record = _admit_transition(artifact_identity, record, AuthorityTransferStage.STABILIZATION_PROVEN, policy_dict)
+    record = admit_transition(artifact_identity, record, AuthorityTransferStage.STABILIZATION_PROVEN, policy_dict)
 
-    _verify_single_owner_and_fence(from_ref, to_ref)
+    verify_ownership(from_ref, to_ref)
     check_generation_not_stale(rehearsal.fresh_generation, rehearsal.fresh_generation)
 
-    record = _admit_transition(artifact_identity, record, AuthorityTransferStage.IRREVERSIBLY_COMMITTED, policy_dict)
+    record = admit_transition(artifact_identity, record, AuthorityTransferStage.IRREVERSIBLY_COMMITTED, policy_dict)
 
     return SliceTransferExecutionResult(rehearsal=rehearsal, committed_record=record, differential_agreements=agreements, differential_entries=entries)
 
@@ -397,7 +432,7 @@ def _execute_slice_transfer(
 def execute_dispatch_state_transfer(*, work_dir: Path, policy: AuthorityTransferStabilizationPolicy | None = None) -> SliceTransferExecutionResult:
     policy = policy or build_dispatch_state_transfer_policy()
     rehearsal = execute_dispatch_state_transfer_rehearsal(policy=policy)
-    return _execute_slice_transfer(
+    return execute_slice_transfer(
         artifact_identity="dispatch_state_transfer",
         transfer_id=DISPATCH_STATE_TRANSFER_ID,
         from_ref=GEN1_DISPATCH_REF,
@@ -405,6 +440,7 @@ def execute_dispatch_state_transfer(*, work_dir: Path, policy: AuthorityTransfer
         policy=policy,
         rehearsal=rehearsal,
         differential_runner=_run_frontier_differential,
+        admit_transition=_admit_transition,
         chronicle_writer_id="dispatch-state-transfer-writer",
         work_dir=work_dir,
     )
@@ -413,7 +449,7 @@ def execute_dispatch_state_transfer(*, work_dir: Path, policy: AuthorityTransfer
 def execute_mutation_admission_transfer(*, work_dir: Path, policy: AuthorityTransferStabilizationPolicy | None = None) -> SliceTransferExecutionResult:
     policy = policy or build_mutation_admission_transfer_policy()
     rehearsal = execute_mutation_admission_transfer_rehearsal(policy=policy)
-    return _execute_slice_transfer(
+    return execute_slice_transfer(
         artifact_identity="mutation_admission_transfer",
         transfer_id=MUTATION_ADMISSION_TRANSFER_ID,
         from_ref=GEN1_MUTATION_REF,
@@ -421,6 +457,7 @@ def execute_mutation_admission_transfer(*, work_dir: Path, policy: AuthorityTran
         policy=policy,
         rehearsal=rehearsal,
         differential_runner=_run_mutation_admission_differential,
+        admit_transition=_admit_transition,
         chronicle_writer_id="mutation-admission-transfer-writer",
         work_dir=work_dir,
     )
