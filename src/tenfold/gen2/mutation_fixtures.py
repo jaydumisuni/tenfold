@@ -101,6 +101,7 @@ from .proof_graph_bridge import (
     rust_compute_proof_verdict,
     rust_derive_mandatory_assurance,
     rust_verify_fresh_hermetic_proof,
+    rust_transition_transfer_record as rust_transition_proof_transfer_record,
 )
 from .runtime_obligation import (
     ExpectedRuntimeObligation,
@@ -238,6 +239,7 @@ from .effect_census_bridge import (
     rust_transition_transfer_record as rust_transition_effect_transfer_record,
 )
 from .effect_transfer import build_effect_census_transfer_policy
+from .proof_transfer import build_proof_graph_transfer_policy
 from .bootstrap_protocol import (
     BootstrapProtocolError,
     EvidencePacketV1,
@@ -2101,6 +2103,31 @@ def _g2_23_effect_census_transfer_incomplete_evidence_kill_check() -> None:
     record.transition(AuthorityTransferStage.STABILIZATION_PROVEN, policy=policy)
 
 
+def _g2_23_proof_graph_transfer_incomplete_evidence_kill_check() -> None:
+    # The "proof_graph_transfer" Trust Table row's own required_negative_
+    # fixture, verbatim: "STABILIZATION_PROVEN claimed with incomplete
+    # evidence".
+    policy = build_proof_graph_transfer_policy()
+    policy_dict = authority_transfer_policy_to_dict(policy)
+    record_dict = {
+        "transfer_id": "mut-g23-proof-graph-incomplete",
+        "from_authority_ref": "gen1-proof-graph",
+        "to_authority_ref": "gen2-proof-graph",
+        "stage": "STABILIZING",
+        "stabilization_policy_generation": policy.policy_generation,
+        "stabilization_evidence": {"real_operations": ["op-1"]},
+    }
+    try:
+        rust_transition_proof_transfer_record("proof_graph_transfer", record_dict, "STABILIZATION_PROVEN", policy_dict)
+    except ProofGraphCliError:
+        pass
+    else:
+        raise AssertionError("rust proof_graph_transfer kernel incorrectly admitted STABILIZATION_PROVEN with incomplete evidence")
+
+    record = AuthorityTransferRecord(**{**record_dict, "stage": AuthorityTransferStage.STABILIZING})
+    record.transition(AuthorityTransferStage.STABILIZATION_PROVEN, policy=policy)
+
+
 def build_initial_mutation_suite() -> MutationSuite:
     suite = MutationSuite()
 
@@ -3307,6 +3334,21 @@ def build_initial_mutation_suite() -> MutationSuite:
             "G2-00 SS15; G2-23",
             "effect_census_transfer",
             _g2_23_effect_census_transfer_incomplete_evidence_kill_check,
+            ConstitutionalError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G23-PROOFINCOMPLETE-001",
+            MutationCategory.RUNTIME_OBLIGATION_OMISSION,
+            "The \"proof_graph_transfer\" Trust Table row's own required_negative_fixture, "
+            "verbatim: \"STABILIZATION_PROVEN claimed with incomplete evidence\" (only 1 of the 8 "
+            "mandatory categories bound), rejected by both the real compiled Rust kernel (reusing "
+            "identity_generation's transfer machinery via rust/proof_graph) and the real Python "
+            "re-derivation (G2-23 part 3).",
+            "G2-00 SS15; G2-23",
+            "proof_graph_transfer",
+            _g2_23_proof_graph_transfer_incomplete_evidence_kill_check,
             ConstitutionalError,
         )
     )
