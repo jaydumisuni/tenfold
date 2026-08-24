@@ -648,6 +648,67 @@ pub fn admit_transition(
     record.transition(new_stage, policy)
 }
 
+// ============================================================================
+// G2-23: generic, artifact-identity-parameterized variants of the two
+// wrappers above, for reuse by every remaining slice-migration crate
+// (`dispatch_lease`, `effect_census`, `proof_graph`) rather than each
+// hand-writing its own copy of the identical gating logic under a
+// different Trust Table identity string (the pattern G2-21/G2-22 each
+// established natively/via `rust/chronicle`). `rust/chronicle`'s own
+// existing `admit_check_chronicle_transfer_transition`/
+// `admit_chronicle_transfer_transition` are left exactly as they are --
+// already built, tested and PROVEN as part of G2-22 -- this is a
+// forward-only simplification for the slices G2-23 still has to build.
+// ============================================================================
+
+/// Trust-Table-gated wrapper around `check_authority_transfer_transition`,
+/// parameterized by which artifact identity to admit -- lets a downstream
+/// crate register its own `"<slice>_transfer"` Trust Table row and reuse
+/// this gating logic directly instead of re-deriving it.
+pub fn admit_check_authority_transfer_transition_for(
+    table: &trust_table::TrustTable,
+    artifact_identity: &str,
+    current: AuthorityTransferStage,
+    new_stage: AuthorityTransferStage,
+) -> Result<(), IdentityGenerationError> {
+    table.admit(artifact_identity).map_err(|e| IdentityGenerationError::Semantic(e.to_string()))?;
+    check_authority_transfer_transition(current, new_stage)
+}
+
+/// Trust-Table-gated wrapper around `AuthorityTransferRecord::transition`,
+/// parameterized by which artifact identity to admit.
+///
+/// Round-2 review finding: admitting solely by `artifact_identity` (a
+/// bare string with no structural binding to the record's own content)
+/// let a record genuinely meant for one slice be admitted through a
+/// DIFFERENT slice's Trust Table row, since the mechanics are otherwise
+/// identical -- e.g. a "dispatch_state_transfer" record wrongly admitted
+/// under "mutation_admission_transfer". `expected_from_ref`/
+/// `expected_to_ref` bind the record's own `from_authority_ref`/
+/// `to_authority_ref` to the specific slice the caller is admitting
+/// through -- callers pass their own slice's hardcoded refs (never a
+/// caller-suppliable value), so a mismatched record is rejected before
+/// ever reaching `transition()`.
+pub fn admit_transition_for(
+    table: &trust_table::TrustTable,
+    artifact_identity: &str,
+    expected_from_ref: &str,
+    expected_to_ref: &str,
+    record: &AuthorityTransferRecord,
+    new_stage: AuthorityTransferStage,
+    policy: &AuthorityTransferStabilizationPolicy,
+) -> Result<AuthorityTransferRecord, IdentityGenerationError> {
+    table.admit(artifact_identity).map_err(|e| IdentityGenerationError::Semantic(e.to_string()))?;
+    if record.from_authority_ref != expected_from_ref || record.to_authority_ref != expected_to_ref {
+        return Err(IdentityGenerationError::Semantic(format!(
+            "AuthorityTransferRecord {}: from/to authority refs {:?}/{:?} do not match the {} slice's expected refs {:?}/{:?}",
+            record.transfer_id, record.from_authority_ref, record.to_authority_ref, artifact_identity, expected_from_ref, expected_to_ref
+        )));
+    }
+    record.validate()?;
+    record.transition(new_stage, policy)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1147,6 +1208,54 @@ mod tests {
         // PROVEN claimed with incomplete evidence". Trust Table admission is
         // not a substitute for the record's own evidence-completeness check.
         let result = admit_transition(&admitted_transfer_table(), &stabilizing_record(), AuthorityTransferStage::STABILIZATION_PROVEN, &full_policy());
+        assert!(result.is_err());
+    }
+
+    // ---- G2-23: generic, artifact-identity-parameterized variants ----
+
+    #[test]
+    fn admit_check_authority_transfer_transition_for_fails_closed_for_an_unadmitted_identity() {
+        let table = admitted_transfer_table(); // admits "authority_transfer", not "some_other_slice_transfer"
+        assert!(admit_check_authority_transfer_transition_for(&table, "some_other_slice_transfer", AuthorityTransferStage::PREPARED, AuthorityTransferStage::STAGED).is_err());
+    }
+
+    #[test]
+    fn admit_check_authority_transfer_transition_for_succeeds_for_the_admitted_identity() {
+        let table = admitted_transfer_table();
+        admit_check_authority_transfer_transition_for(&table, "authority_transfer", AuthorityTransferStage::PREPARED, AuthorityTransferStage::STAGED)
+            .expect("legal transition on an admitted identity should succeed");
+    }
+
+    #[test]
+    fn admit_transition_for_fails_closed_for_an_unadmitted_identity() {
+        let table = admitted_transfer_table();
+        let record = AuthorityTransferRecord { stabilization_evidence: full_evidence(), ..stabilizing_record() };
+        assert!(admit_transition_for(&table, "some_other_slice_transfer", "gen1", "gen2", &record, AuthorityTransferStage::STABILIZATION_PROVEN, &full_policy()).is_err());
+    }
+
+    #[test]
+    fn admit_transition_for_succeeds_for_the_admitted_identity_with_full_evidence() {
+        let table = admitted_transfer_table();
+        let record = AuthorityTransferRecord { stabilization_evidence: full_evidence(), ..stabilizing_record() };
+        let result = admit_transition_for(&table, "authority_transfer", "gen1", "gen2", &record, AuthorityTransferStage::STABILIZATION_PROVEN, &full_policy());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().stage, AuthorityTransferStage::STABILIZATION_PROVEN);
+    }
+
+    #[test]
+    fn admit_transition_for_fails_closed_when_the_record_refs_do_not_match_the_expected_slice() {
+        // Round-2 review finding: a record genuinely meant for one slice
+        // (e.g. "dispatch_state_transfer", refs "gen1-dispatch-state" /
+        // "gen2-dispatch-state") must not be admittable through a
+        // DIFFERENT slice's Trust Table row (e.g.
+        // "mutation_admission_transfer") merely because both rows exist
+        // with identical mechanics. The record here is admitted under
+        // "authority_transfer" (which the table genuinely admits) but its
+        // own from/to refs ("gen1"/"gen2") do not match the expected refs
+        // this call site claims ("some-other-from"/"some-other-to").
+        let table = admitted_transfer_table();
+        let record = AuthorityTransferRecord { stabilization_evidence: full_evidence(), ..stabilizing_record() };
+        let result = admit_transition_for(&table, "authority_transfer", "some-other-from", "some-other-to", &record, AuthorityTransferStage::STABILIZATION_PROVEN, &full_policy());
         assert!(result.is_err());
     }
 }

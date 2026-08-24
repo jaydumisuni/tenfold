@@ -1289,6 +1289,76 @@ def build_g2_22_state_model() -> StateModel:
 
 
 # ============================================================================
+# G2-23 production State Model extension (G2-00 SS15-16, Self-
+# Construction Minimum; docs/08-gen2-roadmap.md's G2-23 deliverables).
+# The third and fourth slice-migration milestone builds -- Campaign
+# State/Dispatch and Mutation, the first two of G2-23's four named
+# slices ("Campaign State / Dispatch; Mutation; Effect; Proof / Evidence
+# admission / Assurance-routing execution"). Both are already governed
+# by `rust/dispatch_lease` (G2-11) -- the pre-existing `"dispatch_
+# lease"` row's own independently_checks already names both
+# "dependency eligibility" and "mutation admission" -- but G2-00 SS15
+# treats them as two distinct invariant-coherent migration units, so
+# each gets its own Trust-Table-admitted transfer-record field here.
+#
+# This module extends incrementally across G2-23's own construction
+# (matching every milestone's own internal round-1/round-2 discipline,
+# just spanning multiple merged PRs before this one milestone's single
+# Council/Foreman closure) -- the Effect slice, the Proof slice and the
+# Council-pinning deliverable each add further fields to this same
+# G2_23_REQUIRED_STATE_MODEL_FIELD_IDS/build_g2_23_state_model() in
+# their own construction rounds, not a fresh G2-24 function.
+# ============================================================================
+
+G2_23_REQUIRED_STATE_MODEL_FIELD_IDS: frozenset[str] = frozenset(
+    {
+        "dispatch_state_transfer_record_state",
+        "mutation_admission_transfer_record_state",
+    }
+)
+
+
+def build_g2_23_state_model() -> StateModel:
+    """Extends the G2-22 State Model with G2-23's dispatch-state-transfer
+    and mutation-admission-transfer record fields (G2-00 SS15-16;
+    `tenfold.gen2.dispatch_mutation_transfer` + `rust/dispatch_lease`)."""
+    return build_g2_22_state_model().extend(
+        (
+            StateModelField(
+                "dispatch_state_transfer_record_state", AuthorityHolder.GEN2_RUST,
+                "dispatch_lease::AuthorityTransferRecord (via identity_generation reuse) / admit_dispatch_state_transfer_transition (Trust Table row \"dispatch_state_transfer\")",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-23",
+            ),
+            StateModelField(
+                "mutation_admission_transfer_record_state", AuthorityHolder.GEN2_RUST,
+                "dispatch_lease::AuthorityTransferRecord (via identity_generation reuse) / admit_mutation_admission_transfer_transition (Trust Table row \"mutation_admission_transfer\")",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-23",
+            ),
+        )
+    )
+
+
+# ============================================================================
+# G2-23 cross-runtime authoritative ownership update: closes a genuine,
+# pre-existing coverage gap G2-20's own roster left disclosed --
+# `dispatch_mutation_admission` (Python) and `dispatch_rust_mutation_
+# admission_claim` (Rust, both G2-11) were never paired at all. Added
+# here as GEN1_PYTHON-authoritative, matching every dispatch_lease-
+# related pairing and the disclosed lesson G2-21/G2-22's own reviews
+# established: reaching IRREVERSIBLY_COMMITTED on a constructed transfer
+# record does not by itself justify flipping a pairing to GEN2_RUST --
+# nothing in this milestone fences live Gen1 or routes a real dispatch/
+# mutation decision through Rust.
+# ============================================================================
+
+
+def build_g2_23_cross_runtime_invariant_pairings() -> tuple[CrossRuntimeInvariantPairing, ...]:
+    return build_g2_21_cross_runtime_invariant_pairings() + (
+        CrossRuntimeInvariantPairing("mutation_admission_authority", "dispatch_mutation_admission", "dispatch_rust_mutation_admission_claim", AuthorityHolder.GEN1_PYTHON),
+    )
+
+
+# ============================================================================
 # Failure-space scenario generator base (G2-00 §14.1: "Failure-space
 # qualification reports 1-wise, pairwise, 3-wise high-risk, transition and
 # forbidden-state coverage according to frozen risk policy. No mathematical

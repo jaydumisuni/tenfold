@@ -85,3 +85,17 @@ def rust_restore_check(leases: list[dict]) -> None:
 
 def rust_check_mutation_admission(claim: dict, live: dict) -> None:
     _run("admission", input_text=json.dumps({"claim": claim, "live": live}))
+
+
+def rust_check_transfer_transition(artifact_identity: str, current: str, new_stage: str) -> None:
+    """G2-23: differential-tests against the real Rust admission for
+    either "dispatch_state_transfer" or "mutation_admission_transfer",
+    reusing `identity_generation`'s generic, artifact-identity-
+    parameterized wrapper directly (see `rust/dispatch_lease`'s own
+    module docstring for that reuse)."""
+    _run("check-transfer-transition", input_text=json.dumps({"artifact_identity": artifact_identity, "current": current, "new_stage": new_stage}))
+
+
+def rust_transition_transfer_record(artifact_identity: str, record: dict, new_stage: str, policy: dict) -> dict:
+    output = _run("transition-transfer-record", input_text=json.dumps({"artifact_identity": artifact_identity, "record": record, "new_stage": new_stage, "policy": policy}))
+    return json.loads(output)

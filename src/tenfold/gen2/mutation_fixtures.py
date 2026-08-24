@@ -91,7 +91,9 @@ from .dispatch_lease_bridge import (
     rust_check_mutation_admission,
     rust_compute_frontier,
     rust_lease_acquire,
+    rust_transition_transfer_record,
 )
+from .dispatch_mutation_transfer import authority_transfer_policy_to_dict, build_dispatch_state_transfer_policy, build_mutation_admission_transfer_policy
 from .proof_graph import AssuranceBindingClaim, HermeticProofRecord, compute_proof_verdict, verify_fresh_hermetic_proof
 from .proof_graph_bridge import (
     ProofGraphCliError,
@@ -2018,6 +2020,60 @@ def _g2_22_double_writer_kill_check() -> None:
     check_valid_authority_owner_count(("writer-a", "writer-z"))
 
 
+def _g2_23_dispatch_state_transfer_incomplete_evidence_kill_check() -> None:
+    # The "dispatch_state_transfer" Trust Table row's own required_
+    # negative_fixture, verbatim: "STABILIZATION_PROVEN claimed with
+    # incomplete evidence" -- built on the real, admitted transfer
+    # machinery (G2-09's AuthorityTransferRecord/StabilizationPolicy,
+    # G2-23's Trust-Table-gated Rust wrappers reused from
+    # identity_generation via rust/dispatch_lease).
+    policy = build_dispatch_state_transfer_policy()
+    policy_dict = authority_transfer_policy_to_dict(policy)
+    record_dict = {
+        "transfer_id": "mut-g23-dispatch-incomplete",
+        "from_authority_ref": "gen1-dispatch-state",
+        "to_authority_ref": "gen2-dispatch-state",
+        "stage": "STABILIZING",
+        "stabilization_policy_generation": policy.policy_generation,
+        # Only 1 of the 8 mandatory categories bound.
+        "stabilization_evidence": {"real_operations": ["op-1"]},
+    }
+    try:
+        rust_transition_transfer_record("dispatch_state_transfer", record_dict, "STABILIZATION_PROVEN", policy_dict)
+    except DispatchLeaseCliError:
+        pass
+    else:
+        raise AssertionError("rust dispatch_state_transfer kernel incorrectly admitted STABILIZATION_PROVEN with incomplete evidence")
+
+    record = AuthorityTransferRecord(**{**record_dict, "stage": AuthorityTransferStage.STABILIZING})
+    record.transition(AuthorityTransferStage.STABILIZATION_PROVEN, policy=policy)
+
+
+def _g2_23_mutation_admission_transfer_incomplete_evidence_kill_check() -> None:
+    # The "mutation_admission_transfer" Trust Table row's own required_
+    # negative_fixture, verbatim: "STABILIZATION_PROVEN claimed with
+    # incomplete evidence".
+    policy = build_mutation_admission_transfer_policy()
+    policy_dict = authority_transfer_policy_to_dict(policy)
+    record_dict = {
+        "transfer_id": "mut-g23-mutation-incomplete",
+        "from_authority_ref": "gen1-mutation-admission",
+        "to_authority_ref": "gen2-mutation-admission",
+        "stage": "STABILIZING",
+        "stabilization_policy_generation": policy.policy_generation,
+        "stabilization_evidence": {"real_operations": ["op-1"]},
+    }
+    try:
+        rust_transition_transfer_record("mutation_admission_transfer", record_dict, "STABILIZATION_PROVEN", policy_dict)
+    except DispatchLeaseCliError:
+        pass
+    else:
+        raise AssertionError("rust mutation_admission_transfer kernel incorrectly admitted STABILIZATION_PROVEN with incomplete evidence")
+
+    record = AuthorityTransferRecord(**{**record_dict, "stage": AuthorityTransferStage.STABILIZING})
+    record.transition(AuthorityTransferStage.STABILIZATION_PROVEN, policy=policy)
+
+
 def build_initial_mutation_suite() -> MutationSuite:
     suite = MutationSuite()
 
@@ -3182,6 +3238,34 @@ def build_initial_mutation_suite() -> MutationSuite:
             "chronicle_transfer",
             _g2_22_double_writer_kill_check,
             AuthorityTransferError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G23-DISPATCHINCOMPLETE-001",
+            MutationCategory.RUNTIME_OBLIGATION_OMISSION,
+            "The \"dispatch_state_transfer\" Trust Table row's own required_negative_fixture, "
+            "verbatim: \"STABILIZATION_PROVEN claimed with incomplete evidence\" (only 1 of the 8 "
+            "mandatory categories bound), rejected by both the real compiled Rust kernel (reusing "
+            "identity_generation's transfer machinery via rust/dispatch_lease) and the real Python "
+            "re-derivation (G2-23).",
+            "G2-00 SS15; G2-23",
+            "dispatch_state_transfer",
+            _g2_23_dispatch_state_transfer_incomplete_evidence_kill_check,
+            ConstitutionalError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G23-MUTATIONINCOMPLETE-001",
+            MutationCategory.RUNTIME_OBLIGATION_OMISSION,
+            "The \"mutation_admission_transfer\" Trust Table row's own required_negative_fixture, "
+            "verbatim: \"STABILIZATION_PROVEN claimed with incomplete evidence\", rejected by both "
+            "the real compiled Rust kernel and the real Python re-derivation (G2-23).",
+            "G2-00 SS15; G2-23",
+            "mutation_admission_transfer",
+            _g2_23_mutation_admission_transfer_incomplete_evidence_kill_check,
+            ConstitutionalError,
         )
     )
 
