@@ -1027,3 +1027,57 @@ def independent_can_emit_authoritative_non_occurrence(property_states: dict[str,
     """
     state = property_states.get("NON_OCCURRENCE_SIGNAL")
     return state in ("QUALIFIED", "QUALIFIED_WITH_BOUND")
+
+
+_KNOWN_CAUSAL_EDGE_CLASSES = frozenset({"DIRECT_MUTATION", "ACTIVATES", "ASSUME_DELEGATE", "MINTS", "CREATES", "TRIGGERS"})
+
+
+def independent_compute_effect_reach_star(nodes: list[dict], edges: list[dict], seed_principals: list[str]) -> dict:
+    """Independent re-derivation of G2-00 SS9.3's `EFFECT_REACH*` least
+    fixpoint, operating on raw `{"node_id": ..., "kind": ...}` /
+    `{"from": ..., "to": ..., "edge_class": ...}` dicts rather than
+    importing `tenfold.gen2.capability_graph`'s own dataclasses or
+    traversal loop -- an independent implementation written from the same
+    G2-00 SS9.3 text, not a call into the artifact it reconciles against.
+    Returns `{"reached_principals": frozenset[str], "reached_resources":
+    frozenset[str], "unbounded": bool}`. Unknown edge classes reachable
+    from an already-reached node force `unbounded=True`, never silent
+    omission, matching G2-00 SS9.3 verbatim.
+    """
+    kind_by_id = {n["node_id"]: n["kind"] for n in nodes}
+    for seed in seed_principals:
+        if kind_by_id.get(seed) != "PRINCIPAL":
+            raise ValueError(f"seed {seed!r} is not a PRINCIPAL node in this graph")
+
+    principals: set[str] = set(seed_principals)
+    resources: set[str] = set()
+    unbounded = False
+
+    changed = True
+    while changed:
+        changed = False
+        for edge in edges:
+            src, dst, edge_class = edge["from"], edge["to"], edge["edge_class"]
+            reached = src in principals or src in resources
+            if edge_class == "DIRECT_MUTATION":
+                if src in principals and dst not in resources:
+                    resources.add(dst)
+                    changed = True
+            elif edge_class == "ACTIVATES":
+                if src in resources and dst not in principals:
+                    principals.add(dst)
+                    changed = True
+            elif edge_class in ("ASSUME_DELEGATE", "MINTS", "CREATES"):
+                if src in principals and dst not in principals:
+                    principals.add(dst)
+                    changed = True
+            elif edge_class == "TRIGGERS":
+                if src in resources and dst not in principals:
+                    principals.add(dst)
+                    changed = True
+            elif edge_class not in _KNOWN_CAUSAL_EDGE_CLASSES:
+                if reached and not unbounded:
+                    unbounded = True
+                    changed = True
+
+    return {"reached_principals": frozenset(principals), "reached_resources": frozenset(resources), "unbounded": unbounded}

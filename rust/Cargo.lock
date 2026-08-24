@@ -158,6 +158,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tenfold-capability-graph"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tenfold-trust-table",
+]
+
+[[package]]
 name = "tenfold-certificate-checker"
 version = "0.1.0"
 dependencies = [

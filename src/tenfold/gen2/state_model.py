@@ -550,6 +550,66 @@ def build_g2_15_state_model() -> StateModel:
 
 
 # ============================================================================
+# G2-16 production State Model extension (G2-00 SS9.3-9.6; docs/08-gen2-
+# roadmap.md's G2-16 deliverable set). Capability Causation Graph/
+# EFFECT_REACH* carries real Rust ownership (G2-00 SS4: "effect authority"
+# is Rust-owned) -- unlike G2-15's execution-context isolation, which had
+# no Rust ownership under G2-00 SS4.1's minimum-families table.
+# ============================================================================
+
+G2_16_REQUIRED_STATE_MODEL_FIELD_IDS: frozenset[str] = frozenset(
+    {
+        "capability_causation_graph_state",
+        "effect_reach_star_state",
+        "capability_graph_rust_runtime",
+        "effective_automation_cross_check_state",
+        "substrate_capability_generation_state",
+        "observation_cover_state",
+    }
+)
+
+
+def build_g2_16_state_model() -> StateModel:
+    """Extends the G2-15 State Model with G2-16's Capability Causation
+    Graph/EFFECT_REACH*/effective-automation/Observation Cover fields
+    (G2-00 SS9.3-9.6; `tenfold.gen2.capability_graph` + `rust/capability_graph`)."""
+    return build_g2_15_state_model().extend(
+        (
+            StateModelField(
+                "capability_causation_graph_state", AuthorityHolder.GEN1_PYTHON,
+                "capability_graph.CapabilityCausationGraph / CapabilityNode / CausalEdge",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-16",
+            ),
+            StateModelField(
+                "effect_reach_star_state", AuthorityHolder.GEN1_PYTHON,
+                "capability_graph.compute_effect_reach_star / EffectReachResult / classify_reach_state",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-16",
+            ),
+            StateModelField(
+                "capability_graph_rust_runtime", AuthorityHolder.GEN2_RUST,
+                "capability_graph::compute_effect_reach_star / check_high_risk_reach_admission / check_observation_cover_containment",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-16",
+            ),
+            StateModelField(
+                "effective_automation_cross_check_state", AuthorityHolder.GEN1_PYTHON,
+                "capability_graph.cross_check_effective_policy / EffectivePolicyClaim / verify_positive_control_detected",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-16",
+            ),
+            StateModelField(
+                "substrate_capability_generation_state", AuthorityHolder.GEN1_PYTHON,
+                "capability_graph.SubstrateCapabilityGeneration / check_substrate_capability_generation_current",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-16",
+            ),
+            StateModelField(
+                "observation_cover_state", AuthorityHolder.GEN1_PYTHON,
+                "capability_graph.ObservationCover / check_observation_cover_containment",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-16",
+            ),
+        )
+    )
+
+
+# ============================================================================
 # Failure-space scenario generator base (G2-00 §14.1: "Failure-space
 # qualification reports 1-wise, pairwise, 3-wise high-risk, transition and
 # forbidden-state coverage according to frozen risk policy. No mathematical
