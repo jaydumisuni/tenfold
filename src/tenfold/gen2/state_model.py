@@ -779,6 +779,251 @@ def build_g2_19_state_model() -> StateModel:
 
 
 # ============================================================================
+# G2-20 production State Model extension (G2-00 §14; docs/08-gen2-
+# roadmap.md's G2-20 deliverable: "Facility-held authority-state
+# mapping"). Closes a concrete, mechanically-confirmed gap: through
+# G2-19, `AuthorityHolder.FACILITY` had zero State Model fields, despite
+# G2-00 §14 naming Facility-held authority state as one of the four
+# authority holders the State Model must cover. `facility.
+# LocalSandboxFacility` (G2-14) genuinely holds authority-bearing state
+# distinct from Python's own model of a Facility's contract/declaration
+# (`facility_contract_state`, GEN1_PYTHON-held): the actual committed
+# resource map, the Facility's own generation counter, its effect log,
+# and in-flight-ownership state for recovery takeover.
+#
+# Scope boundary, honestly disclosed (not silently claimed complete):
+# Recovery-specific authority state is explicitly excluded here --
+# G2-00 §15 lists Recovery as the slice that transfers *last*, and
+# `docs/08-gen2-roadmap.md`'s G2-24 (Recovery Qualification Matrix) /
+# G2-25 (Bounded Real Gen2 Recovery/Takeover) are its own later
+# milestones, matching every earlier milestone's own "the milestone that
+# builds a capability is the one that extends the State Model for it"
+# discipline. Pre-Standing-Gate-D constitutional/derivation modules
+# (G2-01 through G2-08, before this module existed) are also out of
+# scope: they feed the runtime authority state already tracked here
+# (campaign_id, campaign_generation, ...) rather than constituting
+# independent runtime authority holders of their own.
+# ============================================================================
+
+G2_20_REQUIRED_STATE_MODEL_FIELD_IDS: frozenset[str] = frozenset(
+    {
+        "facility_committed_resource_state",
+        "facility_generation_state",
+        "facility_effect_log_state",
+        "facility_in_flight_owner_state",
+    }
+)
+
+
+def build_g2_20_state_model() -> StateModel:
+    """Extends the G2-19 State Model with G2-20's Facility-held authority
+    fields (G2-00 §14; `tenfold.gen2.facility.LocalSandboxFacility`) --
+    the first fields to use `AuthorityHolder.FACILITY`."""
+    return build_g2_19_state_model().extend(
+        (
+            StateModelField(
+                "facility_committed_resource_state", AuthorityHolder.FACILITY,
+                "facility.LocalSandboxFacility._committed / enumerate()",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-20",
+            ),
+            StateModelField(
+                "facility_generation_state", AuthorityHolder.FACILITY,
+                "facility.LocalSandboxFacility.generation / bump_generation()",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-20",
+            ),
+            StateModelField(
+                "facility_effect_log_state", AuthorityHolder.FACILITY,
+                "facility.LocalSandboxFacility.effect_log",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-20",
+            ),
+            StateModelField(
+                "facility_in_flight_owner_state", AuthorityHolder.FACILITY,
+                "facility.LocalSandboxFacility._in_flight_owner / begin_operation_in_flight / resolve_in_flight_via_takeover",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-20",
+            ),
+        )
+    )
+
+
+# ============================================================================
+# G2-20 Invariant Ownership Matrix (docs/08-gen2-roadmap.md's G2-20
+# deliverable; Acceptance: "every accepted invariant has exactly one
+# owner; no invariant split"; G2-00 §15: "No invariant is split across
+# Python/Rust. ... Every authority-bearing invariant has exactly one
+# valid runtime owner at every generation.")
+#
+# Operationalizes this mechanically over the existing `StateModelField`
+# schema rather than inventing a parallel one: every field already names
+# an `invariant_ref` (the concrete runtime location backing it) and an
+# `owning_holder`. Two or more fields sharing the same `invariant_ref`
+# genuinely describe the *same* invariant from different registration
+# points (e.g. chronicle_writer_id/chronicle_writer_generation both cite
+# "chronicle::ChronicleEngine (writer lease)") -- grouping by
+# `invariant_ref` and requiring a single `owning_holder` per group is
+# real, checkable ownership-split detection, not a printed claim.
+# ============================================================================
+
+
+@dataclass(frozen=True)
+class InvariantOwnershipEntry:
+    invariant_ref: str
+    owning_holder: AuthorityHolder
+    field_ids: tuple[str, ...]
+
+
+def build_invariant_ownership_matrix(model: StateModel) -> tuple[InvariantOwnershipEntry, ...]:
+    """Groups every field in `model` by `invariant_ref` and raises if any
+    group's fields disagree on `owning_holder` -- a genuine, mechanical
+    check for "no invariant split across Python/Rust" (G2-00 §15)."""
+    model.validate()
+    by_ref: dict[str, list[StateModelField]] = {}
+    for field_entry in model.fields:
+        by_ref.setdefault(field_entry.invariant_ref, []).append(field_entry)
+
+    entries: list[InvariantOwnershipEntry] = []
+    for invariant_ref in sorted(by_ref):
+        fields = by_ref[invariant_ref]
+        holders = {f.owning_holder for f in fields}
+        if len(holders) > 1:
+            raise StateModelError(f"INVARIANT_SPLIT: invariant_ref {invariant_ref!r} has multiple owning holders: {sorted(h.value for h in holders)}")
+        entries.append(InvariantOwnershipEntry(invariant_ref, next(iter(holders)), tuple(f.field_id for f in fields)))
+    return tuple(entries)
+
+
+# ============================================================================
+# G2-20 Invariant Reconciliation Manifest (docs/08-gen2-roadmap.md's
+# G2-20 deliverable; G2-00 §14's three candidate-invariant views:
+# "INTENT_DERIVED / IMPLEMENTATION_DERIVED / STATE-MODEL_DERIVED".
+# §14.1 step 5: "add/reconcile new invariant candidates.")
+#
+# Binds concrete, already-*built* constitutional invariants (drawn from
+# this campaign's own frozen acceptance-bar text and standing review
+# lessons, G2-09 through G2-20) to a single owning `invariant_ref` in the
+# accumulated State Model. This closes the specific gap of "an invariant
+# candidate identified in prose was never traced to a concrete, single-
+# owner runtime location" -- it does not claim to have re-derived every
+# invariant candidate that could ever exist in the whole Gen-1/Gen-2
+# codebase from first principles (the same "no mathematical
+# exhaustiveness claim" disclosure G2-00 §14.1 itself makes for
+# failure-space coverage applies here to invariant discovery).
+# ============================================================================
+
+
+class InvariantSourceView(str, Enum):
+    """G2-00 §14's three candidate-invariant views, verbatim."""
+
+    INTENT_DERIVED = "INTENT_DERIVED"
+    IMPLEMENTATION_DERIVED = "IMPLEMENTATION_DERIVED"
+    STATE_MODEL_DERIVED = "STATE_MODEL_DERIVED"
+
+
+@dataclass(frozen=True)
+class InvariantCandidate:
+    candidate_id: str
+    source_view: InvariantSourceView
+    description: str
+    owning_invariant_ref: str
+
+    def validate(self) -> None:
+        if not self.candidate_id.strip():
+            raise StateModelError("candidate_id must be a non-empty string")
+        if not self.description.strip():
+            raise StateModelError(f"InvariantCandidate {self.candidate_id!r}: description must be a non-empty string")
+        if not self.owning_invariant_ref.strip():
+            raise StateModelError(f"InvariantCandidate {self.candidate_id!r}: owning_invariant_ref must be a non-empty string")
+
+
+@dataclass(frozen=True)
+class InvariantReconciliationManifest:
+    candidates: tuple[InvariantCandidate, ...]
+
+    def validate(self) -> None:
+        seen: set[str] = set()
+        for candidate in self.candidates:
+            candidate.validate()
+            if candidate.candidate_id in seen:
+                raise StateModelError(f"duplicate InvariantCandidate candidate_id: {candidate.candidate_id}")
+            seen.add(candidate.candidate_id)
+
+    def check_all_reconciled(self, ownership_matrix: tuple[InvariantOwnershipEntry, ...]) -> None:
+        """Every candidate must resolve to a real, single-owner State
+        Model entry -- an invariant candidate identified in prose but
+        never traced to concrete runtime ownership is itself a
+        reconciliation failure."""
+        self.validate()
+        known_refs = {entry.invariant_ref for entry in ownership_matrix}
+        unreconciled = sorted(c.candidate_id for c in self.candidates if c.owning_invariant_ref not in known_refs)
+        if unreconciled:
+            raise StateModelError(f"INVARIANT_RECONCILIATION_FAILURE: unreconciled candidate(s) {unreconciled}")
+
+
+def build_g2_20_invariant_reconciliation_manifest() -> InvariantReconciliationManifest:
+    """The production Invariant Reconciliation Manifest -- concrete,
+    already-built constitutional invariants bound to their single owning
+    `invariant_ref` in the accumulated State Model."""
+    return InvariantReconciliationManifest(
+        candidates=(
+            InvariantCandidate(
+                "INV-AUTHGEN-SINGLE-OWNER", InvariantSourceView.STATE_MODEL_DERIVED,
+                "At most one valid authority_generation owner exists at any campaign generation "
+                "(G2-00 SS15: \"Every authority-bearing invariant has exactly one valid runtime owner at every generation\").",
+                "CommandFence.foreman_epoch (authority-generation tier)",
+            ),
+            InvariantCandidate(
+                "INV-TRANSFER-STAGE-SEQUENCE", InvariantSourceView.IMPLEMENTATION_DERIVED,
+                "AuthorityTransferStage only advances through the frozen PREPARED -> STAGED -> "
+                "SOFT_COMMITTED -> STABILIZING -> STABILIZATION_PROVEN -> IRREVERSIBLY_COMMITTED "
+                "lifecycle (G2-00 SS15).",
+                "AuthorityTransferStage",
+            ),
+            InvariantCandidate(
+                "INV-CHRONICLE-WRITER-COUNT", InvariantSourceView.INTENT_DERIVED,
+                "ChronicleWriterCount = 1 (G2-22's own frozen acceptance clause, verbatim); already "
+                "enforced today by chronicle::ChronicleEngine's single writer-lease invariant.",
+                "chronicle::ChronicleEngine (writer lease)",
+            ),
+            InvariantCandidate(
+                "INV-LEASE-FENCING", InvariantSourceView.IMPLEMENTATION_DERIVED,
+                "A fenced/inactive WriteLease can never re-admit a mutation.",
+                "ownership.WriteLease.fencing_token / .active",
+            ),
+            InvariantCandidate(
+                "INV-EFFECT-REACH-RECOMPUTED", InvariantSourceView.STATE_MODEL_DERIVED,
+                "EFFECT_REACH* is always recomputed from the graph at the admission boundary, never "
+                "trusted from a caller-supplied result (G2-16 round-2 review finding, applied as a "
+                "standing lesson from G2-17 onward).",
+                "capability_graph.compute_effect_reach_star / EffectReachResult / classify_reach_state",
+            ),
+            InvariantCandidate(
+                "INV-MINTABLE-SCOPE-NON-EXPANSION", InvariantSourceView.INTENT_DERIVED,
+                "A created principal's authority never exceeds its issuer's MintableScopeBound; a "
+                "successor amendment never expands scope (G2-17 acceptance).",
+                "root_authority.MintableScopeBound / CreatedPrincipalAuthorityQuery / check_created_principal_within_mintable_bound",
+            ),
+            InvariantCandidate(
+                "INV-ISSUANCE-CLOSED-BARRIER", InvariantSourceView.IMPLEMENTATION_DERIVED,
+                "No new intent is admitted after EFFECT_ISSUANCE_CLOSED without an explicit, "
+                "Chronicle-recorded reopen (G2-18 acceptance).",
+                "effect_census.close_effect_issuance / reopen_effect_issuance / EffectIssuanceBarrier",
+            ),
+            InvariantCandidate(
+                "INV-EVIDENCE-GENERATION-CURRENCY", InvariantSourceView.STATE_MODEL_DERIVED,
+                "Evidence bound to a stale campaign_generation/dispatch_epoch is rejected, never "
+                "trusted merely because it is otherwise well-formed (G2-19 acceptance).",
+                "bootstrap_protocol.EvidencePacketV1 / check_evidence_packet_generation_current",
+            ),
+            InvariantCandidate(
+                "INV-FACILITY-GENERATION-FENCING", InvariantSourceView.STATE_MODEL_DERIVED,
+                "A Facility rejects execute() against a stale generation (StaleGenerationRejected); "
+                "genuine committed state can only advance under the Facility's own current generation "
+                "(G2-20 Facility-held state closure).",
+                "facility.LocalSandboxFacility.generation / bump_generation()",
+            ),
+        )
+    )
+
+
+# ============================================================================
 # Failure-space scenario generator base (G2-00 §14.1: "Failure-space
 # qualification reports 1-wise, pairwise, 3-wise high-risk, transition and
 # forbidden-state coverage according to frozen risk policy. No mathematical
@@ -805,6 +1050,12 @@ class FailureSpaceCoverageReport:
     one_wise: tuple[dict[str, str], ...]
     pairwise: tuple[dict[str, str], ...]
     dimension_ids: tuple[str, ...]
+    # G2-20: full-system coverage classes (G2-00 SS14.1: "1-wise, pairwise,
+    # 3-wise high-risk, transition and forbidden-state coverage"). Default
+    # to empty so every G2-09..G2-19 call site (which only ever supplied
+    # one_wise/pairwise/dimension_ids) keeps constructing this dataclass
+    # unchanged.
+    three_wise: tuple[dict[str, str], ...] = ()
 
     def covers_every_value(self, dimensions: tuple[FailureSpaceDimension, ...]) -> bool:
         """1-wise coverage: every value of every dimension appears in at
@@ -824,6 +1075,22 @@ class FailureSpaceCoverageReport:
             for left, right in combinations(dimensions, 2):
                 covered_pairs.add((left.dimension_id, scenario[left.dimension_id], right.dimension_id, scenario[right.dimension_id]))
         return required_pairs <= covered_pairs
+
+    def covers_every_triple(self, dimensions: tuple[FailureSpaceDimension, ...]) -> bool:
+        """3-wise coverage: every value-combination of every dimension
+        triple appears in at least one `three_wise` scenario (G2-00
+        SS14.1's "3-wise high-risk" coverage class)."""
+        required_triples: set[tuple[str, str, str, str, str, str]] = set()
+        for a, b, c in combinations(dimensions, 3):
+            for av in a.values:
+                for bv in b.values:
+                    for cv in c.values:
+                        required_triples.add((a.dimension_id, av, b.dimension_id, bv, c.dimension_id, cv))
+        covered_triples: set[tuple[str, str, str, str, str, str]] = set()
+        for scenario in self.three_wise:
+            for a, b, c in combinations(dimensions, 3):
+                covered_triples.add((a.dimension_id, scenario[a.dimension_id], b.dimension_id, scenario[b.dimension_id], c.dimension_id, scenario[c.dimension_id]))
+        return required_triples <= covered_triples
 
 
 def _validate_dimensions(dimensions: tuple[FailureSpaceDimension, ...]) -> None:
@@ -916,6 +1183,111 @@ def generate_pairwise(dimensions: tuple[FailureSpaceDimension, ...]) -> tuple[di
     return tuple(scenarios)
 
 
+def generate_three_wise(dimensions: tuple[FailureSpaceDimension, ...]) -> tuple[dict[str, str], ...]:
+    """Real (greedy, not claimed-minimal) 3-wise covering-array generator
+    -- G2-00 SS14.1's "3-wise high-risk" coverage class, extending
+    `generate_pairwise`'s exact greedy-augmentation approach from pairs to
+    triples. Each scenario is anchored to one still-uncovered triple
+    `(i, vi, j, vj, k, vk)`, pinning those three dimensions to exactly
+    those values and filling every other dimension with whichever value
+    covers the most additional currently-uncovered triples against the
+    three pinned dimensions. Terminates within `len(required_triples)`
+    iterations for the same reason `generate_pairwise` does. Not claimed
+    optimal in scenario count; no mathematical exhaustiveness beyond
+    3-wise is claimed."""
+    _validate_dimensions(dimensions)
+    if len(dimensions) < 3:
+        # Fewer than 3 dimensions has no triple to cover; pairwise is the ceiling.
+        return generate_pairwise(dimensions)
+
+    required_triples: set[tuple[int, int, int, str, str, str]] = set()
+    for i, j, k in combinations(range(len(dimensions)), 3):
+        for vi in dimensions[i].values:
+            for vj in dimensions[j].values:
+                for vk in dimensions[k].values:
+                    required_triples.add((i, j, k, vi, vj, vk))
+
+    uncovered = set(required_triples)
+    scenarios: list[dict[str, str]] = []
+
+    while uncovered:
+        # Deterministic anchor selection -- same PYTHONHASHSEED-independence
+        # rationale as generate_pairwise's own round-1 review finding.
+        anchor_i, anchor_j, anchor_k, anchor_vi, anchor_vj, anchor_vk = min(uncovered)
+        assigned: dict[int, str] = {anchor_i: anchor_vi, anchor_j: anchor_vj, anchor_k: anchor_vk}
+
+        for idx, dim in enumerate(dimensions):
+            if idx in assigned:
+                continue
+            best_value = dim.values[0]
+            best_score = -1
+            for value in dim.values:
+                score = 0
+                candidate = dict(assigned)
+                candidate[idx] = value
+                for a, b, c in combinations(sorted(candidate), 3):
+                    triple = (a, b, c, candidate[a], candidate[b], candidate[c])
+                    if triple in uncovered:
+                        score += 1
+                if score > best_score:
+                    best_score = score
+                    best_value = value
+            assigned[idx] = best_value
+
+        scenario = {dimensions[idx].dimension_id: value for idx, value in assigned.items()}
+        scenarios.append(scenario)
+        for i, j, k in combinations(range(len(dimensions)), 3):
+            triple = (i, j, k, scenario[dimensions[i].dimension_id], scenario[dimensions[j].dimension_id], scenario[dimensions[k].dimension_id])
+            uncovered.discard(triple)
+
+    return tuple(scenarios)
+
+
+# ============================================================================
+# G2-20 transition / forbidden-state coverage (G2-00 SS14.1's remaining
+# two coverage classes). Generic over any allowed-transition mapping
+# (not coupled to `tenfold.foreman` specifically) so this module stays
+# dependency-light; `tests/gen2/test_g2_20_state_model_reconciliation.py`
+# is what genuinely exercises these against the real
+# `tenfold.foreman.ALLOWED_TRANSITIONS` and real `Foreman.transition()`.
+# ============================================================================
+
+
+def generate_transition_scenarios(allowed_transitions: dict[str, frozenset[str]]) -> tuple[dict[str, str], ...]:
+    """One scenario per legal `(from, to)` edge in `allowed_transitions`."""
+    if not allowed_transitions:
+        raise StateModelError("at least one state is required")
+    scenarios: list[dict[str, str]] = []
+    for from_state in sorted(allowed_transitions):
+        for to_state in sorted(allowed_transitions[from_state]):
+            scenarios.append({"from": from_state, "to": to_state})
+    return tuple(scenarios)
+
+
+def check_transition_coverage(allowed_transitions: dict[str, frozenset[str]], exercised: frozenset[tuple[str, str]]) -> None:
+    """Every legal `(from, to)` edge in `allowed_transitions` must appear
+    in `exercised` -- G2-00 SS14.1's "transition" coverage class."""
+    required = {(from_state, to_state) for from_state, targets in allowed_transitions.items() for to_state in targets}
+    missing = required - exercised
+    if missing:
+        raise StateModelError(f"TRANSITION_COVERAGE_FAILURE: missing edge(s) {sorted(missing)}")
+
+
+def generate_forbidden_state_scenarios(all_states: frozenset[str], allowed_transitions: dict[str, frozenset[str]]) -> tuple[dict[str, str], ...]:
+    """Every `(from, to)` pair NOT present in `allowed_transitions` --
+    G2-00 SS14.1's "forbidden-state" coverage class. Each such pair must
+    be genuinely rejected by the real transition-legality check (proven
+    in the test suite, not here -- this module only enumerates the
+    scenarios)."""
+    scenarios: list[dict[str, str]] = []
+    for from_state in sorted(all_states):
+        allowed = allowed_transitions.get(from_state, frozenset())
+        for to_state in sorted(all_states):
+            if to_state not in allowed:
+                scenarios.append({"from": from_state, "to": to_state})
+    return tuple(scenarios)
+
+
 # ============================================================================
 # Standing Gate D check (docs/08-gen2-roadmap.md's 7-step Standing Gate D
 # sequence; G2-00 SS14.1: "Failure-space qualification reports 1-wise,
@@ -954,3 +1326,29 @@ def check_standing_gate_d(
         raise StateModelError("STANDING_GATE_D_FAILURE: failure-space generator produced no pairwise scenarios")
     if not failure_space_report.covers_every_pair(dimensions):
         raise StateModelError("STANDING_GATE_D_FAILURE: failure-space report does not cover every required pair")
+
+
+# ============================================================================
+# G2-20 full-system Standing Gate D (docs/08-gen2-roadmap.md: "G2-20
+# performs full cross-runtime/state-holder reconciliation and full-system
+# coverage; it is not first assembly."). Layered ON TOP OF, not replacing,
+# `check_standing_gate_d` above: every milestone G2-09 through G2-19 was
+# proven against the incremental gate (1-wise + pairwise only) and stays
+# proven under it -- this stronger gate additionally requires genuine
+# 3-wise coverage, is used only by G2-20's own tests, and is the
+# mechanical form of G2-20's own Acceptance clause: "coverage
+# requirements satisfied; consistency is not mislabelled completeness."
+# ============================================================================
+
+
+def check_standing_gate_d_full(
+    state_model: StateModel,
+    required_field_ids: frozenset[str],
+    failure_space_report: FailureSpaceCoverageReport,
+    dimensions: tuple[FailureSpaceDimension, ...],
+) -> None:
+    check_standing_gate_d(state_model, required_field_ids, failure_space_report, dimensions)
+    if not failure_space_report.three_wise:
+        raise StateModelError("STANDING_GATE_D_FAILURE: failure-space generator produced no three-wise scenarios")
+    if not failure_space_report.covers_every_triple(dimensions):
+        raise StateModelError("STANDING_GATE_D_FAILURE: failure-space report does not cover every required triple")
