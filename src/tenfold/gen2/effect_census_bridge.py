@@ -87,5 +87,5 @@ def rust_check_latency_bounds(barrier: dict, bounds: dict, observed: dict) -> No
     _run("latency-bounds", input_text=json.dumps({"barrier": barrier, "bounds": bounds, "observed": observed}))
 
 
-def rust_check_mandatory_census_boundaries_covered(performed: list[str]) -> None:
-    _run("mandatory-boundaries", input_text=json.dumps({"performed": performed}))
+def rust_check_mandatory_census_boundaries_covered(records: list[dict]) -> None:
+    _run("mandatory-boundaries", input_text=json.dumps({"records": records}))

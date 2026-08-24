@@ -232,6 +232,48 @@ def test_g2_18_classify_missing_effect_evidence_when_observed_without_evidence()
     assert census[0].residue_class == EffectCensusResidueClass.MISSING_EFFECT_EVIDENCE
 
 
+def test_g2_18_classify_missing_effect_evidence_when_observed_target_diverges_from_journaled_intent_in_python_and_rust() -> None:
+    """The bug this guards against: intent e1 -> r1, observation e1 -> r2,
+    both in-domain and evidenced -- an id-only match would call this
+    clean, but a misdirected effect must not pass bidirectional
+    reconciliation."""
+    domain = frozenset({"r1", "r2"})
+    census = classify_effect_census((ExpectedEffect("e1", "r1"),), (ObservedEffect("e1", "r2", True, True),), domain)
+    assert census[0].residue_class == EffectCensusResidueClass.MISSING_EFFECT_EVIDENCE
+
+    with pytest.raises(EffectCensusCliError):
+        rust_check_effect_integrity([{"effect_id": "e1", "target_resource_id": "r1"}], [{"effect_id": "e1", "target_resource_id": "r2", "has_evidence": True, "chronicle_journaled": True}], ["r1", "r2"])
+
+
+def test_g2_18_classify_rejects_duplicate_expected_effect_id_in_python_and_rust() -> None:
+    domain = ["r1", "r-other"]
+    with pytest.raises(EffectCensusCliError):
+        rust_check_effect_integrity(
+            [{"effect_id": "e1", "target_resource_id": "r-other"}, {"effect_id": "e1", "target_resource_id": "r1"}],
+            [{"effect_id": "e1", "target_resource_id": "r1", "has_evidence": True, "chronicle_journaled": True}],
+            domain,
+        )
+
+    with pytest.raises(EffectCensusError):
+        classify_effect_census((ExpectedEffect("e1", "r-other"), ExpectedEffect("e1", "r1")), (ObservedEffect("e1", "r1", True, True),), frozenset(domain))
+
+
+def test_g2_18_classify_rejects_duplicate_observed_effect_id_in_python_and_rust() -> None:
+    """Input ordering must never erase residue: two observations for e1
+    -- first out-of-domain/unjournaled, then the expected in-domain one
+    -- must not silently collapse to the latter."""
+    domain = ["r1"]
+    with pytest.raises(EffectCensusCliError):
+        rust_check_effect_integrity(
+            [{"effect_id": "e1", "target_resource_id": "r1"}],
+            [{"effect_id": "e1", "target_resource_id": "r-other", "has_evidence": True, "chronicle_journaled": False}, {"effect_id": "e1", "target_resource_id": "r1", "has_evidence": True, "chronicle_journaled": True}],
+            domain,
+        )
+
+    with pytest.raises(EffectCensusError):
+        classify_effect_census((ExpectedEffect("e1", "r1"),), (ObservedEffect("e1", "r-other", True, False), ObservedEffect("e1", "r1", True, True)), frozenset(domain))
+
+
 def test_g2_18_check_effect_integrity_accepts_a_fully_clean_census() -> None:
     census = (EffectCensusEntry("e1", EffectCensusResidueClass.EXPECTED_ATTRIBUTED_EFFECT),)
     check_effect_integrity(census)
@@ -360,19 +402,76 @@ def test_g2_18_async_cascade_latency_exceeding_bound_rejects_in_python_and_rust(
 # ============================================================================
 
 
-def test_g2_18_mandatory_boundaries_accepts_full_roster_in_python_and_rust() -> None:
-    rust_check_mandatory_census_boundaries_covered([b.value for b in ALL_MANDATORY_CENSUS_BOUNDARIES])
-    check_mandatory_census_boundaries_covered(ALL_MANDATORY_CENSUS_BOUNDARIES)
+def _record_dict_for(boundary: CensusBoundary) -> dict:
+    return {
+        "campaign_id": "c1",
+        "campaign_generation": 1,
+        "facility_id": "f1",
+        "facility_generation": 1,
+        "boundary": boundary.value,
+        "mutation_domain_digest": "d1",
+        "effect_reach_digest": "d2",
+        "observation_cover_state_digest": "d3",
+        "enumeration_state": "DOMAIN_SCOPED",
+        "census_window_start_ms": 0,
+        "census_window_end_ms": 100,
+        "settling_bounds_ms": 500,
+        "effect_set_digest": "d4",
+        "reconciliation_count": 0,
+    }
+
+
+def _record_for(boundary: CensusBoundary, **overrides) -> EffectCensusRecord:
+    defaults = dict(
+        campaign_id="c1",
+        campaign_generation=1,
+        facility_id="f1",
+        facility_generation=1,
+        boundary=boundary,
+        mutation_domain_digest="d1",
+        effect_reach_digest="d2",
+        observation_cover_state_digest="d3",
+        enumeration_state="DOMAIN_SCOPED",
+        census_window_start_ms=0,
+        census_window_end_ms=100,
+        settling_bounds_ms=500,
+        effect_set_digest="d4",
+        reconciliation_count=0,
+    )
+    defaults.update(overrides)
+    return EffectCensusRecord(**defaults)
+
+
+def test_g2_18_mandatory_boundaries_accepts_full_roster_evidenced_by_real_records_in_python_and_rust() -> None:
+    rust_check_mandatory_census_boundaries_covered([_record_dict_for(b) for b in ALL_MANDATORY_CENSUS_BOUNDARIES])
+    check_mandatory_census_boundaries_covered(tuple(_record_for(b) for b in ALL_MANDATORY_CENSUS_BOUNDARIES))
 
 
 def test_g2_18_missing_census_boundary_rejects_in_python_and_rust() -> None:
-    partial = [b.value for b in ALL_MANDATORY_CENSUS_BOUNDARIES if b != CensusBoundary.SELF_CONSTRUCTION_TRANSFER]
+    partial = [_record_dict_for(b) for b in ALL_MANDATORY_CENSUS_BOUNDARIES if b != CensusBoundary.SELF_CONSTRUCTION_TRANSFER]
     with pytest.raises(EffectCensusCliError):
         rust_check_mandatory_census_boundaries_covered(partial)
 
-    partial_py = frozenset(b for b in ALL_MANDATORY_CENSUS_BOUNDARIES if b != CensusBoundary.SELF_CONSTRUCTION_TRANSFER)
+    partial_py = tuple(_record_for(b) for b in ALL_MANDATORY_CENSUS_BOUNDARIES if b != CensusBoundary.SELF_CONSTRUCTION_TRANSFER)
     with pytest.raises(EffectCensusError):
         check_mandatory_census_boundaries_covered(partial_py)
+
+
+def test_g2_18_mandatory_boundaries_rejects_a_bare_roster_claim_unbacked_by_evidence_in_python_and_rust() -> None:
+    """The bug this guards against: a producer cannot claim coverage by
+    merely naming every boundary -- only genuinely validated records
+    (rejected here for a blank campaign_id) count as evidence."""
+    records = [_record_dict_for(b) for b in ALL_MANDATORY_CENSUS_BOUNDARIES if b != CensusBoundary.SELF_CONSTRUCTION_TRANSFER]
+    bad_record = _record_dict_for(CensusBoundary.SELF_CONSTRUCTION_TRANSFER)
+    bad_record["campaign_id"] = "  "
+    records.append(bad_record)
+    with pytest.raises(EffectCensusCliError):
+        rust_check_mandatory_census_boundaries_covered(records)
+
+    records_py = [_record_for(b) for b in ALL_MANDATORY_CENSUS_BOUNDARIES if b != CensusBoundary.SELF_CONSTRUCTION_TRANSFER]
+    records_py.append(_record_for(CensusBoundary.SELF_CONSTRUCTION_TRANSFER, campaign_id="  "))
+    with pytest.raises(EffectCensusError):
+        check_mandatory_census_boundaries_covered(tuple(records_py))
 
 
 # ============================================================================
@@ -386,6 +485,7 @@ def _record(**overrides) -> EffectCensusRecord:
         campaign_generation=1,
         facility_id="f1",
         facility_generation=1,
+        boundary=CensusBoundary.BEFORE_PROVEN,
         mutation_domain_digest="d1",
         effect_reach_digest="d2",
         observation_cover_state_digest="d3",
@@ -414,6 +514,11 @@ def test_g2_18_effect_census_record_rejects_blank_campaign_id() -> None:
         _record(campaign_id="  ").validate()
 
 
+def test_g2_18_effect_census_record_rejects_blank_evidence_digest() -> None:
+    with pytest.raises(EffectCensusError):
+        _record(effect_set_digest="  ").validate()
+
+
 # ============================================================================
 # Provider reconciliation probes -- the roadmap's own deliverable: a real
 # adapter genuinely querying a real LocalSandboxFacility (G2-14), not a
@@ -432,6 +537,23 @@ def test_g2_18_probe_facility_for_observed_effects_omits_effects_never_committed
     facility = LocalSandboxFacility()
     observed = probe_facility_for_observed_effects(facility, {"e1": "k-never-committed"}, frozenset())
     assert observed == ()
+
+
+def test_g2_18_probe_facility_for_observed_effects_discovers_an_unmapped_committed_key() -> None:
+    """The bug this guards against: a committed Facility key the caller
+    never declared in effect_id_to_key (e.g. an unauthorized mutation)
+    must still be discovered, not silently dropped -- an expected
+    e1 -> k1 census must not stay clean while an unmapped k2 effect goes
+    unseen entirely."""
+    facility = LocalSandboxFacility()
+    facility.execute("k1", "v1", generation=1)
+    facility.execute("k2", "v2", generation=1)
+    observed = probe_facility_for_observed_effects(facility, {"e1": "k1"}, frozenset({"e1"}))
+    assert {o.effect_id for o in observed} == {"e1", "k2"}
+
+    census = classify_effect_census((ExpectedEffect("e1", "k1"),), observed, frozenset({"k1", "k2"}))
+    with pytest.raises(EffectCensusError):
+        check_effect_integrity(census)
 
 
 def test_g2_18_probe_facility_feeds_directly_into_effect_census_classification() -> None:

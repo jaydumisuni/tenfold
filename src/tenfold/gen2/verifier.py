@@ -1127,11 +1127,26 @@ def independent_classify_effect_census(expected: list[dict], observed: list[dict
     text, not a call into the artifact it reconciles against. Returns a
     list of `{"effect_id": str, "residue_class": str}` dicts. Out-of-
     domain is checked first and always wins, mirroring the Rust/Python
-    production implementations.
+    production implementations. A duplicate `effect_id` in either input
+    is rejected outright rather than silently collapsed by dict
+    insertion, and a journaled intent whose target diverges from what
+    was actually observed is reported as MISSING_EFFECT_EVIDENCE, again
+    mirroring the production implementations.
     """
     domain = set(authorized_mutation_domain)
-    expected_by_id = {e["effect_id"]: e for e in expected}
-    observed_by_id = {o["effect_id"]: o for o in observed}
+
+    expected_by_id: dict[str, dict] = {}
+    for e in expected:
+        if e["effect_id"] in expected_by_id:
+            raise ValueError(f"duplicate expected effect_id {e['effect_id']!r}: each effect_id must appear at most once")
+        expected_by_id[e["effect_id"]] = e
+
+    observed_by_id: dict[str, dict] = {}
+    for o in observed:
+        if o["effect_id"] in observed_by_id:
+            raise ValueError(f"duplicate observed effect_id {o['effect_id']!r}: each effect_id must appear at most once")
+        observed_by_id[o["effect_id"]] = o
+
     all_ids = sorted(set(expected_by_id) | set(observed_by_id))
 
     entries = []
@@ -1140,6 +1155,8 @@ def independent_classify_effect_census(expected: list[dict], observed: list[dict
         obs = observed_by_id.get(effect_id)
         if obs is not None and obs["target_resource_id"] not in domain:
             residue_class = "OUT_OF_DOMAIN_EFFECT"
+        elif exp is not None and obs is not None and exp["target_resource_id"] != obs["target_resource_id"]:
+            residue_class = "MISSING_EFFECT_EVIDENCE"
         elif exp is not None and obs is not None and not obs["has_evidence"]:
             residue_class = "MISSING_EFFECT_EVIDENCE"
         elif exp is not None and obs is not None:

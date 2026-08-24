@@ -130,13 +130,22 @@ def probe_facility_for_observed_effects(facility: LocalSandboxFacility, effect_i
     `chronicle_journaled_effect_ids` names which of those effect ids have
     a genuine Chronicle journal record (this module does not itself own
     Chronicle *reading*, only the write-ahead append side -- callers
-    supply this from their own Chronicle query)."""
+    supply this from their own Chronicle query).
+
+    Enumerates every committed key in the Facility -- not solely the
+    caller-supplied `effect_id_to_key` map -- so a committed key the
+    caller never declared (a genuine unattributed/unjournaled effect) is
+    still discovered rather than silently skipped: trusting the map alone
+    would let a real Facility mutation outside the producer's own
+    bookkeeping evade the census entirely. A key with a known effect_id
+    is reported under it; an unmapped key is reported under its own key
+    as its effect identity, so it still enters the census as residue."""
 
     committed_keys = set(facility.enumerate())
+    key_to_effect_id = {key: effect_id for effect_id, key in effect_id_to_key.items()}
     observed = []
-    for effect_id, key in effect_id_to_key.items():
-        if key not in committed_keys:
-            continue
+    for key in sorted(committed_keys):
+        effect_id = key_to_effect_id.get(key, key)
         observed.append(
             ObservedEffect(
                 effect_id=effect_id,
@@ -159,10 +168,29 @@ def classify_effect_census(expected: tuple[ExpectedEffect, ...], observed: tuple
     was journaled (`expected`) against what a real Facility enumeration
     actually observed (`observed`), within the campaign's own authorized
     mutation domain. Out-of-domain is checked first and always wins
-    regardless of journaling/expectation state."""
+    regardless of journaling/expectation state.
 
-    expected_by_id = {e.effect_id: e for e in expected}
-    observed_by_id = {o.effect_id: o for o in observed}
+    A duplicate `effect_id` within either input is rejected outright
+    rather than silently collapsed by dict-comprehension insertion --
+    input ordering must never erase an earlier entry's residue. A
+    journaled intent whose target does not match what was actually
+    observed for the same `effect_id` is reported as
+    MISSING_EFFECT_EVIDENCE: evidence of *an* effect exists, but not that
+    the specific journaled intent (bound to its own target) occurred, so
+    a misdirected effect cannot pass as a clean reconciliation."""
+
+    expected_by_id: dict[str, ExpectedEffect] = {}
+    for e in expected:
+        if e.effect_id in expected_by_id:
+            raise EffectCensusError(f"duplicate ExpectedEffect effect_id {e.effect_id!r}: each effect_id must appear at most once")
+        expected_by_id[e.effect_id] = e
+
+    observed_by_id: dict[str, ObservedEffect] = {}
+    for o in observed:
+        if o.effect_id in observed_by_id:
+            raise EffectCensusError(f"duplicate ObservedEffect effect_id {o.effect_id!r}: each effect_id must appear at most once")
+        observed_by_id[o.effect_id] = o
+
     all_ids = sorted(set(expected_by_id) | set(observed_by_id))
 
     entries = []
@@ -171,6 +199,8 @@ def classify_effect_census(expected: tuple[ExpectedEffect, ...], observed: tuple
         obs = observed_by_id.get(effect_id)
         if obs is not None and obs.target_resource_id not in authorized_mutation_domain:
             residue_class = EffectCensusResidueClass.OUT_OF_DOMAIN_EFFECT
+        elif exp is not None and obs is not None and exp.target_resource_id != obs.target_resource_id:
+            residue_class = EffectCensusResidueClass.MISSING_EFFECT_EVIDENCE
         elif exp is not None and obs is not None and not obs.has_evidence:
             residue_class = EffectCensusResidueClass.MISSING_EFFECT_EVIDENCE
         elif exp is not None and obs is not None:
@@ -323,13 +353,25 @@ class CensusBoundary(str, Enum):
 ALL_MANDATORY_CENSUS_BOUNDARIES: frozenset[CensusBoundary] = frozenset(CensusBoundary)
 
 
-def check_mandatory_census_boundaries_covered(performed: frozenset[CensusBoundary]) -> None:
+def check_mandatory_census_boundaries_covered(records: tuple[EffectCensusRecord, ...]) -> None:
     """G2-00 SS9.8: "Mandatory census boundaries include before PROVEN,
     Freeze->Prove, Chronicle transfer, recovery transfer and
     self-construction transfer." Independent Roster Principle (G2-00
     SS5.2): the roster this checks against is this module's own frozen
     constant, never derived from whatever boundaries the producer claims
-    to have covered."""
+    to have covered.
+
+    Takes genuine `EffectCensusRecord` evidence, not a bare
+    caller-supplied `CensusBoundary` set: a bare enum set lets a producer
+    claim every mandatory census was performed without performing any.
+    Each record is independently validated and the boundary it covers is
+    read from its own `boundary` field; "performed" is the set of
+    boundaries genuinely evidenced this way."""
+
+    performed: set[CensusBoundary] = set()
+    for record in records:
+        record.validate()
+        performed.add(record.boundary)
 
     missing = ALL_MANDATORY_CENSUS_BOUNDARIES - performed
     if missing:
@@ -347,6 +389,7 @@ class EffectCensusRecord:
     campaign_generation: int
     facility_id: str
     facility_generation: int
+    boundary: CensusBoundary
     mutation_domain_digest: str
     effect_reach_digest: str
     observation_cover_state_digest: str
@@ -366,3 +409,9 @@ class EffectCensusRecord:
             raise EffectCensusError("EffectCensusRecord: campaign_generation and facility_generation must be positive")
         if self.census_window_end_ms < self.census_window_start_ms:
             raise EffectCensusError("EffectCensusRecord: census_window_end_ms must not precede census_window_start_ms")
+        if not all(d and d.strip() for d in (self.mutation_domain_digest, self.effect_reach_digest, self.observation_cover_state_digest, self.effect_set_digest)):
+            raise EffectCensusError(
+                "EffectCensusRecord: mutation_domain_digest, effect_reach_digest, observation_cover_state_digest and "
+                "effect_set_digest must all be non-empty -- a census record must be bound to genuine evidence, not an "
+                "unbound claim of coverage"
+            )

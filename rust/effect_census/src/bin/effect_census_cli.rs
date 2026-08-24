@@ -20,11 +20,11 @@
 //! - `no-new-intent-after-closure` — reads `{"barrier": EffectIssuanceBarrier, "new_intent_scope_id": String, "new_intent_generation": u64}` from stdin, prints ACCEPT/ERROR.
 //! - `observation-cover-recheck` — reads `{"census_time": ObservationCoverStateDigest, "verdict_time": ObservationCoverStateDigest}` from stdin, prints ACCEPT/ERROR.
 //! - `latency-bounds` — reads `{"barrier": EffectIssuanceBarrier, "bounds": LatencyBounds, "observed": ObservedLatencies}` from stdin, prints ACCEPT/ERROR.
-//! - `mandatory-boundaries` — reads `{"performed": [CensusBoundary]}` from stdin, prints ACCEPT/ERROR.
+//! - `mandatory-boundaries` — reads `{"records": [EffectCensusRecord]}` from stdin, prints ACCEPT/ERROR. Coverage is derived from each record's own `boundary` field after independent validation, never from a bare caller-supplied roster claim.
 
 use effect_census::{
     admit_check_effect_integrity, admit_check_latency_bounds, admit_check_mandatory_census_boundaries_covered, admit_check_no_blind_replay, admit_check_no_new_intent_after_closure,
-    admit_check_observation_cover_recheck, close_effect_issuance, reopen_effect_issuance, CensusBoundary, EffectIssuanceBarrier, ExpectedEffect, LatencyBounds, ObservationCoverStateDigest,
+    admit_check_observation_cover_recheck, close_effect_issuance, reopen_effect_issuance, EffectCensusRecord, EffectIssuanceBarrier, ExpectedEffect, LatencyBounds, ObservationCoverStateDigest,
     ObservedEffect, ObservedLatencies, TerminalEffectSignal,
 };
 use serde::Deserialize;
@@ -97,7 +97,7 @@ struct LatencyBoundsRequest {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MandatoryBoundariesRequest {
-    performed: BTreeSet<CensusBoundary>,
+    records: Vec<EffectCensusRecord>,
 }
 
 fn main() -> ExitCode {
@@ -308,7 +308,7 @@ fn main() -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            match admit_check_mandatory_census_boundaries_covered(&admitted_table(), &request.performed) {
+            match admit_check_mandatory_census_boundaries_covered(&admitted_table(), &request.records) {
                 Ok(()) => {
                     println!("ACCEPT");
                     ExitCode::SUCCESS

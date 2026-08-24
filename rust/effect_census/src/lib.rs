@@ -157,9 +157,31 @@ pub struct EffectCensusEntry {
 /// regardless of journaling/expectation state: an effect outside the
 /// authorized domain is a containment breach no amount of journaling
 /// excuses.
-pub fn classify_effect_census(expected: &[ExpectedEffect], observed: &[ObservedEffect], authorized_mutation_domain: &BTreeSet<String>) -> Vec<EffectCensusEntry> {
-    let expected_by_id: BTreeMap<&str, &ExpectedEffect> = expected.iter().map(|e| (e.effect_id.as_str(), e)).collect();
-    let observed_by_id: BTreeMap<&str, &ObservedEffect> = observed.iter().map(|e| (e.effect_id.as_str(), e)).collect();
+///
+/// A duplicate `effect_id` within either input is rejected outright
+/// rather than silently collapsed by map insertion: because the JSON
+/// request accepts plain vectors, input ordering could otherwise erase
+/// an earlier entry's residue (e.g. an out-of-domain observation
+/// followed by a clean one for the same id). A journaled intent whose
+/// target does not match what was actually observed for that same
+/// `effect_id` is reported as `MISSING_EFFECT_EVIDENCE`: there is
+/// evidence of *an* effect, but none that the specific journaled intent
+/// (bound to its own target) actually occurred, so a misdirected effect
+/// cannot pass as a clean bidirectional reconciliation.
+pub fn classify_effect_census(expected: &[ExpectedEffect], observed: &[ObservedEffect], authorized_mutation_domain: &BTreeSet<String>) -> Result<Vec<EffectCensusEntry>, EffectCensusError> {
+    let mut expected_by_id: BTreeMap<&str, &ExpectedEffect> = BTreeMap::new();
+    for e in expected {
+        if expected_by_id.insert(e.effect_id.as_str(), e).is_some() {
+            return Err(err(format!("duplicate ExpectedEffect effect_id {:?}: each effect_id must appear at most once", e.effect_id)));
+        }
+    }
+    let mut observed_by_id: BTreeMap<&str, &ObservedEffect> = BTreeMap::new();
+    for o in observed {
+        if observed_by_id.insert(o.effect_id.as_str(), o).is_some() {
+            return Err(err(format!("duplicate ObservedEffect effect_id {:?}: each effect_id must appear at most once", o.effect_id)));
+        }
+    }
+
     let mut all_ids: BTreeSet<&str> = BTreeSet::new();
     all_ids.extend(expected_by_id.keys());
     all_ids.extend(observed_by_id.keys());
@@ -170,6 +192,7 @@ pub fn classify_effect_census(expected: &[ExpectedEffect], observed: &[ObservedE
         let obs = observed_by_id.get(id);
         let class = match (exp, obs) {
             (_, Some(o)) if !authorized_mutation_domain.contains(&o.target_resource_id) => EffectCensusResidueClass::OUT_OF_DOMAIN_EFFECT,
+            (Some(e), Some(o)) if e.target_resource_id != o.target_resource_id => EffectCensusResidueClass::MISSING_EFFECT_EVIDENCE,
             (Some(_), Some(o)) if !o.has_evidence => EffectCensusResidueClass::MISSING_EFFECT_EVIDENCE,
             (Some(_), Some(_)) => EffectCensusResidueClass::EXPECTED_ATTRIBUTED_EFFECT,
             (Some(_), None) => EffectCensusResidueClass::MISSING_EFFECT_EVIDENCE,
@@ -179,7 +202,7 @@ pub fn classify_effect_census(expected: &[ExpectedEffect], observed: &[ObservedE
         };
         entries.push(EffectCensusEntry { effect_id: id.to_string(), residue_class: class });
     }
-    entries
+    Ok(entries)
 }
 
 /// G2-00 §9.8: "Any unexplained residue creates an EFFECT INTEGRITY
@@ -359,7 +382,21 @@ pub const ALL_MANDATORY_CENSUS_BOUNDARIES: [CensusBoundary; 5] =
 /// §5.2): the roster this checks against is this crate's own frozen
 /// constant, never derived from whatever boundaries the producer claims
 /// to have covered.
-pub fn check_mandatory_census_boundaries_covered(performed: &BTreeSet<CensusBoundary>) -> Result<(), EffectCensusError> {
+///
+/// Takes genuine `EffectCensusRecord` evidence, not a bare
+/// caller-supplied `CensusBoundary` roster: a bare enum set lets a
+/// producer claim every mandatory census was performed without
+/// performing any. Each record is independently validated (rejecting
+/// blank identities, non-positive generations and empty evidence
+/// digests) and the boundary it covers is read from its own
+/// `boundary` field; "performed" is the set of boundaries genuinely
+/// evidenced this way, never the caller's own roster assertion.
+pub fn check_mandatory_census_boundaries_covered(records: &[EffectCensusRecord]) -> Result<(), EffectCensusError> {
+    let mut performed: BTreeSet<CensusBoundary> = BTreeSet::new();
+    for record in records {
+        record.validate()?;
+        performed.insert(record.boundary);
+    }
     let missing: Vec<CensusBoundary> = ALL_MANDATORY_CENSUS_BOUNDARIES.into_iter().filter(|b| !performed.contains(b)).collect();
     if !missing.is_empty() {
         return Err(err(format!("missing-census: mandatory census boundaries not covered: {missing:?}")));
@@ -378,6 +415,7 @@ pub struct EffectCensusRecord {
     pub campaign_generation: u64,
     pub facility_id: String,
     pub facility_generation: u64,
+    pub boundary: CensusBoundary,
     pub mutation_domain_digest: String,
     pub effect_reach_digest: String,
     pub observation_cover_state_digest: String,
@@ -403,6 +441,13 @@ impl EffectCensusRecord {
         if self.census_window_end_ms < self.census_window_start_ms {
             return Err(err("EffectCensusRecord: census_window_end_ms must not precede census_window_start_ms"));
         }
+        if self.mutation_domain_digest.trim().is_empty()
+            || self.effect_reach_digest.trim().is_empty()
+            || self.observation_cover_state_digest.trim().is_empty()
+            || self.effect_set_digest.trim().is_empty()
+        {
+            return Err(err("EffectCensusRecord: mutation_domain_digest, effect_reach_digest, observation_cover_state_digest and effect_set_digest must all be non-empty -- a census record must be bound to genuine evidence, not an unbound claim of coverage"));
+        }
         Ok(())
     }
 }
@@ -424,7 +469,7 @@ pub fn trust_table_row() -> trust_table::TrustTableRow {
             "no blind replay under UNCERTAIN without genuine reconciliation".into(),
             "Observation Cover state digest recheck at verdict; divergence invalidates the census".into(),
             "commit/visibility/cascade latency bounds, verdict-bearing only after EFFECT_ISSUANCE_CLOSED".into(),
-            "all 5 mandatory census boundaries covered, against this crate's own frozen roster".into(),
+            "all 5 mandatory census boundaries covered, against this crate's own frozen roster, derived from genuine validated EffectCensusRecord evidence rather than a bare caller-supplied roster claim".into(),
         ],
         trusts_only: "Python-discovered write-ahead intents, Facility enumeration observations and latency measurements, census-classified and barrier-enforced independently".into(),
         trust_bounded_reason: "G2-00 SS8-9: what was actually journaled and what a real Facility enumeration actually observed is Python's job (simulation and analysis) to discover; the residue classification, the EFFECT_ISSUANCE_CLOSED barrier (backed by a real Chronicle append), the no-blind-replay rule, the Observation Cover recheck, the latency bounds and the mandatory-boundary roster are mechanically re-derived by Rust independent of whatever completeness the producer claims".into(),
@@ -442,7 +487,7 @@ pub fn admit_check_effect_integrity(
     authorized_mutation_domain: &BTreeSet<String>,
 ) -> Result<Vec<EffectCensusEntry>, EffectCensusError> {
     table.admit("effect_census").map_err(|e| err(e.to_string()))?;
-    let census = classify_effect_census(expected, observed, authorized_mutation_domain);
+    let census = classify_effect_census(expected, observed, authorized_mutation_domain)?;
     check_effect_integrity(&census)?;
     Ok(census)
 }
@@ -467,9 +512,9 @@ pub fn admit_check_latency_bounds(table: &trust_table::TrustTable, barrier: &Eff
     check_latency_bounds(barrier, bounds, observed)
 }
 
-pub fn admit_check_mandatory_census_boundaries_covered(table: &trust_table::TrustTable, performed: &BTreeSet<CensusBoundary>) -> Result<(), EffectCensusError> {
+pub fn admit_check_mandatory_census_boundaries_covered(table: &trust_table::TrustTable, records: &[EffectCensusRecord]) -> Result<(), EffectCensusError> {
     table.admit("effect_census").map_err(|e| err(e.to_string()))?;
-    check_mandatory_census_boundaries_covered(performed)
+    check_mandatory_census_boundaries_covered(records)
 }
 
 #[cfg(test)]
@@ -538,7 +583,7 @@ mod tests {
     #[test]
     fn classify_expected_attributed_effect() {
         let domain = set(&["r1"]);
-        let census = classify_effect_census(&[expected("e1", "r1")], &[observed("e1", "r1", true, true)], &domain);
+        let census = classify_effect_census(&[expected("e1", "r1")], &[observed("e1", "r1", true, true)], &domain).unwrap();
         assert_eq!(census, vec![EffectCensusEntry { effect_id: "e1".into(), residue_class: EffectCensusResidueClass::EXPECTED_ATTRIBUTED_EFFECT }]);
         assert!(!census[0].residue_class.is_residue());
     }
@@ -546,7 +591,7 @@ mod tests {
     #[test]
     fn classify_unjournaled_effect() {
         let domain = set(&["r1"]);
-        let census = classify_effect_census(&[], &[observed("e1", "r1", true, false)], &domain);
+        let census = classify_effect_census(&[], &[observed("e1", "r1", true, false)], &domain).unwrap();
         assert_eq!(census[0].residue_class, EffectCensusResidueClass::UNJOURNALED_EFFECT);
         assert!(census[0].residue_class.is_residue());
     }
@@ -554,29 +599,56 @@ mod tests {
     #[test]
     fn classify_unattributed_effect() {
         let domain = set(&["r1"]);
-        let census = classify_effect_census(&[], &[observed("e1", "r1", true, true)], &domain);
+        let census = classify_effect_census(&[], &[observed("e1", "r1", true, true)], &domain).unwrap();
         assert_eq!(census[0].residue_class, EffectCensusResidueClass::UNATTRIBUTED_EFFECT);
     }
 
     #[test]
     fn classify_out_of_domain_effect_even_when_expected_and_journaled() {
         let domain = set(&["r-other"]);
-        let census = classify_effect_census(&[expected("e1", "r1")], &[observed("e1", "r1", true, true)], &domain);
+        let census = classify_effect_census(&[expected("e1", "r1")], &[observed("e1", "r1", true, true)], &domain).unwrap();
         assert_eq!(census[0].residue_class, EffectCensusResidueClass::OUT_OF_DOMAIN_EFFECT);
     }
 
     #[test]
     fn classify_missing_effect_evidence_when_expected_but_not_observed() {
         let domain = set(&["r1"]);
-        let census = classify_effect_census(&[expected("e1", "r1")], &[], &domain);
+        let census = classify_effect_census(&[expected("e1", "r1")], &[], &domain).unwrap();
         assert_eq!(census[0].residue_class, EffectCensusResidueClass::MISSING_EFFECT_EVIDENCE);
     }
 
     #[test]
     fn classify_missing_effect_evidence_when_expected_and_observed_without_evidence() {
         let domain = set(&["r1"]);
-        let census = classify_effect_census(&[expected("e1", "r1")], &[observed("e1", "r1", false, true)], &domain);
+        let census = classify_effect_census(&[expected("e1", "r1")], &[observed("e1", "r1", false, true)], &domain).unwrap();
         assert_eq!(census[0].residue_class, EffectCensusResidueClass::MISSING_EFFECT_EVIDENCE);
+    }
+
+    #[test]
+    fn classify_missing_effect_evidence_when_observed_target_diverges_from_journaled_intent() {
+        // Intent e1 -> r1, but the observation shows e1 actually landed on
+        // r2. Both are in-domain and evidenced, so a naive id-only match
+        // would call this clean; the mismatched target must not pass.
+        let domain = set(&["r1", "r2"]);
+        let census = classify_effect_census(&[expected("e1", "r1")], &[observed("e1", "r2", true, true)], &domain).unwrap();
+        assert_eq!(census[0].residue_class, EffectCensusResidueClass::MISSING_EFFECT_EVIDENCE);
+    }
+
+    #[test]
+    fn classify_rejects_duplicate_expected_effect_id() {
+        let domain = set(&["r1", "r-other"]);
+        let expected = [expected("e1", "r-other"), expected("e1", "r1")];
+        assert!(classify_effect_census(&expected, &[observed("e1", "r1", true, true)], &domain).is_err());
+    }
+
+    #[test]
+    fn classify_rejects_duplicate_observed_effect_id() {
+        // Two observations for e1 -- first out-of-domain/unjournaled, then
+        // the expected in-domain one -- must not silently collapse to the
+        // latter and erase the residue the first entry carried.
+        let domain = set(&["r1"]);
+        let observed = [observed("e1", "r-other", true, false), observed("e1", "r1", true, true)];
+        assert!(classify_effect_census(&[expected("e1", "r1")], &observed, &domain).is_err());
     }
 
     #[test]
@@ -704,28 +776,13 @@ mod tests {
 
     // ---- mandatory census boundaries ----
 
-    #[test]
-    fn mandatory_boundaries_accepts_full_roster() {
-        let performed: BTreeSet<CensusBoundary> = ALL_MANDATORY_CENSUS_BOUNDARIES.into_iter().collect();
-        check_mandatory_census_boundaries_covered(&performed).unwrap();
-    }
-
-    #[test]
-    fn mandatory_boundaries_rejects_a_missing_one() {
-        let mut performed: BTreeSet<CensusBoundary> = ALL_MANDATORY_CENSUS_BOUNDARIES.into_iter().collect();
-        performed.remove(&CensusBoundary::SELF_CONSTRUCTION_TRANSFER);
-        assert!(check_mandatory_census_boundaries_covered(&performed).is_err());
-    }
-
-    // ---- EffectCensusRecord ----
-
-    #[test]
-    fn effect_census_record_validates() {
-        let record = EffectCensusRecord {
+    fn record_for(boundary: CensusBoundary) -> EffectCensusRecord {
+        EffectCensusRecord {
             campaign_id: "c1".into(),
             campaign_generation: 1,
             facility_id: "f1".into(),
             facility_generation: 1,
+            boundary,
             mutation_domain_digest: "d1".into(),
             effect_reach_digest: "d2".into(),
             observation_cover_state_digest: "d3".into(),
@@ -735,27 +792,52 @@ mod tests {
             settling_bounds_ms: 500,
             effect_set_digest: "d4".into(),
             reconciliation_count: 0,
-        };
-        record.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn mandatory_boundaries_accepts_full_roster_evidenced_by_real_records() {
+        let records: Vec<EffectCensusRecord> = ALL_MANDATORY_CENSUS_BOUNDARIES.into_iter().map(record_for).collect();
+        check_mandatory_census_boundaries_covered(&records).unwrap();
+    }
+
+    #[test]
+    fn mandatory_boundaries_rejects_a_missing_one() {
+        let records: Vec<EffectCensusRecord> = ALL_MANDATORY_CENSUS_BOUNDARIES.into_iter().filter(|b| *b != CensusBoundary::SELF_CONSTRUCTION_TRANSFER).map(record_for).collect();
+        assert!(check_mandatory_census_boundaries_covered(&records).is_err());
+    }
+
+    #[test]
+    fn mandatory_boundaries_rejects_a_bare_roster_claim_unbacked_by_evidence() {
+        // The bug this guards against: a caller cannot claim coverage by
+        // merely naming boundaries -- only genuinely validated records
+        // (rejected here for a blank campaign_id) count as evidence.
+        let mut bad_record = record_for(CensusBoundary::SELF_CONSTRUCTION_TRANSFER);
+        bad_record.campaign_id = "  ".into();
+        let mut records: Vec<EffectCensusRecord> = ALL_MANDATORY_CENSUS_BOUNDARIES.into_iter().filter(|b| *b != CensusBoundary::SELF_CONSTRUCTION_TRANSFER).map(record_for).collect();
+        records.push(bad_record);
+        assert!(check_mandatory_census_boundaries_covered(&records).is_err());
+    }
+
+    // ---- EffectCensusRecord ----
+
+    #[test]
+    fn effect_census_record_validates() {
+        record_for(CensusBoundary::BEFORE_PROVEN).validate().unwrap();
     }
 
     #[test]
     fn effect_census_record_rejects_end_before_start() {
-        let record = EffectCensusRecord {
-            campaign_id: "c1".into(),
-            campaign_generation: 1,
-            facility_id: "f1".into(),
-            facility_generation: 1,
-            mutation_domain_digest: "d1".into(),
-            effect_reach_digest: "d2".into(),
-            observation_cover_state_digest: "d3".into(),
-            enumeration_state: "DOMAIN_SCOPED".into(),
-            census_window_start_ms: 100,
-            census_window_end_ms: 0,
-            settling_bounds_ms: 500,
-            effect_set_digest: "d4".into(),
-            reconciliation_count: 0,
-        };
+        let mut record = record_for(CensusBoundary::BEFORE_PROVEN);
+        record.census_window_start_ms = 100;
+        record.census_window_end_ms = 0;
+        assert!(record.validate().is_err());
+    }
+
+    #[test]
+    fn effect_census_record_rejects_blank_evidence_digest() {
+        let mut record = record_for(CensusBoundary::BEFORE_PROVEN);
+        record.effect_set_digest = "  ".into();
         assert!(record.validate().is_err());
     }
 
@@ -789,7 +871,7 @@ mod tests {
     #[test]
     fn admit_check_mandatory_census_boundaries_covered_fails_closed_when_table_has_no_row() {
         let table = trust_table::initial_trust_table();
-        let performed: BTreeSet<CensusBoundary> = ALL_MANDATORY_CENSUS_BOUNDARIES.into_iter().collect();
-        assert!(admit_check_mandatory_census_boundaries_covered(&table, &performed).is_err());
+        let records: Vec<EffectCensusRecord> = ALL_MANDATORY_CENSUS_BOUNDARIES.into_iter().map(record_for).collect();
+        assert!(admit_check_mandatory_census_boundaries_covered(&table, &records).is_err());
     }
 }

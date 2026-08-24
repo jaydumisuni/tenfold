@@ -204,6 +204,7 @@ from .root_authority_bridge import (
 from .effect_census import (
     CensusBoundary,
     EffectCensusError,
+    EffectCensusRecord,
     EffectIssuanceBarrier,
     EffectIssuanceState,
     ExpectedEffect,
@@ -1615,18 +1616,55 @@ def _g2_18_out_of_domain_effect_kill_check() -> None:
     check_effect_integrity(census)
 
 
+def _g2_18_census_record_dict(boundary: CensusBoundary) -> dict:
+    return {
+        "campaign_id": "c1",
+        "campaign_generation": 1,
+        "facility_id": "f1",
+        "facility_generation": 1,
+        "boundary": boundary.value,
+        "mutation_domain_digest": "d1",
+        "effect_reach_digest": "d2",
+        "observation_cover_state_digest": "d3",
+        "enumeration_state": "DOMAIN_SCOPED",
+        "census_window_start_ms": 0,
+        "census_window_end_ms": 100,
+        "settling_bounds_ms": 500,
+        "effect_set_digest": "d4",
+        "reconciliation_count": 0,
+    }
+
+
+def _g2_18_census_record(boundary: CensusBoundary) -> EffectCensusRecord:
+    return EffectCensusRecord(
+        campaign_id="c1",
+        campaign_generation=1,
+        facility_id="f1",
+        facility_generation=1,
+        boundary=boundary,
+        mutation_domain_digest="d1",
+        effect_reach_digest="d2",
+        observation_cover_state_digest="d3",
+        enumeration_state="DOMAIN_SCOPED",
+        census_window_start_ms=0,
+        census_window_end_ms=100,
+        settling_bounds_ms=500,
+        effect_set_digest="d4",
+        reconciliation_count=0,
+    )
+
+
 def _g2_18_missing_census_boundary_kill_check() -> None:
     # G2-18 acceptance, verbatim: "... missing-census ... reject."
-    performed_dict = ["BEFORE_PROVEN", "FREEZE_TO_PROVE", "CHRONICLE_TRANSFER", "RECOVERY_TRANSFER"]  # SELF_CONSTRUCTION_TRANSFER omitted
+    covered_boundaries = (CensusBoundary.BEFORE_PROVEN, CensusBoundary.FREEZE_TO_PROVE, CensusBoundary.CHRONICLE_TRANSFER, CensusBoundary.RECOVERY_TRANSFER)  # SELF_CONSTRUCTION_TRANSFER omitted
     try:
-        rust_check_mandatory_census_boundaries_covered(performed_dict)
+        rust_check_mandatory_census_boundaries_covered([_g2_18_census_record_dict(b) for b in covered_boundaries])
     except EffectCensusCliError:
         pass
     else:
         raise AssertionError("rust effect_census kernel incorrectly admitted an incomplete mandatory-census-boundary roster")
 
-    performed = frozenset({CensusBoundary.BEFORE_PROVEN, CensusBoundary.FREEZE_TO_PROVE, CensusBoundary.CHRONICLE_TRANSFER, CensusBoundary.RECOVERY_TRANSFER})
-    check_mandatory_census_boundaries_covered(performed)
+    check_mandatory_census_boundaries_covered(tuple(_g2_18_census_record(b) for b in covered_boundaries))
 
 
 def _g2_18_post_census_state_change_kill_check() -> None:
