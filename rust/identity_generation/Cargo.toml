@@ -16,3 +16,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "identity_generation_cli"
 path = "src/bin/identity_generation_cli.rs"
+
+[[bin]]
+name = "authority_transfer_cli"
+path = "src/bin/authority_transfer_cli.rs"

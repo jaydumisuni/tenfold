@@ -2143,6 +2143,15 @@ class AuthorityTransferRecord:
             raise ConstitutionalError(
                 f"AuthorityTransferRecord {self.transfer_id}: illegal transition {self.stage.value}->{new_stage.value}"
             )
+        # Round-2 review finding (G2-21): a policy with a matching
+        # policy_generation but an empty required-category list (itself
+        # malformed per AuthorityTransferStabilizationPolicy.validate())
+        # would otherwise authorize STABILIZATION_PROVEN merely because
+        # the record's own stabilization_evidence happened to carry all 8
+        # category keys -- the policy's own well-formedness was never
+        # checked. An unqualified policy must never be trusted to gate an
+        # irreversible authority transfer.
+        policy.validate()
         if policy.policy_generation != self.stabilization_policy_generation:
             raise ConstitutionalError(
                 f"AuthorityTransferRecord {self.transfer_id}: policy binds a different stabilization_policy_generation"

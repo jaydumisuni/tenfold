@@ -516,6 +516,15 @@ impl AuthorityTransferRecord {
                 self.transfer_id, self.stage, new_stage
             ))
         })?;
+        // Round-2 review finding (G2-21): a policy with a matching
+        // policy_generation but an empty required-category list (itself
+        // malformed per AuthorityTransferStabilizationPolicy::validate())
+        // would otherwise authorize STABILIZATION_PROVEN merely because
+        // the record's own stabilization_evidence happened to carry all 8
+        // category keys -- the policy's own well-formedness was never
+        // checked. An unqualified policy must never be trusted to gate an
+        // irreversible authority transfer.
+        policy.validate()?;
         if policy.policy_generation != self.stabilization_policy_generation {
             return Err(IdentityGenerationError::Semantic(format!(
                 "AuthorityTransferRecord {}: policy binds a different stabilization_policy_generation",
@@ -546,6 +555,97 @@ impl AuthorityTransferRecord {
         next.stage = new_stage;
         Ok(next)
     }
+}
+
+// ============================================================================
+// G2-21: Identity / Generation Authority Migration (G2-00 SS15-16).
+//
+// G2-21's own Acceptance, verbatim: "ValidAuthorityOwnerCount = 1; no
+// dual issuer; stale old generation rejected; failed stabilisation
+// reinstates previous implementation under fresh generation." The last
+// two clauses are already mechanically enforced by
+// `check_generation_not_stale`/`reinstate_under_fresh_generation` above
+// (built at G2-09, genuinely exercised in the transfer-execution
+// context this milestone adds); "ValidAuthorityOwnerCount = 1" / "no
+// dual issuer" are the same constraint expressed twice and are both
+// satisfied by `check_valid_authority_owner_count` below.
+// ============================================================================
+
+/// G2-21 acceptance, verbatim: "ValidAuthorityOwnerCount = 1; no dual
+/// issuer." `active_owners` names every authority ref simultaneously
+/// claiming to be the live, active owner of one authority slice; exactly
+/// one must be present -- zero means no owner is currently active (a
+/// different failure than a split), more than one is a dual-issuer
+/// split, either way rejected.
+pub fn check_valid_authority_owner_count(active_owners: &[String]) -> Result<(), IdentityGenerationError> {
+    let distinct: HashSet<&str> = active_owners.iter().map(String::as_str).collect();
+    if distinct.len() != 1 {
+        return Err(IdentityGenerationError::Semantic(format!(
+            "ValidAuthorityOwnerCount violated: expected exactly 1 active owner, found {} ({:?})",
+            distinct.len(),
+            {
+                let mut v: Vec<&str> = distinct.into_iter().collect();
+                v.sort_unstable();
+                v
+            }
+        )));
+    }
+    Ok(())
+}
+
+// ============================================================================
+// Trust Table admission for authority-transfer artifacts (G2-00 SS4.1;
+// docs/08-gen2-roadmap.md's G2-21 Trust Table extension: "Authority-
+// transfer artifact families"). Distinct from the `"identity_generation"`
+// row above (G2-09): that row's own `independently_checks` names
+// campaign/organization/authority/assignment identity and exact-state
+// binding/staleness -- never transfer-stage legality or stabilization-
+// evidence completeness, so admitting an `AuthorityTransferRecord`
+// transition through that row would be an overclaim. This is a genuinely
+// separate artifact family with its own row and its own required
+// negative fixture.
+// ============================================================================
+
+pub fn authority_transfer_trust_table_row() -> trust_table::TrustTableRow {
+    trust_table::TrustTableRow {
+        artifact_identity: "authority_transfer".into(),
+        independently_checks: vec![
+            "authority transfer stage transition legality".into(),
+            "stabilization policy generation binding".into(),
+            "stabilization evidence completeness for STABILIZATION_PROVEN (all 8 mandatory categories)".into(),
+        ],
+        trusts_only: "the genuineness of whatever evidence references a caller supplies per category".into(),
+        trust_bounded_reason: "transition legality and evidence-completeness are fully mechanical; whether a \
+            supplied evidence reference (a Chronicle entry digest, a checkpoint id, ...) itself corresponds to \
+            a genuine artifact is bounded by the crate/module that produced it, not re-derived here"
+            .into(),
+        authority_generation: 1,
+        required_negative_fixture: "STABILIZATION_PROVEN claimed with incomplete evidence".into(),
+        failure_result: "reject".into(),
+        fixture_qualified: true,
+    }
+}
+
+/// Trust-Table-gated wrapper around `check_authority_transfer_transition`.
+pub fn admit_check_authority_transfer_transition(
+    table: &trust_table::TrustTable,
+    current: AuthorityTransferStage,
+    new_stage: AuthorityTransferStage,
+) -> Result<(), IdentityGenerationError> {
+    table.admit("authority_transfer").map_err(|e| IdentityGenerationError::Semantic(e.to_string()))?;
+    check_authority_transfer_transition(current, new_stage)
+}
+
+/// Trust-Table-gated wrapper around `AuthorityTransferRecord::transition`.
+pub fn admit_transition(
+    table: &trust_table::TrustTable,
+    record: &AuthorityTransferRecord,
+    new_stage: AuthorityTransferStage,
+    policy: &AuthorityTransferStabilizationPolicy,
+) -> Result<AuthorityTransferRecord, IdentityGenerationError> {
+    table.admit("authority_transfer").map_err(|e| IdentityGenerationError::Semantic(e.to_string()))?;
+    record.validate()?;
+    record.transition(new_stage, policy)
 }
 
 #[cfg(test)]
@@ -954,11 +1054,99 @@ mod tests {
     }
 
     #[test]
+    fn transition_rejects_an_unqualified_policy_even_with_full_evidence() {
+        // Round-2 review finding (G2-21): a policy with a matching
+        // generation but an empty required-category list must be
+        // rejected, even when the record's own evidence is fully bound.
+        let record = AuthorityTransferRecord { stabilization_evidence: full_evidence(), ..stabilizing_record() };
+        let empty_policy = AuthorityTransferStabilizationPolicy { required_chronicle_events: vec![], ..full_policy() };
+        let result = record.transition(AuthorityTransferStage::STABILIZATION_PROVEN, &empty_policy);
+        assert!(result.is_err(), "an unqualified (empty-category) policy must never authorize STABILIZATION_PROVEN");
+    }
+
+    #[test]
     fn transition_to_a_non_terminal_stage_does_not_require_evidence() {
         // Only the transition *into* STABILIZATION_PROVEN carries the
         // evidence-completeness requirement.
         let record = stabilizing_record();
         let result = record.transition(AuthorityTransferStage::ABORTED, &full_policy());
         assert!(result.is_ok());
+    }
+
+    // ---- G2-21: ValidAuthorityOwnerCount / no dual issuer ----
+
+    #[test]
+    fn owner_count_accepts_exactly_one_owner() {
+        check_valid_authority_owner_count(&["gen2-identity-generation".to_string()]).expect("exactly one owner should pass");
+    }
+
+    #[test]
+    fn owner_count_rejects_zero_owners() {
+        assert!(check_valid_authority_owner_count(&[]).is_err());
+    }
+
+    #[test]
+    fn owner_count_rejects_dual_issuer() {
+        let err = check_valid_authority_owner_count(&["gen1-identity-generation".to_string(), "gen2-identity-generation".to_string()]).unwrap_err();
+        let IdentityGenerationError::Semantic(msg) = err;
+        assert!(msg.contains("ValidAuthorityOwnerCount"));
+    }
+
+    #[test]
+    fn owner_count_deduplicates_repeated_claims_from_the_same_owner() {
+        // Two claims from the SAME owner (e.g. a retried heartbeat) is not
+        // a dual-issuer split.
+        check_valid_authority_owner_count(&["gen2-identity-generation".to_string(), "gen2-identity-generation".to_string()])
+            .expect("repeated claims from the same owner should not count as a split");
+    }
+
+    // ---- G2-21: authority_transfer Trust Table admission ----
+
+    fn admitted_transfer_table() -> trust_table::TrustTable {
+        let mut table = trust_table::initial_trust_table();
+        table.extend(trust_table_row()).unwrap();
+        table.extend(authority_transfer_trust_table_row()).unwrap();
+        table
+    }
+
+    #[test]
+    fn authority_transfer_trust_table_row_is_well_formed() {
+        assert!(authority_transfer_trust_table_row().is_well_formed());
+    }
+
+    #[test]
+    fn admit_check_authority_transfer_transition_fails_closed_when_table_has_no_row() {
+        let table = trust_table::TrustTable::new();
+        assert!(admit_check_authority_transfer_transition(&table, AuthorityTransferStage::PREPARED, AuthorityTransferStage::STAGED).is_err());
+    }
+
+    #[test]
+    fn admit_check_authority_transfer_transition_succeeds_once_admitted() {
+        admit_check_authority_transfer_transition(&admitted_transfer_table(), AuthorityTransferStage::PREPARED, AuthorityTransferStage::STAGED)
+            .expect("legal transition on an admitted table should succeed");
+    }
+
+    #[test]
+    fn admit_transition_fails_closed_when_table_has_no_row() {
+        let table = trust_table::TrustTable::new();
+        let record = AuthorityTransferRecord { stabilization_evidence: full_evidence(), ..stabilizing_record() };
+        assert!(admit_transition(&table, &record, AuthorityTransferStage::STABILIZATION_PROVEN, &full_policy()).is_err());
+    }
+
+    #[test]
+    fn admit_transition_succeeds_once_admitted_with_full_evidence() {
+        let record = AuthorityTransferRecord { stabilization_evidence: full_evidence(), ..stabilizing_record() };
+        let result = admit_transition(&admitted_transfer_table(), &record, AuthorityTransferStage::STABILIZATION_PROVEN, &full_policy());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().stage, AuthorityTransferStage::STABILIZATION_PROVEN);
+    }
+
+    #[test]
+    fn admit_transition_rejects_incomplete_evidence_even_when_admitted() {
+        // The row's own required_negative_fixture, verbatim: "STABILIZATION_
+        // PROVEN claimed with incomplete evidence". Trust Table admission is
+        // not a substitute for the record's own evidence-completeness check.
+        let result = admit_transition(&admitted_transfer_table(), &stabilizing_record(), AuthorityTransferStage::STABILIZATION_PROVEN, &full_policy());
+        assert!(result.is_err());
     }
 }

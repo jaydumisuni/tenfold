@@ -55,6 +55,8 @@ from .constitutional import (
     ExternalAssuranceCopy,
     AssuranceCopySlot,
 )
+from .authority_transfer import AuthorityTransferError, build_identity_generation_transfer_policy, check_valid_authority_owner_count
+from .authority_transfer_bridge import AuthorityTransferCliError, rust_check_authority_transfer_transition, rust_check_valid_authority_owner_count, rust_transition_record
 from .reference import ReferenceError
 from .verifier import VerifierError, independent_check_typed_coverage, independent_decode_canonical_json
 from .mutation_suite import MutationCategory, MutationFixture, MutationSuite
@@ -1863,6 +1865,79 @@ def _g2_19_tampered_chronicle_digest_kill_check() -> None:
     validate_bootstrap_corpus(corpus)
 
 
+def _g2_21_incomplete_evidence_kill_check() -> None:
+    # The "authority_transfer" Trust Table row's own required_negative_
+    # fixture, verbatim: "STABILIZATION_PROVEN claimed with incomplete
+    # evidence". Genuinely built on top of the real, admitted transfer
+    # machinery (G2-09's AuthorityTransferRecord/StabilizationPolicy,
+    # G2-21's Trust-Table-gated Rust wrappers), not a synthetic proxy.
+    policy = build_identity_generation_transfer_policy()
+    policy_dict = {
+        "policy_generation": policy.policy_generation,
+        "required_real_operations": list(policy.required_real_operations),
+        "required_chronicle_events": list(policy.required_chronicle_events),
+        "required_induced_failure_scenarios": list(policy.required_induced_failure_scenarios),
+        "required_recovery_results": list(policy.required_recovery_results),
+        "required_external_checkpoints": list(policy.required_external_checkpoints),
+        "required_observer_predicates": list(policy.required_observer_predicates),
+        "abort_reinstatement_conditions": list(policy.abort_reinstatement_conditions),
+        "irreversible_commit_conditions": list(policy.irreversible_commit_conditions),
+    }
+    record_dict = {
+        "transfer_id": "mut-g21-incomplete",
+        "from_authority_ref": "gen1",
+        "to_authority_ref": "gen2",
+        "stage": "STABILIZING",
+        "stabilization_policy_generation": policy.policy_generation,
+        # Only 1 of the 8 mandatory categories bound.
+        "stabilization_evidence": {"real_operations": ["op-1"]},
+    }
+    try:
+        rust_transition_record(record_dict, "STABILIZATION_PROVEN", policy_dict)
+    except AuthorityTransferCliError:
+        pass
+    else:
+        raise AssertionError("rust authority_transfer kernel incorrectly admitted STABILIZATION_PROVEN with incomplete evidence")
+
+    record = AuthorityTransferRecord(**{**record_dict, "stage": AuthorityTransferStage.STABILIZING})
+    record.transition(AuthorityTransferStage.STABILIZATION_PROVEN, policy=policy)
+
+
+def _g2_21_illegal_transition_kill_check() -> None:
+    # PREPARED -> STABILIZATION_PROVEN skips the whole staged lifecycle
+    # and must be rejected by both the real compiled Rust
+    # authority_transfer kernel and the real Python re-derivation.
+    try:
+        rust_check_authority_transfer_transition("PREPARED", "STABILIZATION_PROVEN")
+    except AuthorityTransferCliError:
+        pass
+    else:
+        raise AssertionError("rust authority_transfer kernel incorrectly admitted an illegal stage skip")
+
+    policy = build_identity_generation_transfer_policy()
+    record = AuthorityTransferRecord(
+        "mut-g21-illegal", "gen1", "gen2", AuthorityTransferStage.PREPARED,
+        stabilization_policy_generation=policy.policy_generation,
+        stabilization_evidence={},
+    )
+    record.transition(AuthorityTransferStage.STABILIZATION_PROVEN, policy=policy)
+
+
+def _g2_21_dual_issuer_kill_check() -> None:
+    # G2-21's own acceptance, verbatim: "ValidAuthorityOwnerCount = 1; no
+    # dual issuer." Two distinct authority refs simultaneously claiming
+    # active ownership of the same slice is rejected by both the real
+    # compiled Rust kernel and the real Python re-derivation.
+    try:
+        rust_check_valid_authority_owner_count(["gen1-identity-generation", "gen2-identity-generation"])
+    except AuthorityTransferCliError:
+        pass
+    else:
+        raise AssertionError("rust authority_transfer kernel incorrectly admitted a dual-issuer claim")
+
+    check_valid_authority_owner_count(("gen1-identity-generation", "gen2-identity-generation"))
+
+
 def build_initial_mutation_suite() -> MutationSuite:
     suite = MutationSuite()
 
@@ -2945,6 +3020,46 @@ def build_initial_mutation_suite() -> MutationSuite:
             "bootstrap_protocol_corpus",
             _g2_19_tampered_chronicle_digest_kill_check,
             BootstrapProtocolError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G21-INCOMPLETEEVIDENCE-001",
+            MutationCategory.RUNTIME_OBLIGATION_OMISSION,
+            "The \"authority_transfer\" Trust Table row's own required_negative_fixture, verbatim: "
+            "\"STABILIZATION_PROVEN claimed with incomplete evidence\" (only 1 of the 8 mandatory "
+            "categories bound), rejected by both the real compiled Rust authority_transfer kernel "
+            "and the real Python re-derivation (G2-21).",
+            "G2-00 SS15; G2-21",
+            "authority_transfer",
+            _g2_21_incomplete_evidence_kill_check,
+            ConstitutionalError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G21-ILLEGALTRANSITION-001",
+            MutationCategory.BOUNDARY_INDEPENDENCE_FAILURE,
+            "PREPARED -> STABILIZATION_PROVEN skips the whole staged authority-transfer lifecycle "
+            "and is rejected by both the real compiled Rust authority_transfer kernel and the real "
+            "Python re-derivation (G2-21).",
+            "G2-00 SS15; G2-21",
+            "authority_transfer",
+            _g2_21_illegal_transition_kill_check,
+            ConstitutionalError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G21-DUALISSUER-001",
+            MutationCategory.GENERATION_FENCING_VIOLATION,
+            "G2-21's own acceptance, verbatim: \"ValidAuthorityOwnerCount = 1; no dual issuer.\" Two "
+            "distinct authority refs simultaneously claiming active ownership of the same slice is "
+            "rejected by both the real compiled Rust kernel and the real Python re-derivation.",
+            "G2-21",
+            "authority_transfer",
+            _g2_21_dual_issuer_kill_check,
+            AuthorityTransferError,
         )
     )
 
