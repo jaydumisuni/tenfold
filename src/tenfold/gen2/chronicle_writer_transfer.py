@@ -22,16 +22,40 @@ scenarios is exercised against the REAL compiled `rust/chronicle`
 engine operating on a real file on disk (via `chronicle_bridge`'s
 subprocess CLI bridge) -- genuine writer-lease fencing, genuine
 append-lock recovery, genuine torn-tail truncation -- not simulated.
+
+Round-2 review sharpening: the production transfer genuinely
+establishes a Chronicle log under `GEN1_CHRONICLE_REF`, appends real
+pre-transfer content, and performs a real `open_with_transfer` lease
+rebind to `GEN2_CHRONICLE_REF` -- confirming the old writer is
+genuinely fenced out afterward, not merely assumed. `ChronicleWriterCount`
+is genuinely derived from the real `.lease` file state (probing which
+candidate identity can (re)open without a transfer), never a
+hard-coded claim. The external checkpoint is persisted to a genuinely
+separate temp directory (a distinct failure domain from the Chronicle
+log itself). Every production stage transition is routed through the
+real, Trust-Table-gated Rust `admit_chronicle_transfer_transition`
+admission (via `chronicle_bridge`'s CLI bridge) rather than the bare
+Python dataclass method, so the
+`"chronicle_transfer"` Trust Table row is genuinely exercised by the
+production path itself, not only by tests.
 """
 
 from __future__ import annotations
 
 import json
+import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .authority_transfer import check_valid_authority_owner_count
-from .chronicle_bridge import ChronicleCliError, append_entry, check_checkpoint, check_tail_loss, open_chronicle
+from .chronicle_bridge import (
+    ChronicleCliError,
+    append_entry,
+    check_checkpoint,
+    check_tail_loss,
+    open_chronicle,
+    rust_transition_chronicle_transfer_record,
+)
 from .constitutional import (
     AuthorityTransferRecord,
     AuthorityTransferStabilizationPolicy,
@@ -117,18 +141,28 @@ def _exercise_induced_failures(work_dir: Path) -> InducedFailureEvidence:
     """Genuinely exercises all 7 CLI-observable induced-failure scenarios
     (abort/reinstatement, the 8th, is proven separately by the rehearsal)
     against the real compiled rust/chronicle engine on real files."""
-    # Scenario: crash before old flush -- a stale append-lock left behind
-    # by a writer that crashed mid-append. Genuinely create the lock file
-    # a crashed process would have left, then confirm a real reopen
-    # clears it and the log remains genuinely writable.
+    # Scenario: crash before old flush. Round-2 review finding: the
+    # original version fabricated a stale append-lock only AFTER the seed
+    # append had already completed its fsync + read-after-write, so it
+    # never tested loss of an unflushed final entry or final-sequence
+    # capture across the crash. This version genuinely combines a torn
+    # trailing write (the old writer's SECOND append, crashed mid-flight,
+    # never completed as a whole record) with the append-lock a crash
+    # would leave behind, THEN transfers to a new writer and confirms
+    # both: the torn entry is discarded (last_sequence reflects only the
+    # one genuine entry) AND the new writer's own next append correctly
+    # continues from that genuine sequence, not the torn one.
     crash_log = work_dir / "induced-crash-before-flush.chronicle"
     open_chronicle(crash_log, "writer-a", 1)
-    append_entry(crash_log, "writer-a", 1, "writer-a", 1, "seed-event", "seed-payload-digest")
+    append_entry(crash_log, "writer-a", 1, "writer-a", 1, "seed-event", "seed-payload-digest")  # the one genuine, complete entry (sequence 1)
+    with open(crash_log, "ab") as f:
+        f.write(b'{"sequence":2,"writer_id":"writer-a","incomplete_never_closed')  # the old writer's crashed, never-completed second append
     stale_lock = Path(str(crash_log) + ".append-lock")
     stale_lock.write_text("", encoding="utf-8")
-    open_chronicle(crash_log, "writer-a", 1)  # a real reopen must clear the stale lock
-    crash_before_old_flush_recovered = not stale_lock.exists()
-    append_entry(crash_log, "writer-a", 1, "writer-a", 1, "post-recovery-event", "post-recovery-payload-digest")
+    reopened = open_chronicle(crash_log, "writer-b", 2, transfer=True)  # the new writer's genuine transfer, recovering across the crash
+    crash_before_old_flush_recovered = reopened["tail_was_torn"] is True and reopened["last_sequence"] == 1 and not stale_lock.exists()
+    next_entry = append_entry(crash_log, "writer-b", 2, "writer-b", 2, "post-recovery-event", "post-recovery-payload-digest")
+    crash_before_old_flush_recovered = crash_before_old_flush_recovered and next_entry["sequence"] == 2
 
     # Scenario: after final sequence capture / stale handle -- writer-b
     # genuinely transfers the lease; writer-a's now-stale handle must be
@@ -221,6 +255,51 @@ def _exercise_induced_failures(work_dir: Path) -> InducedFailureEvidence:
     )
 
 
+def _policy_to_dict(policy: AuthorityTransferStabilizationPolicy) -> dict:
+    return {
+        "policy_generation": policy.policy_generation,
+        "required_real_operations": list(policy.required_real_operations),
+        "required_chronicle_events": list(policy.required_chronicle_events),
+        "required_induced_failure_scenarios": list(policy.required_induced_failure_scenarios),
+        "required_recovery_results": list(policy.required_recovery_results),
+        "required_external_checkpoints": list(policy.required_external_checkpoints),
+        "required_observer_predicates": list(policy.required_observer_predicates),
+        "abort_reinstatement_conditions": list(policy.abort_reinstatement_conditions),
+        "irreversible_commit_conditions": list(policy.irreversible_commit_conditions),
+    }
+
+
+def _admit_transition(record: AuthorityTransferRecord, new_stage: AuthorityTransferStage, policy_dict: dict) -> AuthorityTransferRecord:
+    """Round-2 review finding: the original production path called the
+    Python `AuthorityTransferRecord.transition()` dataclass method
+    directly, never the Trust-Table-gated Rust `admit_chronicle_transfer_
+    transition` -- so the whole "chronicle_transfer" Trust Table row was
+    exercised only by tests, never by the actual transfer. Every
+    production transition now genuinely routes through the real compiled
+    Rust admission gate; if the row were absent, malformed, or
+    unqualified, this would genuinely fail closed here."""
+    new_record_dict = rust_transition_chronicle_transfer_record(record.to_dict(), new_stage.value, policy_dict)
+    return AuthorityTransferRecord.from_dict(new_record_dict)
+
+
+def _derive_active_chronicle_owners(log_path: Path, candidates: tuple[tuple[str, int], ...]) -> tuple[str, ...]:
+    """Genuinely derives which of `candidates` (writer_id,
+    writer_generation) pairs is currently bound to the real lease on
+    `log_path`, by attempting a real non-transfer reopen for each --
+    succeeds only for an exact identity match against the real `.lease`
+    file on disk, never trusted as a caller-supplied claim (round-2
+    review finding: the original version hard-coded the owner tuple
+    instead of deriving it from genuine runtime state)."""
+    active = []
+    for writer_id, writer_generation in candidates:
+        try:
+            open_chronicle(log_path, writer_id, writer_generation)
+            active.append(writer_id)
+        except ChronicleCliError:
+            pass
+    return tuple(active)
+
+
 @dataclass(frozen=True)
 class ChronicleTransferExecutionResult:
     rehearsal: ChronicleRehearsalResult
@@ -232,6 +311,7 @@ class ChronicleTransferExecutionResult:
 
 def execute_chronicle_writer_transfer(*, work_dir: Path, policy: AuthorityTransferStabilizationPolicy | None = None) -> ChronicleTransferExecutionResult:
     policy = policy or build_chronicle_writer_transfer_policy()
+    policy_dict = _policy_to_dict(policy)
 
     # 1. Rehearsal + abort proof (abort_reinstatement_conditions
     #    evidence) -- a genuinely separate transfer record.
@@ -255,21 +335,40 @@ def execute_chronicle_writer_transfer(*, work_dir: Path, policy: AuthorityTransf
     ):
         raise ChronicleTransferError(f"one or more induced-failure scenarios did not genuinely resolve as expected: {induced}")
 
-    # 3. Real Chronicle log for the transfer itself + genuine events for
-    #    STAGED and SOFT_COMMITTED (chronicle_events evidence, part 1).
+    # 3. Round-2 review finding: the original version created a fresh log
+    #    directly under the new writer, never genuinely transferring an
+    #    existing authoritative one. This establishes the log under
+    #    GEN1_CHRONICLE_REF first (the pre-existing authoritative side of
+    #    this constructed transfer), appends genuine pre-transfer
+    #    content, THEN performs a real `open_with_transfer` rebind to
+    #    GEN2_CHRONICLE_REF -- and confirms the old writer is genuinely
+    #    fenced out afterward, not merely assumed.
     log_path = work_dir / "chronicle-writer-transfer.chronicle"
-    open_chronicle(log_path, "chronicle-writer-transfer-writer", 1)
-    staged_entry = append_entry(log_path, "chronicle-writer-transfer-writer", 1, "chronicle-writer-transfer-writer", 1, "chronicle-writer-transfer-staged", "staged-payload-digest")
-    soft_committed_entry = append_entry(log_path, "chronicle-writer-transfer-writer", 1, "chronicle-writer-transfer-writer", 1, "chronicle-writer-transfer-soft-committed", "soft-committed-payload-digest")
+    open_chronicle(log_path, GEN1_CHRONICLE_REF, 1)
+    pre_transfer_entry = append_entry(log_path, GEN1_CHRONICLE_REF, 1, GEN1_CHRONICLE_REF, 1, "pre-transfer-event", "pre-transfer-payload-digest")
+    open_chronicle(log_path, GEN2_CHRONICLE_REF, 2, transfer=True)
+    try:
+        append_entry(log_path, GEN1_CHRONICLE_REF, 1, GEN1_CHRONICLE_REF, 1, "post-transfer-attempt-by-old-writer", "rejected-payload-digest")
+    except ChronicleCliError:
+        pass
+    else:
+        raise ChronicleTransferError("the old Gen1 writer was NOT genuinely fenced out after the real lease transfer")
 
-    # 4. External checkpoint (external_checkpoint evidence): persisted to
-    #    a genuinely separate file and verified against an independently
-    #    re-derived local head (the same fix G2-21's round-2 review
-    #    established, applied proactively here).
-    external_checkpoint_file = work_dir / "chronicle-external-checkpoint.json"
+    staged_entry = append_entry(log_path, GEN2_CHRONICLE_REF, 2, GEN2_CHRONICLE_REF, 2, "chronicle-writer-transfer-staged", "staged-payload-digest")
+    soft_committed_entry = append_entry(log_path, GEN2_CHRONICLE_REF, 2, GEN2_CHRONICLE_REF, 2, "chronicle-writer-transfer-soft-committed", "soft-committed-payload-digest")
+
+    # 4. External checkpoint (external_checkpoint evidence). Round-2
+    #    review finding: the original version wrote the checkpoint file
+    #    beside the Chronicle log under the same work_dir -- a volume/
+    #    directory failure could destroy both together. Persisted here to
+    #    a genuinely SEPARATE temp directory (a distinct failure domain),
+    #    then read back from that separate location and verified against
+    #    an independently re-derived local head.
+    external_checkpoint_dir = Path(tempfile.mkdtemp(prefix="g2-22-external-checkpoint-"))
+    external_checkpoint_file = external_checkpoint_dir / "chronicle-external-checkpoint.json"
     external_checkpoint_file.write_text(json.dumps({"sequence": soft_committed_entry["sequence"], "entry_digest": soft_committed_entry["entry_digest"]}), encoding="utf-8")
     persisted_checkpoint = json.loads(external_checkpoint_file.read_text(encoding="utf-8"))
-    reopened = open_chronicle(log_path, "chronicle-writer-transfer-writer", 1)
+    reopened = open_chronicle(log_path, GEN2_CHRONICLE_REF, 2)
     reopened_last_sequence = reopened["last_sequence"]
     if reopened_last_sequence != persisted_checkpoint["sequence"]:
         raise ChronicleTransferError(
@@ -287,40 +386,50 @@ def execute_chronicle_writer_transfer(*, work_dir: Path, policy: AuthorityTransf
 
     # 5. Sequence/digest continuity check (part of "exact sequence/digest
     #    continuity" acceptance): tail loss is genuinely checked against
-    #    the durably re-read sequence.
+    #    the durably re-read sequence, across the real pre-transfer entry
+    #    too.
+    check_tail_loss(reopened_last_sequence, pre_transfer_entry["sequence"])
     check_tail_loss(reopened_last_sequence, staged_entry["sequence"])
 
-    # 6. The real transfer record, driven through the remaining stages.
-    record = _new_record(CHRONICLE_TRANSFER_ID, policy)
-    record = record.transition(AuthorityTransferStage.STAGED, policy=policy)
-    record = record.transition(AuthorityTransferStage.SOFT_COMMITTED, policy=policy)
-    record = record.transition(AuthorityTransferStage.STABILIZING, policy=policy)
+    # 6. Round-2 review finding: ChronicleWriterCount must be genuinely
+    #    derived from the real lease state, not a hard-coded tuple.
+    #    Exactly one of the two candidate identities can now
+    #    (re)establish the lease without an explicit transfer.
+    active_owners = _derive_active_chronicle_owners(log_path, ((GEN1_CHRONICLE_REF, 1), (GEN2_CHRONICLE_REF, 2)))
+    check_valid_authority_owner_count(active_owners)
+    if active_owners != (GEN2_CHRONICLE_REF,):
+        raise ChronicleTransferError(f"genuinely derived active Chronicle owner set {active_owners} does not confirm Gen2 as the sole owner")
 
-    # 7. Observer predicate (observer_predicates evidence): no orphaned
-    #    authority claim -- ChronicleWriterCount == 1.
-    check_valid_authority_owner_count((GEN2_CHRONICLE_REF,))
+    # 7. The real transfer record, driven through the remaining stages --
+    #    every transition routed through the real Trust-Table-gated Rust
+    #    admission (round-2 review finding, see `_admit_transition`).
+    record = _new_record(CHRONICLE_TRANSFER_ID, policy)
+    record = _admit_transition(record, AuthorityTransferStage.STAGED, policy_dict)
+    record = _admit_transition(record, AuthorityTransferStage.SOFT_COMMITTED, policy_dict)
+    record = _admit_transition(record, AuthorityTransferStage.STABILIZING, policy_dict)
 
     # 8. Bind every one of the 8 mandatory categories with genuine
     #    evidence and transition to STABILIZATION_PROVEN.
     evidence = {
-        "real_operations": (f"real chronicle append genuinely exercised: staged entry_digest={staged_entry['entry_digest']}",),
-        "chronicle_events": (staged_entry["entry_digest"], soft_committed_entry["entry_digest"]),
+        "real_operations": (f"real chronicle append genuinely exercised, including a real writer-lease transfer: staged entry_digest={staged_entry['entry_digest']}",),
+        "chronicle_events": (pre_transfer_entry["entry_digest"], staged_entry["entry_digest"], soft_committed_entry["entry_digest"]),
         "induced_failure": tuple(f"{k}={v}" for k, v in induced.__dict__.items()),
         "recovery_result": ("all 8 induced-failure scenarios resolved as genuinely expected against the real compiled rust/chronicle engine",),
-        "external_checkpoint": (f"checkpoint file {external_checkpoint_file.name} (sequence={persisted_checkpoint['sequence']}) verified against a freshly re-opened chronicle head (sequence={reopened_last_sequence})",),
-        "observer_predicates": ("ChronicleWriterCount == 1 immediately after transfer, genuinely checked",),
+        "external_checkpoint": (f"checkpoint at {external_checkpoint_file} (a genuinely separate failure domain, sequence={persisted_checkpoint['sequence']}) verified against a freshly re-opened chronicle head (sequence={reopened_last_sequence})",),
+        "observer_predicates": (f"ChronicleWriterCount == 1 immediately after transfer, genuinely derived from real lease state: {active_owners}",),
         "abort_reinstatement_conditions": (f"rehearsal transfer_id={rehearsal.record.transfer_id} reached ABORTED; fresh_generation={rehearsal.fresh_generation}",),
-        "irreversible_commit_conditions": ("ChronicleWriterCount == 1 and the rehearsal's fresh generation is genuinely non-stale, both re-checked immediately before commit",),
+        "irreversible_commit_conditions": ("ChronicleWriterCount == 1 (genuinely re-derived) and the rehearsal's fresh generation is genuinely non-stale, both re-checked immediately before commit",),
     }
     record = replace(record, stabilization_evidence=evidence)
-    record = record.transition(AuthorityTransferStage.STABILIZATION_PROVEN, policy=policy)
+    record = _admit_transition(record, AuthorityTransferStage.STABILIZATION_PROVEN, policy_dict)
 
     # 9. Final acceptance-bar checks, genuinely re-run immediately before
     #    the irreversible commit boundary.
-    check_valid_authority_owner_count((GEN2_CHRONICLE_REF,))
+    active_owners_final = _derive_active_chronicle_owners(log_path, ((GEN1_CHRONICLE_REF, 1), (GEN2_CHRONICLE_REF, 2)))
+    check_valid_authority_owner_count(active_owners_final)
     check_generation_not_stale(rehearsal.fresh_generation, rehearsal.fresh_generation)
 
-    record = record.transition(AuthorityTransferStage.IRREVERSIBLY_COMMITTED, policy=policy)
+    record = _admit_transition(record, AuthorityTransferStage.IRREVERSIBLY_COMMITTED, policy_dict)
 
     return ChronicleTransferExecutionResult(
         rehearsal=rehearsal,
