@@ -195,6 +195,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tenfold-effect-census"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "tenfold-capability-graph",
+ "tenfold-chronicle",
+ "tenfold-trust-table",
+]
+
+[[package]]
 name = "tenfold-facility"
 version = "0.1.0"
 dependencies = [

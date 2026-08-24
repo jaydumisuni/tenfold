@@ -271,9 +271,11 @@ def test_g2_14_gen1_rust_parity_qualified_with_bound_non_occurrence_signal_is_au
 
 
 def test_g2_14_harness_qualifies_a_well_behaved_sandbox_facility_on_every_scenario() -> None:
+    # G2-18 addition: run_takeover_in_flight_scenario, closing G2-14's own
+    # disclosed gap (RECOVERY_TAKEOVER was not previously exercised).
     harness = FacilityPropertyQualificationHarness(LocalSandboxFacility())
     records = harness.qualify_declared_scenarios()
-    assert len(records) == 5
+    assert len(records) == 6
     assert all(r.state == QualificationState.QUALIFIED for r in records)
 
 
@@ -329,6 +331,66 @@ def test_g2_14_harness_detects_a_facility_that_double_applies_the_same_effect() 
     harness2 = FacilityPropertyQualificationHarness(NonIdempotentFacility())
     crash_result = harness2.run_crash_before_ack_scenario()
     assert crash_result.state == QualificationState.UNQUALIFIED
+
+
+# ============================================================================
+# Takeover/recovery in-flight (G2-18 addition, closing G2-14's own
+# disclosed gap: RECOVERY_TAKEOVER was not previously exercised).
+# ============================================================================
+
+
+def test_g2_14_harness_qualifies_genuine_takeover_in_flight_resolution() -> None:
+    harness = FacilityPropertyQualificationHarness(LocalSandboxFacility())
+    result = harness.run_takeover_in_flight_scenario()
+    assert result.state == QualificationState.QUALIFIED
+    assert result.property == FacilityProperty.RECOVERY_TAKEOVER
+
+
+def test_g2_14_local_sandbox_facility_resolves_a_committed_in_flight_operation_as_true() -> None:
+    facility = LocalSandboxFacility()
+    facility.execute("k1", "v1", generation=1)
+    facility.begin_operation_in_flight("k1", owner="worker-A")
+    assert facility.resolve_in_flight_via_takeover("k1", new_owner="worker-B") is True
+
+
+def test_g2_14_local_sandbox_facility_resolves_an_uncommitted_in_flight_operation_as_false() -> None:
+    # The operation was only dispatched (begin_operation_in_flight), never
+    # actually executed -- a genuine takeover must never optimistically
+    # assume it committed.
+    facility = LocalSandboxFacility()
+    facility.begin_operation_in_flight("k1", owner="worker-A")
+    assert facility.resolve_in_flight_via_takeover("k1", new_owner="worker-B") is False
+
+
+def test_g2_14_local_sandbox_facility_resolve_in_flight_clears_the_marker() -> None:
+    facility = LocalSandboxFacility()
+    facility.begin_operation_in_flight("k1", owner="worker-A")
+    facility.resolve_in_flight_via_takeover("k1", new_owner="worker-B")
+    with pytest.raises(FacilityError):
+        facility.resolve_in_flight_via_takeover("k1", new_owner="worker-C")
+
+
+def test_g2_14_local_sandbox_facility_resolve_in_flight_rejects_an_unknown_key() -> None:
+    facility = LocalSandboxFacility()
+    with pytest.raises(FacilityError):
+        facility.resolve_in_flight_via_takeover("never-begun", new_owner="worker-B")
+
+
+def test_g2_14_harness_detects_a_takeover_resolver_that_optimistically_assumes_success() -> None:
+    """A resolver that always claims the in-flight operation committed,
+    regardless of real state, must be caught -- the scenario deliberately
+    also exercises the uncommitted case, which a lying resolver fails."""
+
+    class LyingTakeoverFacility(LocalSandboxFacility):
+        def resolve_in_flight_via_takeover(self, key: str, new_owner: str) -> bool:
+            if key not in self._in_flight_owner:
+                raise FacilityError(f"no in-flight operation for key {key!r} to take over")
+            del self._in_flight_owner[key]
+            return True  # BROKEN: always claims success regardless of real committed state
+
+    harness = FacilityPropertyQualificationHarness(LyingTakeoverFacility())
+    result = harness.run_takeover_in_flight_scenario()
+    assert result.state == QualificationState.UNQUALIFIED
 
 
 # ============================================================================

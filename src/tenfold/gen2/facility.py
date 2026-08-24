@@ -322,6 +322,13 @@ class LocalSandboxFacility:
     # here a second time; any other repeat (even one that happens to
     # settle on the same final value through a different path) would.
     effect_log: list[tuple[str, str]] = field(default_factory=list)
+    # G2-18 addition: key -> the owner who dispatched an operation whose
+    # outcome that owner never observed (crashed/superseded before ack) --
+    # genuinely committed real state (via `execute`), just not yet
+    # resolved from the caller's point of view. Closes G2-14's own
+    # disclosed gap: RECOVERY_TAKEOVER was one of the adversarial corpus
+    # properties this harness could not previously exercise.
+    _in_flight_owner: dict[str, str] = field(default_factory=dict)
 
     def execute(self, key: str, value: str, *, generation: int) -> str:
         if generation != self.generation:
@@ -344,6 +351,27 @@ class LocalSandboxFacility:
 
     def bump_generation(self) -> None:
         self.generation += 1
+
+    def begin_operation_in_flight(self, key: str, owner: str) -> None:
+        """Marks `key`'s most recent `execute()` as dispatched by `owner`
+        but never acknowledged from that owner's point of view (crashed or
+        was superseded before observing the outcome) -- the real commit
+        already happened via `execute`; only the *caller's knowledge* of
+        it is missing."""
+        self._in_flight_owner[key] = owner
+
+    def resolve_in_flight_via_takeover(self, key: str, new_owner: str) -> bool:
+        """A new owner taking over after recovery must genuinely probe
+        real committed state to determine whether the predecessor's
+        in-flight operation actually committed -- never assume it did or
+        didn't. Returns whether the effect is genuinely present in real
+        committed state; clears the in-flight marker only once resolved
+        (by `new_owner`, recorded for audit)."""
+        if key not in self._in_flight_owner:
+            raise FacilityError(f"no in-flight operation for key {key!r} to take over")
+        resolved_as_committed = key in self._committed
+        del self._in_flight_owner[key]
+        return resolved_as_committed
 
 
 @dataclass(frozen=True)
@@ -423,6 +451,31 @@ class FacilityPropertyQualificationHarness:
         state = QualificationState.QUALIFIED if safe else QualificationState.UNQUALIFIED
         return SandboxScenarioResult("crash-before-ack", FacilityProperty.COMMIT_ACK_SEMANTICS, state, ("post-crash-safe-reexecution",), f"distinct_effects={distinct_effects}")
 
+    def run_takeover_in_flight_scenario(self) -> SandboxScenarioResult:
+        # G2-18 addition, closing G2-14's own disclosed gap. Genuinely
+        # adversarial in both directions -- a resolver that optimistically
+        # assumes every in-flight operation succeeded would pass a
+        # single-case "did commit" check trivially; this also verifies the
+        # opposite: an operation that was only *dispatched*, never
+        # actually committed (crashed before the real effect landed),
+        # must resolve as NOT committed.
+        self.facility.execute("k6", "v6", generation=self.facility.generation)
+        self.facility.begin_operation_in_flight("k6", owner="worker-A")
+        resolved_committed = self.facility.resolve_in_flight_via_takeover("k6", new_owner="worker-B")
+
+        self.facility.begin_operation_in_flight("k7", owner="worker-A")
+        resolved_not_committed = self.facility.resolve_in_flight_via_takeover("k7", new_owner="worker-B")
+
+        correct = resolved_committed is True and resolved_not_committed is False
+        state = QualificationState.QUALIFIED if correct else QualificationState.UNQUALIFIED
+        return SandboxScenarioResult(
+            "takeover-in-flight",
+            FacilityProperty.RECOVERY_TAKEOVER,
+            state,
+            ("in-flight-committed-resolved-true", "in-flight-uncommitted-resolved-false"),
+            f"resolved_committed={resolved_committed} resolved_not_committed={resolved_not_committed}",
+        )
+
     def qualify_declared_scenarios(self) -> tuple[PropertyQualificationRecord, ...]:
         results = (
             self.run_duplicate_key_scenario(),
@@ -430,5 +483,6 @@ class FacilityPropertyQualificationHarness:
             self.run_enumeration_falsification_scenario(),
             self.run_response_loss_scenario(),
             self.run_crash_before_ack_scenario(),
+            self.run_takeover_in_flight_scenario(),
         )
         return tuple(PropertyQualificationRecord(r.property, r.state, r.evidence_refs, None) for r in results)

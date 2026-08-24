@@ -1117,3 +1117,38 @@ def independent_compute_causal_preimage_star(nodes: list[dict], edges: list[dict
                 changed = True
 
     return {"preimage": frozenset(preimage), "unbounded": unbounded}
+
+
+def independent_classify_effect_census(expected: list[dict], observed: list[dict], authorized_mutation_domain: list[str]) -> list[dict]:
+    """Independent re-derivation of G2-00 SS9.8's Effect Census residue
+    classification, operating on raw dicts rather than importing
+    `tenfold.gen2.effect_census`'s own dataclasses or classification loop
+    -- an independent implementation written from the same G2-00 SS9.8
+    text, not a call into the artifact it reconciles against. Returns a
+    list of `{"effect_id": str, "residue_class": str}` dicts. Out-of-
+    domain is checked first and always wins, mirroring the Rust/Python
+    production implementations.
+    """
+    domain = set(authorized_mutation_domain)
+    expected_by_id = {e["effect_id"]: e for e in expected}
+    observed_by_id = {o["effect_id"]: o for o in observed}
+    all_ids = sorted(set(expected_by_id) | set(observed_by_id))
+
+    entries = []
+    for effect_id in all_ids:
+        exp = expected_by_id.get(effect_id)
+        obs = observed_by_id.get(effect_id)
+        if obs is not None and obs["target_resource_id"] not in domain:
+            residue_class = "OUT_OF_DOMAIN_EFFECT"
+        elif exp is not None and obs is not None and not obs["has_evidence"]:
+            residue_class = "MISSING_EFFECT_EVIDENCE"
+        elif exp is not None and obs is not None:
+            residue_class = "EXPECTED_ATTRIBUTED_EFFECT"
+        elif exp is not None and obs is None:
+            residue_class = "MISSING_EFFECT_EVIDENCE"
+        elif obs is not None and obs["chronicle_journaled"]:
+            residue_class = "UNATTRIBUTED_EFFECT"
+        else:
+            residue_class = "UNJOURNALED_EFFECT"
+        entries.append({"effect_id": effect_id, "residue_class": residue_class})
+    return entries
