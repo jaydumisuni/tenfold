@@ -181,6 +181,26 @@ from .capability_graph_bridge import (
     rust_compute_effect_reach_star,
     rust_cross_check_effective_policy,
 )
+from .root_authority import (
+    AuthorityChain,
+    AuthorityPlane,
+    LocalPrincipalAuthoritySubstrate,
+    MintableScopeBound,
+    PlaneRole,
+    RootAmendment,
+    RootAuthorityError,
+    check_control_plane_exclusion,
+    check_created_principal_within_mintable_bound,
+    check_successor_bound_non_expansion,
+    compute_causal_preimage_star,
+    query_created_principal_authority,
+)
+from .root_authority_bridge import (
+    RootAuthorityCliError,
+    rust_check_control_plane_exclusion,
+    rust_check_created_principal_within_mintable_bound,
+    rust_check_successor_bound_non_expansion,
+)
 from tenfold.contracts import NodeState
 from tenfold.facility import FacilityError
 from tenfold.ownership import LeaseConflict, LeaseRegistry, WriteLease
@@ -1444,6 +1464,75 @@ def _g2_16_automation_cross_check_downgrade_kill_check() -> None:
     )
 
 
+def _g2_17_control_plane_exclusion_breach_kill_check() -> None:
+    # G2-00 SS10, verbatim: "EFFECT_REACH*(campaign) intersect
+    # AUTHORITY_CONTROL_PLANE_CAUSAL_PREIMAGE = empty." A campaign whose
+    # own forward reach directly mutates Root's signing-key resource is
+    # rejected by both the real compiled Rust root_authority kernel and
+    # the real Python re-derivation.
+    graph_dict = {
+        "nodes": [{"node_id": "p1", "kind": "PRINCIPAL"}, {"node_id": "signing-key", "kind": "RESOURCE"}],
+        "edges": [{"from": "p1", "to": "signing-key", "edge_class": "DIRECT_MUTATION"}],
+    }
+    chain_dict = {"planes": [{"plane_id": "root", "generation": 1, "role": "ROOT", "control_plane_resources": ["signing-key"]}]}
+    try:
+        rust_check_control_plane_exclusion(graph_dict, ["p1"], chain_dict)
+    except RootAuthorityCliError:
+        pass
+    else:
+        raise AssertionError("rust root_authority kernel incorrectly admitted a campaign that reaches its own Root's control-plane resource")
+
+    graph = CapabilityCausationGraph(
+        nodes=(CapabilityNode("p1", NodeKind.PRINCIPAL), CapabilityNode("signing-key", NodeKind.RESOURCE)),
+        edges=(CausalEdge("p1", "signing-key", "DIRECT_MUTATION"),),
+    )
+    chain = AuthorityChain(planes=(AuthorityPlane("root", 1, PlaneRole.ROOT, frozenset({"signing-key"})),))
+    chain.validate()
+    reach = compute_effect_reach_star(graph, frozenset({"p1"}))
+    preimage = compute_causal_preimage_star(graph, chain.all_control_plane_resources())
+    check_control_plane_exclusion(reach, preimage)
+
+
+def _g2_17_created_principal_escalation_kill_check() -> None:
+    # G2-00 SS10.1, verbatim: "Never assume authority(created) subset
+    # authority(creator)." A created principal whose queried effective
+    # authority exceeds the Root-approved MINTABLE_SCOPE_BOUND* is
+    # rejected by both the real compiled Rust root_authority kernel and
+    # the real Python re-derivation, regardless of what the creator holds.
+    bound_dict = {"issuing_plane_id": "issuer-1", "generation": 1, "max_scopes": ["read:repo"]}
+    query_dict = {"principal_id": "svc-account-1", "creator_plane_id": "issuer-1", "effective_scopes": ["read:repo", "admin:org"], "substrate_query_digest": "digest-1"}
+    try:
+        rust_check_created_principal_within_mintable_bound(bound_dict, query_dict)
+    except RootAuthorityCliError:
+        pass
+    else:
+        raise AssertionError("rust root_authority kernel incorrectly admitted a created principal whose effective authority exceeds MINTABLE_SCOPE_BOUND*")
+
+    bound = MintableScopeBound(issuing_plane_id="issuer-1", generation=1, max_scopes=frozenset({"read:repo"}))
+    substrate = LocalPrincipalAuthoritySubstrate()
+    substrate.register_created_principal("svc-account-1", "issuer-1", assigned_scopes=("read:repo", "admin:org"))
+    query = query_created_principal_authority(substrate, "svc-account-1")
+    check_created_principal_within_mintable_bound(bound, query)
+
+
+def _g2_17_successor_bound_expansion_without_amendment_kill_check() -> None:
+    # G2-00 SS10.1, verbatim: "A successor issuing plane cannot widen the
+    # approved bound without explicit Root amendment, new assurance and
+    # fresh authority generation."
+    predecessor_dict = {"issuing_plane_id": "issuer-1", "generation": 1, "max_scopes": ["read:repo"]}
+    successor_dict = {"issuing_plane_id": "issuer-1", "generation": 2, "max_scopes": ["read:repo", "admin:org"]}
+    try:
+        rust_check_successor_bound_non_expansion(predecessor_dict, successor_dict, None)
+    except RootAuthorityCliError:
+        pass
+    else:
+        raise AssertionError("rust root_authority kernel incorrectly admitted a successor bound widened without a Root amendment")
+
+    predecessor = MintableScopeBound(issuing_plane_id="issuer-1", generation=1, max_scopes=frozenset({"read:repo"}))
+    successor = MintableScopeBound(issuing_plane_id="issuer-1", generation=2, max_scopes=frozenset({"read:repo", "admin:org"}))
+    check_successor_bound_non_expansion(predecessor, successor, None)
+
+
 def build_initial_mutation_suite() -> MutationSuite:
     suite = MutationSuite()
 
@@ -1843,23 +1932,39 @@ def build_initial_mutation_suite() -> MutationSuite:
             "MUT-AUTHPLANE-001",
             MutationCategory.AUTHORITY_PLANE_CAUSAL_PREIMAGE_FAILURE,
             "EFFECT_REACH*(campaign) intersects AUTHORITY_CONTROL_PLANE_CAUSAL_PREIMAGE, meaning "
-            "the campaign can causally affect its own Root authority plane. No Root/issuing-"
-            "authority-plane runtime exists yet.",
-            "G2-00 SS10",
-            None,
-            None,
+            "the campaign can causally affect its own Root authority plane, rejected by both the "
+            "real compiled Rust root_authority kernel and the real Python containment check (G2-17).",
+            "G2-00 SS10; G2-17",
+            "root_authority_plane",
+            _g2_17_control_plane_exclusion_breach_kill_check,
+            RootAuthorityError,
         )
     )
     suite.register(
         MutationFixture(
             "MUT-PRINCIPAL-001",
             MutationCategory.PRINCIPAL_CREATION_ESCALATION,
-            "A newly-created principal's queried effective authority exceeds its creator's, "
-            "violating 'never assume authority(created) subset-of authority(creator)'. No "
-            "principal-creation runtime exists yet.",
-            "G2-00 SS10.1",
-            None,
-            None,
+            "A newly-created principal's queried effective authority exceeds the Root-approved "
+            "MINTABLE_SCOPE_BOUND*, independent of whatever its creator itself holds -- 'never "
+            "assume authority(created) subset-of authority(creator)' -- rejected by both the real "
+            "compiled Rust root_authority kernel and the real Python re-derivation (G2-17).",
+            "G2-00 SS10.1; G2-17",
+            "root_authority_plane",
+            _g2_17_created_principal_escalation_kill_check,
+            RootAuthorityError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G17-SUCCESSORBOUND-001",
+            MutationCategory.PRINCIPAL_CREATION_ESCALATION,
+            "A successor issuing plane's MINTABLE_SCOPE_BOUND* that widens the approved bound "
+            "without an explicit Root amendment is rejected by both the real compiled Rust "
+            "root_authority kernel and the real Python re-derivation (G2-17).",
+            "G2-00 SS10.1; G2-17",
+            "root_authority_plane",
+            _g2_17_successor_bound_expansion_without_amendment_kill_check,
+            RootAuthorityError,
         )
     )
     suite.register(

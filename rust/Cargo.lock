@@ -232,6 +232,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tenfold-root-authority"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tenfold-capability-graph",
+ "tenfold-trust-table",
+]
+
+[[package]]
 name = "tenfold-runtime-obligation"
 version = "0.1.0"
 dependencies = [

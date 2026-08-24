@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["trust_table", "obligation_ir", "certificate_checker", "identity_generation", "chronicle", "dispatch_lease", "proof_graph", "runtime_obligation", "facility", "capability_graph"]
+members = ["trust_table", "obligation_ir", "certificate_checker", "identity_generation", "chronicle", "dispatch_lease", "proof_graph", "runtime_obligation", "facility", "capability_graph", "root_authority"]
 
 # Tenfold Gen 2.0's Rust workspace. G2-00 SS4: "Rust ultimately owns:
 # canonical campaign state, generation authority, Campaign Program

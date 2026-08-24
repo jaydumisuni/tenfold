@@ -610,6 +610,60 @@ def build_g2_16_state_model() -> StateModel:
 
 
 # ============================================================================
+# G2-17 production State Model extension (G2-00 SS10; docs/08-gen2-
+# roadmap.md's G2-17 deliverable set). Root Authority Plane / reverse
+# causal preimage carries real Rust ownership (G2-00 SS4: "effect
+# authority" is Rust-owned, and this is built directly on G2-16's
+# capability_graph crate).
+# ============================================================================
+
+G2_17_REQUIRED_STATE_MODEL_FIELD_IDS: frozenset[str] = frozenset(
+    {
+        "authority_chain_state",
+        "causal_preimage_star_state",
+        "root_authority_rust_runtime",
+        "mintable_scope_bound_state",
+        "successor_bound_non_expansion_state",
+    }
+)
+
+
+def build_g2_17_state_model() -> StateModel:
+    """Extends the G2-16 State Model with G2-17's Root/issuing-authority-
+    plane/CAUSAL_PREIMAGE*/MINTABLE_SCOPE_BOUND* fields (G2-00 SS10;
+    `tenfold.gen2.root_authority` + `rust/root_authority`)."""
+    return build_g2_16_state_model().extend(
+        (
+            StateModelField(
+                "authority_chain_state", AuthorityHolder.GEN1_PYTHON,
+                "root_authority.AuthorityChain / AuthorityPlane / PlaneRole",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-17",
+            ),
+            StateModelField(
+                "causal_preimage_star_state", AuthorityHolder.GEN1_PYTHON,
+                "root_authority.compute_causal_preimage_star / CausalPreimageResult / check_control_plane_exclusion",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-17",
+            ),
+            StateModelField(
+                "root_authority_rust_runtime", AuthorityHolder.GEN2_RUST,
+                "root_authority::compute_causal_preimage_star / check_control_plane_exclusion / check_created_principal_within_mintable_bound",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-17",
+            ),
+            StateModelField(
+                "mintable_scope_bound_state", AuthorityHolder.GEN1_PYTHON,
+                "root_authority.MintableScopeBound / CreatedPrincipalAuthorityQuery / check_created_principal_within_mintable_bound",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-17",
+            ),
+            StateModelField(
+                "successor_bound_non_expansion_state", AuthorityHolder.GEN1_PYTHON,
+                "root_authority.RootAmendment / check_successor_bound_non_expansion",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-17",
+            ),
+        )
+    )
+
+
+# ============================================================================
 # Failure-space scenario generator base (G2-00 §14.1: "Failure-space
 # qualification reports 1-wise, pairwise, 3-wise high-risk, transition and
 # forbidden-state coverage according to frozen risk policy. No mathematical
