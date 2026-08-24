@@ -291,6 +291,7 @@ from .capability_graph import (
     EnumerationState,
     HighRiskUnboundedReachRejected,
     KnownCausalEdgeClass,
+    LocalAutomationSubstrate,
     NodeKind,
     ObservationCover,
     ObservationCoverGapDetected,
@@ -305,6 +306,8 @@ from .capability_graph import (
     classify_reach_state,
     compute_effect_reach_star,
     cross_check_effective_policy,
+    query_effective_policy,
+    traverse_containing_scope,
     verify_positive_control_detected,
 )
 from .capability_graph_bridge import (
@@ -567,6 +570,7 @@ __all__ = [
     "EnumerationState",
     "HighRiskUnboundedReachRejected",
     "KnownCausalEdgeClass",
+    "LocalAutomationSubstrate",
     "NodeKind",
     "ObservationCover",
     "ObservationCoverGapDetected",
@@ -581,6 +585,8 @@ __all__ = [
     "classify_reach_state",
     "compute_effect_reach_star",
     "cross_check_effective_policy",
+    "query_effective_policy",
+    "traverse_containing_scope",
     "verify_positive_control_detected",
     "CapabilityGraphCliBuildError",
     "CapabilityGraphCliError",

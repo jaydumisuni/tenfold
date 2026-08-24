@@ -31,7 +31,9 @@ from tenfold.gen2.capability_graph import (
     ContainingScopeTraversalResult,
     EffectivePolicyClaim,
     EffectReachResult,
+    EnumerationState,
     HighRiskUnboundedReachRejected,
+    LocalAutomationSubstrate,
     NodeKind,
     ObservationCover,
     ObservationCoverGapDetected,
@@ -46,6 +48,8 @@ from tenfold.gen2.capability_graph import (
     classify_reach_state,
     compute_effect_reach_star,
     cross_check_effective_policy,
+    query_effective_policy,
+    traverse_containing_scope,
     verify_positive_control_detected,
 )
 from tenfold.gen2.capability_graph_bridge import (
@@ -161,6 +165,27 @@ def test_g2_16_rejects_duplicate_node_id() -> None:
         graph.validate()
 
 
+def test_g2_16_rejects_a_direct_mutation_edge_whose_to_node_is_a_principal_not_a_resource() -> None:
+    """Self-caught before external review: without this check, a
+    malformed DIRECT_MUTATION edge pointing at a PRINCIPAL node would
+    silently insert that principal's id into the resource set during
+    compute_effect_reach_star."""
+    graph = CapabilityCausationGraph(nodes=(CapabilityNode("p1", NodeKind.PRINCIPAL), CapabilityNode("p2", NodeKind.PRINCIPAL)), edges=(CausalEdge("p1", "p2", "DIRECT_MUTATION"),))
+    with pytest.raises(CapabilityGraphError):
+        graph.validate()
+
+
+def test_g2_16_rejects_an_activates_edge_whose_from_node_is_a_principal_not_a_resource() -> None:
+    graph = CapabilityCausationGraph(nodes=(CapabilityNode("p1", NodeKind.PRINCIPAL), CapabilityNode("p2", NodeKind.PRINCIPAL)), edges=(CausalEdge("p1", "p2", "ACTIVATES"),))
+    with pytest.raises(CapabilityGraphError):
+        graph.validate()
+
+
+def test_g2_16_accepts_an_unknown_edge_class_regardless_of_node_kinds() -> None:
+    graph = CapabilityCausationGraph(nodes=(CapabilityNode("r1", NodeKind.RESOURCE), CapabilityNode("r2", NodeKind.RESOURCE)), edges=(CausalEdge("r1", "r2", "SOME_UNRECOGNIZED_KIND"),))
+    graph.validate()
+
+
 # ============================================================================
 # EFFECT_REACH* -- real Python/Rust differential testing.
 # ============================================================================
@@ -241,7 +266,7 @@ def test_g2_16_high_risk_unbounded_reach_rejects_in_python_and_rust() -> None:
     rust_result = rust_compute_effect_reach_star(dict_graph, ["p1"])
     assert rust_result["unbounded"] is True
     with pytest.raises(CapabilityGraphCliError):
-        rust_check_high_risk_reach_admission(rust_result)
+        rust_check_high_risk_reach_admission(dict_graph, ["p1"])
 
     py_graph = CapabilityCausationGraph(
         nodes=(CapabilityNode("p1", NodeKind.PRINCIPAL), CapabilityNode("mystery", NodeKind.RESOURCE)),
@@ -283,11 +308,25 @@ def test_g2_16_classify_unbounded_outranks_neutralized_claim() -> None:
     assert classify_reach_state(result, frozenset({"p1"}), True) == ReachState.TRANSITIVE_REACH_UNBOUNDED
 
 
-def test_g2_16_high_risk_reach_state_admission_rejects_only_unbounded() -> None:
+def test_g2_16_high_risk_reach_state_admission_rejects_unbounded_reach_regardless_of_enumeration() -> None:
     with pytest.raises(HighRiskUnboundedReachRejected):
-        check_high_risk_reach_state_admission(ReachState.TRANSITIVE_REACH_UNBOUNDED)
+        check_high_risk_reach_state_admission(ReachState.TRANSITIVE_REACH_UNBOUNDED, EnumerationState.DOMAIN_SCOPED)
+
+
+def test_g2_16_high_risk_reach_state_admission_accepts_bounded_reach_with_domain_scoped_enumeration() -> None:
     for state in (ReachState.DIRECT_REACH_BOUNDED, ReachState.TRANSITIVE_REACH_BOUNDED, ReachState.TRANSITIVE_REACH_NEUTRALIZED):
-        check_high_risk_reach_state_admission(state)
+        check_high_risk_reach_state_admission(state, EnumerationState.DOMAIN_SCOPED)
+
+
+def test_g2_16_high_risk_reach_state_admission_rejects_bounded_reach_with_inappropriate_enumeration() -> None:
+    """Round-2 review finding: bounded reach alone is not sufficient -- an
+    ATTRIBUTION_SCOPED or NON_ENUMERABLE Facility is an unenumerable
+    effect boundary that G2-00 SS9.5's "appropriate domain-scoped
+    observation" clause exists to reject even when reach itself is
+    bounded."""
+    for enumeration in (EnumerationState.ATTRIBUTION_SCOPED, EnumerationState.NON_ENUMERABLE):
+        with pytest.raises(HighRiskUnboundedReachRejected):
+            check_high_risk_reach_state_admission(ReachState.DIRECT_REACH_BOUNDED, enumeration)
 
 
 # ============================================================================
@@ -376,11 +415,11 @@ def test_g2_16_observation_cover_containment_passes_when_fully_nested_in_python_
     cover = ObservationCover(resource_ids=frozenset({"r1", "r2", "r3"}))
     check_observation_cover_containment(domain, reach, cover)
 
-    rust_check_observation_cover_containment(
-        ["r1"],
-        {"reached_principals": ["p1"], "reached_resources": ["r1", "r2"], "unbounded": False},
-        {"resource_ids": ["r1", "r2", "r3"]},
-    )
+    dict_graph = {
+        "nodes": [_node_dict("p1", "PRINCIPAL"), _node_dict("r1", "RESOURCE"), _node_dict("r2", "RESOURCE")],
+        "edges": [_edge_dict("p1", "r1", "DIRECT_MUTATION"), _edge_dict("p1", "r2", "DIRECT_MUTATION")],
+    }
+    rust_check_observation_cover_containment(dict_graph, ["p1"], ["r1"], {"resource_ids": ["r1", "r2", "r3"]})
 
 
 def test_g2_16_observation_cover_containment_gap_rejects_in_python_and_rust() -> None:
@@ -391,9 +430,8 @@ def test_g2_16_observation_cover_containment_gap_rejects_in_python_and_rust() ->
         "nodes": [_node_dict("p1", "PRINCIPAL"), _node_dict("r1", "RESOURCE")],
         "edges": [_edge_dict("p1", "r1", "DIRECT_MUTATION")],
     }
-    rust_reach = rust_compute_effect_reach_star(dict_graph, ["p1"])
     with pytest.raises(CapabilityGraphCliError):
-        rust_check_observation_cover_containment(["r1"], rust_reach, {"resource_ids": []})
+        rust_check_observation_cover_containment(dict_graph, ["p1"], ["r1"], {"resource_ids": []})
 
     graph = CapabilityCausationGraph(
         nodes=(CapabilityNode("p1", NodeKind.PRINCIPAL), CapabilityNode("r1", NodeKind.RESOURCE)),
@@ -402,6 +440,128 @@ def test_g2_16_observation_cover_containment_gap_rejects_in_python_and_rust() ->
     reach = compute_effect_reach_star(graph, frozenset({"p1"}))
     with pytest.raises(ObservationCoverGapDetected):
         check_observation_cover_containment(frozenset({"r1"}), reach, ObservationCover(resource_ids=frozenset()))
+
+
+def test_g2_16_observation_cover_containment_rejects_unbounded_reach_even_with_empty_domain_and_cover() -> None:
+    """Round-2 review finding: an unbounded result's known
+    reached_resources is only a lower bound -- containment cannot be
+    established no matter how trivial the enumerated domain/cover happen
+    to be."""
+    reach = EffectReachResult(reached_principals=frozenset(), reached_resources=frozenset(), unbounded=True)
+    with pytest.raises(ObservationCoverGapDetected):
+        check_observation_cover_containment(frozenset(), reach, ObservationCover(resource_ids=frozenset()))
+
+
+def test_g2_16_admit_check_high_risk_reach_admission_recomputes_from_the_graph_in_rust() -> None:
+    """Round-2 review finding: the Rust admission boundary must recompute
+    EFFECT_REACH* from the graph itself, never trust a caller-supplied
+    result -- proven here by never constructing an EffectReachResult at
+    all, only a graph."""
+    dict_graph = {
+        "nodes": [_node_dict("p1", "PRINCIPAL"), _node_dict("r1", "RESOURCE")],
+        "edges": [_edge_dict("p1", "r1", "DIRECT_MUTATION")],
+    }
+    result = rust_check_high_risk_reach_admission(dict_graph, ["p1"])
+    assert result["reached_resources"] == ["r1"]
+    assert result["unbounded"] is False
+
+
+def test_g2_16_admit_check_observation_cover_containment_recomputes_from_the_graph_in_rust() -> None:
+    dict_graph = {
+        "nodes": [_node_dict("p1", "PRINCIPAL"), _node_dict("r1", "RESOURCE")],
+        "edges": [_edge_dict("p1", "r1", "DIRECT_MUTATION")],
+    }
+    result = rust_check_observation_cover_containment(dict_graph, ["p1"], ["r1"], {"resource_ids": ["r1"]})
+    assert result["reached_resources"] == ["r1"]
+
+
+# ============================================================================
+# deny_unknown_fields -- the constitutional reject-unknown boundary.
+# ============================================================================
+
+
+def test_g2_16_rust_cli_rejects_an_unknown_field_on_the_graph_boundary() -> None:
+    """Round-2 review finding: a producer sending an extra/unrecognized
+    field must be rejected outright, not silently dropped by permissive
+    deserialization."""
+    dict_graph = {
+        "nodes": [_node_dict("p1", "PRINCIPAL"), _node_dict("r1", "RESOURCE")],
+        "edges": [_edge_dict("p1", "r1", "DIRECT_MUTATION")],
+        "unexpected_field": "x",
+    }
+    with pytest.raises(CapabilityGraphCliError):
+        rust_compute_effect_reach_star(dict_graph, ["p1"])
+
+
+def test_g2_16_rust_cli_rejects_an_unknown_field_on_a_node() -> None:
+    dict_graph = {
+        "nodes": [{"node_id": "p1", "kind": "PRINCIPAL", "unexpected_field": "x"}],
+        "edges": [],
+    }
+    with pytest.raises(CapabilityGraphCliError):
+        rust_compute_effect_reach_star(dict_graph, ["p1"])
+
+
+# ============================================================================
+# Effective-policy query adapters (round-2 review finding: the roadmap
+# names these explicitly as a G2-16 deliverable; a real, disposable local
+# substrate is genuinely queried, not hand-populated by the caller).
+# ============================================================================
+
+
+def test_g2_16_query_effective_policy_sees_only_the_direct_declaration() -> None:
+    substrate = LocalAutomationSubstrate()
+    substrate.attach_resource("res-1", automation_sources=("workflow-a",), containing_scope_id="org-1")
+    substrate.declare_scope_automation("org-1", ("org-policy-hidden",))
+
+    direct = query_effective_policy(substrate, "res-1")
+    assert direct == EffectivePolicyClaim(resource_id="res-1", automation_sources=("workflow-a",))
+
+
+def test_g2_16_traverse_containing_scope_unions_inherited_automation() -> None:
+    substrate = LocalAutomationSubstrate()
+    substrate.attach_resource("res-1", automation_sources=("workflow-a",), containing_scope_id="org-1")
+    substrate.declare_scope_automation("org-1", ("org-policy-hidden",))
+
+    full = traverse_containing_scope(substrate, "res-1")
+    assert full.resource_id == "res-1"
+    assert set(full.automation_sources) == {"workflow-a", "org-policy-hidden"}
+
+
+def test_g2_16_real_substrate_cross_check_detects_the_scope_inheritance_gap() -> None:
+    """The query adapter and the containing-scope traversal are two
+    genuinely independent queries against the same real substrate -- the
+    query adapter's blind spot for org-level inheritance is exactly what
+    the cross-check is meant to catch."""
+    substrate = LocalAutomationSubstrate()
+    substrate.attach_resource("res-1", automation_sources=("workflow-a",), containing_scope_id="org-1")
+    substrate.declare_scope_automation("org-1", ("org-policy-hidden",))
+
+    direct = query_effective_policy(substrate, "res-1")
+    full = traverse_containing_scope(substrate, "res-1")
+    result = cross_check_effective_policy(direct, full)
+    assert not result.automation_surface_enumerable
+    assert result.undeclared_sources == ("org-policy-hidden",)
+
+
+def test_g2_16_real_substrate_positive_control_is_genuinely_detected() -> None:
+    """G2-00 SS9.4's positive control run through the real adapter, not a
+    hand-constructed claim that already contains the marker."""
+    substrate = LocalAutomationSubstrate()
+    substrate.attach_resource("disposable-1", automation_sources=("selector-marker-xyz",))
+
+    query = query_effective_policy(substrate, "disposable-1")
+    attachment = PositiveControlAttachment(resource_id="disposable-1", marker="selector-marker-xyz")
+    assert verify_positive_control_detected(query, attachment)
+
+
+def test_g2_16_real_substrate_with_no_scope_declares_nothing_extra() -> None:
+    substrate = LocalAutomationSubstrate()
+    substrate.attach_resource("standalone-res", automation_sources=("workflow-a",))
+    direct = query_effective_policy(substrate, "standalone-res")
+    full = traverse_containing_scope(substrate, "standalone-res")
+    result = cross_check_effective_policy(direct, full)
+    assert result.automation_surface_enumerable
 
 
 # ============================================================================
@@ -418,6 +578,8 @@ def test_g2_16_capability_graph_fixtures_are_genuinely_killed() -> None:
         "MUT-G16-UNBOUNDEDREACH-001",
         "MUT-G16-SUBSTRATEGEN-001",
         "MUT-G16-AUTODOWNGRADE-001",
+        "MUT-G16-ENUMGATE-001",
+        "MUT-G16-EDGEKIND-001",
     ):
         assert results[fixture_id] == FixtureStatus.KILLED
 

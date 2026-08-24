@@ -151,20 +151,25 @@ from .execution_context import (
 )
 from .capability_graph import (
     CapabilityCausationGraph,
+    CapabilityGraphError,
     CapabilityNode,
     CausalEdge,
     ContainingScopeTraversalResult,
     EffectivePolicyClaim,
+    EnumerationState,
     HighRiskUnboundedReachRejected,
     NodeKind,
     ObservationCover,
     ObservationCoverGapDetected,
     PositiveControlAttachment,
+    ReachState,
     SubstrateCapabilityGeneration,
     SubstrateCapabilityGenerationStale,
     check_high_risk_reach_admission,
+    check_high_risk_reach_state_admission,
     check_observation_cover_containment,
     check_substrate_capability_generation_current,
+    classify_reach_state,
     compute_effect_reach_star,
     cross_check_effective_policy,
     verify_positive_control_detected,
@@ -1313,9 +1318,8 @@ def _g2_16_observation_cover_gap_kill_check() -> None:
         "nodes": [{"node_id": "p1", "kind": "PRINCIPAL"}, {"node_id": "r1", "kind": "RESOURCE"}],
         "edges": [{"from": "p1", "to": "r1", "edge_class": "DIRECT_MUTATION"}],
     }
-    rust_reach = rust_compute_effect_reach_star(graph_dict, ["p1"])
     try:
-        rust_check_observation_cover_containment(["r1"], rust_reach, {"resource_ids": []})
+        rust_check_observation_cover_containment(graph_dict, ["p1"], ["r1"], {"resource_ids": []})
     except CapabilityGraphCliError:
         pass
     else:
@@ -1341,7 +1345,7 @@ def _g2_16_unbounded_reach_kill_check() -> None:
     if rust_result["unbounded"] is not True:
         raise AssertionError(f"rust capability_graph kernel failed to classify an unknown causal-edge class as unbounded: {rust_result}")
     try:
-        rust_check_high_risk_reach_admission(rust_result)
+        rust_check_high_risk_reach_admission(graph_dict, ["p1"])
     except CapabilityGraphCliError:
         pass
     else:
@@ -1364,6 +1368,55 @@ def _g2_16_stale_substrate_generation_kill_check() -> None:
     qualified = SubstrateCapabilityGeneration(substrate_id="sub-1", generation=3, digest="d3")
     current = SubstrateCapabilityGeneration(substrate_id="sub-1", generation=4, digest="d4")
     check_substrate_capability_generation_current(qualified, current)
+
+
+def _g2_16_enumeration_gated_admission_kill_check() -> None:
+    # Round-2 review finding: bounded transitive reach alone must not
+    # admit high-risk work when the Facility's enumeration is
+    # ATTRIBUTION_SCOPED or NON_ENUMERABLE -- G2-00 SS9.5's "appropriate
+    # domain-scoped observation" clause requires DOMAIN_SCOPED
+    # specifically, in both real Rust and real Python.
+    dict_graph = {
+        "nodes": [{"node_id": "p1", "kind": "PRINCIPAL"}, {"node_id": "r1", "kind": "RESOURCE"}],
+        "edges": [{"from": "p1", "to": "r1", "edge_class": "DIRECT_MUTATION"}],
+    }
+    rust_result = rust_compute_effect_reach_star(dict_graph, ["p1"])
+    if rust_result["unbounded"] is not False:
+        raise AssertionError(f"rust capability_graph kernel unexpectedly classified a well-formed bounded graph as unbounded: {rust_result}")
+
+    graph = CapabilityCausationGraph(
+        nodes=(CapabilityNode("p1", NodeKind.PRINCIPAL), CapabilityNode("r1", NodeKind.RESOURCE)),
+        edges=(CausalEdge("p1", "r1", "DIRECT_MUTATION"),),
+    )
+    reach = compute_effect_reach_star(graph, frozenset({"p1"}))
+    reach_state = classify_reach_state(reach, frozenset({"p1"}), False)
+    if reach_state != ReachState.DIRECT_REACH_BOUNDED:
+        raise AssertionError(f"expected DIRECT_REACH_BOUNDED for this well-formed graph, got {reach_state}")
+    check_high_risk_reach_state_admission(reach_state, EnumerationState.NON_ENUMERABLE)
+
+
+def _g2_16_malformed_edge_kind_kill_check() -> None:
+    # Round-2 review finding: a DIRECT_MUTATION edge pointing at a
+    # PRINCIPAL node (instead of a RESOURCE) is structurally invalid and
+    # must be rejected by both real Rust and real Python validate(),
+    # rather than silently inserting the principal id into the resource
+    # set during EFFECT_REACH* computation.
+    dict_graph = {
+        "nodes": [{"node_id": "p1", "kind": "PRINCIPAL"}, {"node_id": "p2", "kind": "PRINCIPAL"}],
+        "edges": [{"from": "p1", "to": "p2", "edge_class": "DIRECT_MUTATION"}],
+    }
+    try:
+        rust_compute_effect_reach_star(dict_graph, ["p1"])
+    except CapabilityGraphCliError:
+        pass
+    else:
+        raise AssertionError("rust capability_graph kernel incorrectly admitted a DIRECT_MUTATION edge pointing at a PRINCIPAL node")
+
+    graph = CapabilityCausationGraph(
+        nodes=(CapabilityNode("p1", NodeKind.PRINCIPAL), CapabilityNode("p2", NodeKind.PRINCIPAL)),
+        edges=(CausalEdge("p1", "p2", "DIRECT_MUTATION"),),
+    )
+    graph.validate()
 
 
 class UndeclaredAutomationSourceCorrectlyDowngradesQualification(Exception):
@@ -1756,6 +1809,33 @@ def build_initial_mutation_suite() -> MutationSuite:
             "capability_causation_graph",
             _g2_16_automation_cross_check_downgrade_kill_check,
             UndeclaredAutomationSourceCorrectlyDowngradesQualification,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G16-ENUMGATE-001",
+            MutationCategory.EFFECT_CONTAINMENT,
+            "Bounded transitive reach over a Facility whose enumeration is NON_ENUMERABLE (not "
+            "DOMAIN_SCOPED) is rejected for high-risk work by the real Python high-risk admission "
+            "check -- round-2 review finding (G2-16).",
+            "G2-00 SS9.5; G2-16",
+            "capability_causation_graph",
+            _g2_16_enumeration_gated_admission_kill_check,
+            HighRiskUnboundedReachRejected,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G16-EDGEKIND-001",
+            MutationCategory.BOUNDARY_INDEPENDENCE_FAILURE,
+            "A DIRECT_MUTATION edge whose `to` node is a PRINCIPAL, not a RESOURCE, is rejected by "
+            "both the real compiled Rust capability_graph kernel and the real Python validate() -- "
+            "round-2 review finding, self-caught before external review confirmed it independently "
+            "(G2-16).",
+            "G2-00 SS9.3; G2-16",
+            "capability_causation_graph",
+            _g2_16_malformed_edge_kind_kill_check,
+            CapabilityGraphError,
         )
     )
     suite.register(

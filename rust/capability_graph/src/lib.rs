@@ -52,6 +52,7 @@ pub enum NodeKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CapabilityNode {
     pub node_id: String,
     pub kind: NodeKind,
@@ -104,9 +105,21 @@ impl KnownCausalEdgeClass {
     pub fn parse_known(s: &str) -> Option<Self> {
         ALL_KNOWN_CAUSAL_EDGE_CLASSES.into_iter().find(|c| c.as_str() == s)
     }
+
+    /// The fixed (from_kind, to_kind) shape G2-00 SS9.3's six required
+    /// edge classes carry, verbatim.
+    pub fn expected_node_kinds(&self) -> (NodeKind, NodeKind) {
+        match self {
+            KnownCausalEdgeClass::DIRECT_MUTATION => (NodeKind::PRINCIPAL, NodeKind::RESOURCE),
+            KnownCausalEdgeClass::ACTIVATES => (NodeKind::RESOURCE, NodeKind::PRINCIPAL),
+            KnownCausalEdgeClass::ASSUME_DELEGATE | KnownCausalEdgeClass::MINTS | KnownCausalEdgeClass::CREATES => (NodeKind::PRINCIPAL, NodeKind::PRINCIPAL),
+            KnownCausalEdgeClass::TRIGGERS => (NodeKind::RESOURCE, NodeKind::PRINCIPAL),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CausalEdge {
     pub from: String,
     pub to: String,
@@ -126,6 +139,7 @@ impl CausalEdge {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CapabilityCausationGraph {
     pub nodes: Vec<CapabilityNode>,
     pub edges: Vec<CausalEdge>,
@@ -142,16 +156,38 @@ impl CapabilityCausationGraph {
                 return Err(err(format!("CapabilityCausationGraph: duplicate node_id {:?}", node.node_id)));
             }
         }
-        let ids: HashSet<&str> = self.nodes.iter().map(|n| n.node_id.as_str()).collect();
         for edge in &self.edges {
             if edge.edge_class.trim().is_empty() {
                 return Err(err("CausalEdge: edge_class must be non-empty"));
             }
-            if !ids.contains(edge.from.as_str()) {
+            let Some(from_kind) = self.node_kind(&edge.from) else {
                 return Err(err(format!("CausalEdge references unknown node {:?} as `from`", edge.from)));
-            }
-            if !ids.contains(edge.to.as_str()) {
+            };
+            let Some(to_kind) = self.node_kind(&edge.to) else {
                 return Err(err(format!("CausalEdge references unknown node {:?} as `to`", edge.to)));
+            };
+            // A known edge class carries a fixed (from_kind, to_kind) shape
+            // (G2-00 SS9.3's six required edge classes, verbatim). A node
+            // of the wrong kind at either end would silently corrupt
+            // compute_effect_reach_star's principal/resource bookkeeping
+            // (e.g. a "DIRECT_MUTATION" edge whose `to` is actually a
+            // PRINCIPAL node would insert a principal id into the resource
+            // set) -- self-caught before any external review, fixed here
+            // rather than left for the traversal to misinterpret. An
+            // edge class this crate does not recognize carries no fixed
+            // shape to check against; it is unconditionally accepted here
+            // and instead fails closed to TRANSITIVE_REACH_UNBOUNDED in
+            // compute_effect_reach_star.
+            if let Some(known) = edge.known_class() {
+                let (expected_from, expected_to) = known.expected_node_kinds();
+                if from_kind != expected_from || to_kind != expected_to {
+                    return Err(err(format!(
+                        "CausalEdge {:?} ({from_kind:?} {:?} -> {to_kind:?} {:?}): expects {expected_from:?} -> {expected_to:?}",
+                        known.as_str(),
+                        edge.from,
+                        edge.to
+                    )));
+                }
             }
         }
         Ok(())
@@ -167,6 +203,7 @@ impl CapabilityCausationGraph {
 // ============================================================================
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EffectReachResult {
     pub reached_principals: BTreeSet<String>,
     pub reached_resources: BTreeSet<String>,
@@ -289,11 +326,22 @@ pub fn classify_reach_state(result: &EffectReachResult, seed_principals: &BTreeS
     }
 }
 
-/// High-risk mutation requires bounded/neutralized transitive reach
-/// (G2-00 SS9.5, verbatim).
-pub fn check_high_risk_reach_state_admission(state: ReachState) -> Result<(), CapabilityGraphError> {
-    if state == ReachState::TRANSITIVE_REACH_UNBOUNDED {
+/// High-risk mutation requires bounded/neutralized transitive reach AND
+/// appropriate domain-scoped observation (G2-00 SS9.5, verbatim). Review
+/// finding: a version of this check that only inspected `ReachState`
+/// would admit high-risk work with bounded reach over a Facility whose
+/// enumeration is `ATTRIBUTION_SCOPED` or `NON_ENUMERABLE` -- an
+/// unenumerable effect boundary that SS9.5's "appropriate domain-scoped
+/// observation" clause exists specifically to reject. Only
+/// `DOMAIN_SCOPED` counts as appropriate.
+pub fn check_high_risk_reach_state_admission(reach: ReachState, enumeration: EnumerationState) -> Result<(), CapabilityGraphError> {
+    if reach == ReachState::TRANSITIVE_REACH_UNBOUNDED {
         return Err(err("ReachState is TRANSITIVE_REACH_UNBOUNDED: high-risk mutation requires bounded/neutralized transitive reach"));
+    }
+    if enumeration != EnumerationState::DOMAIN_SCOPED {
+        return Err(err(format!(
+            "EnumerationState is {enumeration:?}, not DOMAIN_SCOPED: high-risk mutation requires appropriate domain-scoped observation"
+        )));
     }
     Ok(())
 }
@@ -304,18 +352,21 @@ pub fn check_high_risk_reach_state_admission(state: ReachState) -> Result<(), Ca
 // ============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EffectivePolicyClaim {
     pub resource_id: String,
     pub automation_sources: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ContainingScopeTraversalResult {
     pub resource_id: String,
     pub automation_sources: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AutomationCrossCheckResult {
     pub resource_id: String,
     /// G2-00 SS9.4: "Failure sets `automation_surface_enumerable = false`."
@@ -346,6 +397,7 @@ pub fn cross_check_effective_policy(query: &EffectivePolicyClaim, containing_sco
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PositiveControlAttachment {
     pub resource_id: String,
     pub marker: String,
@@ -365,6 +417,7 @@ pub fn verify_positive_control_detected(query: &EffectivePolicyClaim, attachment
 // ============================================================================
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SubstrateCapabilityGeneration {
     pub substrate_id: String,
     pub generation: u64,
@@ -393,6 +446,7 @@ pub fn check_substrate_capability_generation_current(qualified: &SubstrateCapabi
 // ============================================================================
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ObservationCover {
     pub resource_ids: BTreeSet<String>,
 }
@@ -414,6 +468,16 @@ pub fn check_observation_cover_containment(
     effect_reach: &EffectReachResult,
     observation_cover: &ObservationCover,
 ) -> Result<(), CapabilityGraphError> {
+    // Review finding: an unbounded result's `reached_resources` is only
+    // the *known* subset -- an unrecognized causal-edge class means the
+    // true reachable set is not bounded at all, so EFFECT_REACH* subset
+    // OBSERVATION_COVER cannot be established no matter how small (even
+    // empty) the enumerated sets happen to be.
+    if effect_reach.unbounded {
+        return Err(err(
+            "EFFECT_REACH* is TRANSITIVE_REACH_UNBOUNDED: AUTHORIZED_MUTATION_DOMAIN subset EFFECT_REACH* subset OBSERVATION_COVER cannot be established over an unbounded reach set",
+        ));
+    }
     let uncovered_by_reach: Vec<&String> = authorized_mutation_domain.iter().filter(|r| !effect_reach.reached_resources.contains(*r)).collect();
     if !uncovered_by_reach.is_empty() {
         return Err(err(format!(
@@ -438,13 +502,14 @@ pub fn trust_table_row() -> trust_table::TrustTableRow {
     trust_table::TrustTableRow {
         artifact_identity: "capability_causation_graph".into(),
         independently_checks: vec![
-            "node/edge structural validity (no dangling edge endpoints, non-empty ids/classes, no duplicate node_id)".into(),
-            "least-fixpoint EFFECT_REACH* computation over the declared causal edges".into(),
+            "node/edge structural validity: no dangling edge endpoints, non-empty ids/classes, no duplicate node_id, and every known edge class's endpoints match its required PRINCIPAL/RESOURCE shape".into(),
+            "least-fixpoint EFFECT_REACH* computation over the declared causal edges, always freshly recomputed from the supplied graph/seeds -- the admit_* entry points never accept a caller-supplied EffectReachResult as authoritative".into(),
             "unknown causal-edge class forces TRANSITIVE_REACH_UNBOUNDED, never silent omission".into(),
-            "AUTHORIZED_MUTATION_DOMAIN subset EFFECT_REACH* subset OBSERVATION_COVER containment".into(),
+            "AUTHORIZED_MUTATION_DOMAIN subset EFFECT_REACH* subset OBSERVATION_COVER containment, itself rejecting an unbounded reach result outright".into(),
+            "high-risk admission requires both bounded/neutralized reach and DOMAIN_SCOPED enumeration".into(),
         ],
         trusts_only: "Python-discovered graph nodes/edges and effective-policy query results, reach-computed and containment-checked independently".into(),
-        trust_bounded_reason: "G2-00 SS9.3-9.6: substrate discovery (what nodes/edges/policy claims actually exist) is Python's job (simulation and analysis); the least-fixpoint reach computation, the fail-closed unknown-edge rule, and Observation Cover containment are mechanically re-derived by Rust independent of whatever completeness the producer claims about its own graph".into(),
+        trust_bounded_reason: "G2-00 SS9.3-9.6: substrate discovery (what nodes/edges/policy claims actually exist) is Python's job (simulation and analysis); the least-fixpoint reach computation, the fail-closed unknown-edge rule, and Observation Cover containment are mechanically re-derived by Rust independent of whatever completeness the producer claims about its own graph -- the admit_* boundary always recomputes reach from the graph itself rather than trusting a producer-asserted result".into(),
         authority_generation: 1,
         required_negative_fixture: "unbounded reach admitted as bounded".into(),
         failure_result: "reject".into(),
@@ -457,19 +522,34 @@ pub fn admit_compute_effect_reach_star(table: &trust_table::TrustTable, graph: &
     compute_effect_reach_star(graph, seed_principals)
 }
 
-pub fn admit_check_high_risk_reach_admission(table: &trust_table::TrustTable, result: &EffectReachResult) -> Result<(), CapabilityGraphError> {
+/// Review finding: this authoritative admission boundary must not accept
+/// a caller-supplied `EffectReachResult` -- nothing would bind it to the
+/// actual graph/seeds, so a producer could submit `unbounded: false`
+/// regardless of what its real reachable graph contains, bypassing the
+/// Rust computation the Trust Table row claims is independently checked.
+/// It now always recomputes `EFFECT_REACH*` itself from the supplied
+/// graph and seeds and returns the freshly computed result.
+pub fn admit_check_high_risk_reach_admission(table: &trust_table::TrustTable, graph: &CapabilityCausationGraph, seed_principals: &BTreeSet<String>) -> Result<EffectReachResult, CapabilityGraphError> {
     table.admit("capability_causation_graph").map_err(|e| err(e.to_string()))?;
-    check_high_risk_reach_admission(result)
+    let result = compute_effect_reach_star(graph, seed_principals)?;
+    check_high_risk_reach_admission(&result)?;
+    Ok(result)
 }
 
+/// Same binding fix as `admit_check_high_risk_reach_admission`: recomputes
+/// `EFFECT_REACH*` from the supplied graph/seeds rather than trusting a
+/// caller-supplied result.
 pub fn admit_check_observation_cover_containment(
     table: &trust_table::TrustTable,
+    graph: &CapabilityCausationGraph,
+    seed_principals: &BTreeSet<String>,
     authorized_mutation_domain: &BTreeSet<String>,
-    effect_reach: &EffectReachResult,
     observation_cover: &ObservationCover,
-) -> Result<(), CapabilityGraphError> {
+) -> Result<EffectReachResult, CapabilityGraphError> {
     table.admit("capability_causation_graph").map_err(|e| err(e.to_string()))?;
-    check_observation_cover_containment(authorized_mutation_domain, effect_reach, observation_cover)
+    let effect_reach = compute_effect_reach_star(graph, seed_principals)?;
+    check_observation_cover_containment(authorized_mutation_domain, &effect_reach, observation_cover)?;
+    Ok(effect_reach)
 }
 
 #[cfg(test)]
@@ -527,6 +607,32 @@ mod tests {
     fn rejects_blank_node_id() {
         let graph = CapabilityCausationGraph { nodes: vec![node("  ", NodeKind::PRINCIPAL)], edges: vec![] };
         assert!(graph.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_a_direct_mutation_edge_whose_to_node_is_a_principal_not_a_resource() {
+        // Self-caught before external review: without this check, a
+        // malformed DIRECT_MUTATION edge pointing at a PRINCIPAL node
+        // would silently insert that principal's id into the resource
+        // set during compute_effect_reach_star.
+        let graph = CapabilityCausationGraph { nodes: vec![node("p1", NodeKind::PRINCIPAL), node("p2", NodeKind::PRINCIPAL)], edges: vec![edge("p1", "p2", "DIRECT_MUTATION")] };
+        assert!(graph.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_an_activates_edge_whose_from_node_is_a_principal_not_a_resource() {
+        let graph = CapabilityCausationGraph { nodes: vec![node("p1", NodeKind::PRINCIPAL), node("p2", NodeKind::PRINCIPAL)], edges: vec![edge("p1", "p2", "ACTIVATES")] };
+        assert!(graph.validate().is_err());
+    }
+
+    #[test]
+    fn accepts_an_unknown_edge_class_regardless_of_node_kinds() {
+        // An edge class this crate does not recognize carries no fixed
+        // shape to check against -- it is accepted structurally and
+        // instead fails closed to TRANSITIVE_REACH_UNBOUNDED during
+        // compute_effect_reach_star, not rejected at validate() time.
+        let graph = CapabilityCausationGraph { nodes: vec![node("r1", NodeKind::RESOURCE), node("r2", NodeKind::RESOURCE)], edges: vec![edge("r1", "r2", "SOME_UNRECOGNIZED_KIND")] };
+        graph.validate().unwrap();
     }
 
     #[test]
@@ -666,10 +772,26 @@ mod tests {
     }
 
     #[test]
-    fn check_high_risk_reach_state_admission_rejects_only_unbounded() {
-        assert!(check_high_risk_reach_state_admission(ReachState::TRANSITIVE_REACH_UNBOUNDED).is_err());
+    fn check_high_risk_reach_state_admission_rejects_unbounded_reach_regardless_of_enumeration() {
+        assert!(check_high_risk_reach_state_admission(ReachState::TRANSITIVE_REACH_UNBOUNDED, EnumerationState::DOMAIN_SCOPED).is_err());
+    }
+
+    #[test]
+    fn check_high_risk_reach_state_admission_accepts_bounded_reach_with_domain_scoped_enumeration() {
         for state in [ReachState::DIRECT_REACH_BOUNDED, ReachState::TRANSITIVE_REACH_BOUNDED, ReachState::TRANSITIVE_REACH_NEUTRALIZED] {
-            check_high_risk_reach_state_admission(state).unwrap();
+            check_high_risk_reach_state_admission(state, EnumerationState::DOMAIN_SCOPED).unwrap();
+        }
+    }
+
+    #[test]
+    fn check_high_risk_reach_state_admission_rejects_bounded_reach_with_inappropriate_enumeration() {
+        // Review finding: bounded reach alone is not sufficient -- an
+        // ATTRIBUTION_SCOPED or NON_ENUMERABLE Facility is an unenumerable
+        // effect boundary that G2-00 SS9.5's "appropriate domain-scoped
+        // observation" clause exists to reject even when reach itself is
+        // bounded.
+        for enumeration in [EnumerationState::ATTRIBUTION_SCOPED, EnumerationState::NON_ENUMERABLE] {
+            assert!(check_high_risk_reach_state_admission(ReachState::DIRECT_REACH_BOUNDED, enumeration).is_err());
         }
     }
 
@@ -778,6 +900,18 @@ mod tests {
         assert!(check_observation_cover_containment(&domain, &reach, &cover).is_err());
     }
 
+    #[test]
+    fn observation_cover_containment_rejects_unbounded_reach_even_with_empty_domain_and_cover() {
+        // Review finding: an unbounded result's known reached_resources is
+        // only a lower bound -- the true reachable set is not bounded at
+        // all, so containment cannot be established no matter how trivial
+        // the enumerated domain/cover happen to be.
+        let domain: BTreeSet<String> = BTreeSet::new();
+        let reach = EffectReachResult { unbounded: true, ..Default::default() };
+        let cover = ObservationCover::default();
+        assert!(check_observation_cover_containment(&domain, &reach, &cover).is_err());
+    }
+
     // ---- Trust Table admission ----
 
     #[test]
@@ -805,16 +939,90 @@ mod tests {
     #[test]
     fn admit_check_high_risk_reach_admission_fails_closed_when_table_has_no_row() {
         let table = trust_table::initial_trust_table();
-        let result = EffectReachResult { unbounded: false, ..Default::default() };
-        assert!(admit_check_high_risk_reach_admission(&table, &result).is_err());
+        let graph = CapabilityCausationGraph {
+            nodes: vec![node("p1", NodeKind::PRINCIPAL), node("r1", NodeKind::RESOURCE)],
+            edges: vec![edge("p1", "r1", "DIRECT_MUTATION")],
+        };
+        assert!(admit_check_high_risk_reach_admission(&table, &graph, &seeds(&["p1"])).is_err());
+    }
+
+    #[test]
+    fn admit_check_high_risk_reach_admission_recomputes_reach_and_succeeds_when_bounded() {
+        let graph = CapabilityCausationGraph {
+            nodes: vec![node("p1", NodeKind::PRINCIPAL), node("r1", NodeKind::RESOURCE)],
+            edges: vec![edge("p1", "r1", "DIRECT_MUTATION")],
+        };
+        let result = admit_check_high_risk_reach_admission(&admitted_table(), &graph, &seeds(&["p1"])).unwrap();
+        assert!(result.reached_resources.contains("r1"));
+        assert!(!result.unbounded);
+    }
+
+    #[test]
+    fn admit_check_high_risk_reach_admission_rejects_a_graph_that_is_genuinely_unbounded() {
+        // Review finding: this must recompute from the graph, not trust a
+        // caller-supplied EffectReachResult -- proven here by never
+        // constructing an EffectReachResult at all, only a graph whose
+        // real computation is unbounded.
+        let graph = CapabilityCausationGraph {
+            nodes: vec![node("p1", NodeKind::PRINCIPAL), node("mystery", NodeKind::RESOURCE)],
+            edges: vec![edge("p1", "mystery", "SOME_UNRECOGNIZED_KIND")],
+        };
+        assert!(admit_check_high_risk_reach_admission(&admitted_table(), &graph, &seeds(&["p1"])).is_err());
     }
 
     #[test]
     fn admit_check_observation_cover_containment_fails_closed_when_table_has_no_row() {
         let table = trust_table::initial_trust_table();
+        let graph = CapabilityCausationGraph {
+            nodes: vec![node("p1", NodeKind::PRINCIPAL), node("r1", NodeKind::RESOURCE)],
+            edges: vec![edge("p1", "r1", "DIRECT_MUTATION")],
+        };
         let domain = seeds(&["r1"]);
-        let reach = EffectReachResult { reached_resources: seeds(&["r1"]), ..Default::default() };
         let cover = ObservationCover { resource_ids: seeds(&["r1"]) };
-        assert!(admit_check_observation_cover_containment(&table, &domain, &reach, &cover).is_err());
+        assert!(admit_check_observation_cover_containment(&table, &graph, &seeds(&["p1"]), &domain, &cover).is_err());
+    }
+
+    #[test]
+    fn admit_check_observation_cover_containment_recomputes_reach_and_succeeds_when_contained() {
+        let graph = CapabilityCausationGraph {
+            nodes: vec![node("p1", NodeKind::PRINCIPAL), node("r1", NodeKind::RESOURCE)],
+            edges: vec![edge("p1", "r1", "DIRECT_MUTATION")],
+        };
+        let domain = seeds(&["r1"]);
+        let cover = ObservationCover { resource_ids: seeds(&["r1"]) };
+        let result = admit_check_observation_cover_containment(&admitted_table(), &graph, &seeds(&["p1"]), &domain, &cover).unwrap();
+        assert!(result.reached_resources.contains("r1"));
+    }
+
+    #[test]
+    fn admit_check_observation_cover_containment_rejects_a_graph_that_is_genuinely_unbounded() {
+        let graph = CapabilityCausationGraph {
+            nodes: vec![node("p1", NodeKind::PRINCIPAL), node("mystery", NodeKind::RESOURCE)],
+            edges: vec![edge("p1", "mystery", "SOME_UNRECOGNIZED_KIND")],
+        };
+        let domain: BTreeSet<String> = BTreeSet::new();
+        let cover = ObservationCover::default();
+        assert!(admit_check_observation_cover_containment(&admitted_table(), &graph, &seeds(&["p1"]), &domain, &cover).is_err());
+    }
+
+    // ---- deny_unknown_fields (constitutional reject-unknown boundary) ----
+
+    #[test]
+    fn causal_edge_rejects_an_unknown_field() {
+        let result: Result<CausalEdge, _> = serde_json::from_str(r#"{"from":"p1","to":"r1","edge_class":"DIRECT_MUTATION","extra_field":"x"}"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn capability_causation_graph_rejects_an_unknown_field() {
+        let result: Result<CapabilityCausationGraph, _> = serde_json::from_str(r#"{"nodes":[],"edges":[],"extra_field":"x"}"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn effect_reach_result_rejects_an_unknown_field() {
+        let result: Result<EffectReachResult, _> =
+            serde_json::from_str(r#"{"reached_principals":[],"reached_resources":[],"unbounded":false,"extra_field":"x"}"#);
+        assert!(result.is_err());
     }
 }

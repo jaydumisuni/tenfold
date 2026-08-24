@@ -63,20 +63,31 @@ def rust_compute_effect_reach_star(graph: dict, seed_principals: list[str]) -> d
     return json.loads(_run("effect-reach", input_text=json.dumps({"graph": graph, "seed_principals": seed_principals})))
 
 
-def rust_check_high_risk_reach_admission(effect_reach_result: dict) -> None:
-    _run("high-risk-reach-admission", input_text=json.dumps(effect_reach_result))
+def rust_check_high_risk_reach_admission(graph: dict, seed_principals: list[str]) -> dict:
+    """Review finding: this must recompute EFFECT_REACH* from the real
+    graph rather than accept a caller-supplied result -- nothing would
+    bind a bare result to the actual graph, letting a producer submit
+    `unbounded: false` regardless of the truth. Takes the graph/seeds and
+    returns the freshly recomputed `EffectReachResult` dict on success."""
+    return json.loads(_run("high-risk-reach-admission", input_text=json.dumps({"graph": graph, "seed_principals": seed_principals})))
 
 
-def rust_check_observation_cover_containment(authorized_mutation_domain: list[str], effect_reach_result: dict, observation_cover: dict) -> None:
-    _run(
-        "observation-cover-containment",
-        input_text=json.dumps(
-            {
-                "authorized_mutation_domain": authorized_mutation_domain,
-                "effect_reach": effect_reach_result,
-                "observation_cover": observation_cover,
-            }
-        ),
+def rust_check_observation_cover_containment(graph: dict, seed_principals: list[str], authorized_mutation_domain: list[str], observation_cover: dict) -> dict:
+    """Same binding fix as `rust_check_high_risk_reach_admission`: takes
+    the graph/seeds and returns the freshly recomputed `EffectReachResult`
+    dict on success, rather than accepting a caller-supplied result."""
+    return json.loads(
+        _run(
+            "observation-cover-containment",
+            input_text=json.dumps(
+                {
+                    "graph": graph,
+                    "seed_principals": seed_principals,
+                    "authorized_mutation_domain": authorized_mutation_domain,
+                    "observation_cover": observation_cover,
+                }
+            ),
+        )
     )
 
 

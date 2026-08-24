@@ -7,14 +7,31 @@ authoritative source, mirrored by the independent Rust re-derivation in
 fail-closed unknown-causal-edge-class rule, and Observation Cover
 containment). Graph/policy *discovery* -- what nodes/edges/effective-policy
 claims actually exist in a real substrate -- is Python-only per G2-00 SS4's
-"Python may own: ... simulation and analysis"; this module provides the
-schema and reference computation that discovery would feed, not a live
-discovery adapter against any real substrate (none is in scope for G2-16).
+"Python may own: ... simulation and analysis".
+
+Round-2 review finding, disclosed rather than silently dismissed: the
+roadmap's own G2-16 deliverable list names "effective-policy query
+adapters" explicitly, and the round-1 version of this module provided only
+value-object schemas a caller could hand-populate directly, with no
+genuine adapter that actually queries anything. `LocalAutomationSubstrate`
+below is a real (if disposable/local, mirroring G2-14's
+`LocalSandboxFacility` pattern) substrate a caller populates with
+per-resource and per-scope automation declarations; `query_effective_policy`
+and `traverse_containing_scope` are genuine adapters that query it --
+`query_effective_policy` deliberately sees only a resource's own direct
+declaration (mirroring a real effective-policy query's blind spot for
+scope-level inheritance), while `traverse_containing_scope` genuinely
+walks the containing-scope chain and unions every scope-level declaration
+along the way, so `cross_check_effective_policy` has two independently
+queried sources to reconcile, not two hand-constructed claims. No live
+adapter against a real external substrate (GitHub Actions, an actual
+container registry, ...) exists yet -- disclosed honestly as a real
+limitation, not silently assumed solved.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 
@@ -48,6 +65,18 @@ class KnownCausalEdgeClass(str, Enum):
     TRIGGERS = "TRIGGERS"  # RESOURCE -> PRINCIPAL
 
 
+# The fixed (from_kind, to_kind) shape G2-00 SS9.3's six required edge
+# classes carry, verbatim.
+_EXPECTED_NODE_KINDS: dict[KnownCausalEdgeClass, tuple[NodeKind, NodeKind]] = {
+    KnownCausalEdgeClass.DIRECT_MUTATION: (NodeKind.PRINCIPAL, NodeKind.RESOURCE),
+    KnownCausalEdgeClass.ACTIVATES: (NodeKind.RESOURCE, NodeKind.PRINCIPAL),
+    KnownCausalEdgeClass.ASSUME_DELEGATE: (NodeKind.PRINCIPAL, NodeKind.PRINCIPAL),
+    KnownCausalEdgeClass.MINTS: (NodeKind.PRINCIPAL, NodeKind.PRINCIPAL),
+    KnownCausalEdgeClass.CREATES: (NodeKind.PRINCIPAL, NodeKind.PRINCIPAL),
+    KnownCausalEdgeClass.TRIGGERS: (NodeKind.RESOURCE, NodeKind.PRINCIPAL),
+}
+
+
 @dataclass(frozen=True)
 class CausalEdge:
     from_node: str
@@ -79,14 +108,33 @@ class CapabilityCausationGraph:
             if node.node_id in seen:
                 raise CapabilityGraphError(f"CapabilityCausationGraph: duplicate node_id {node.node_id!r}")
             seen.add(node.node_id)
-        ids = {n.node_id for n in self.nodes}
         for edge in self.edges:
             if not edge.edge_class or not edge.edge_class.strip():
                 raise CapabilityGraphError("CausalEdge: edge_class must be non-empty")
-            if edge.from_node not in ids:
+            from_kind = self.node_kind(edge.from_node)
+            if from_kind is None:
                 raise CapabilityGraphError(f"CausalEdge references unknown node {edge.from_node!r} as `from`")
-            if edge.to_node not in ids:
+            to_kind = self.node_kind(edge.to_node)
+            if to_kind is None:
                 raise CapabilityGraphError(f"CausalEdge references unknown node {edge.to_node!r} as `to`")
+            # A known edge class carries a fixed (from_kind, to_kind) shape
+            # (G2-00 SS9.3's six required edge classes, verbatim). A node
+            # of the wrong kind at either end would silently corrupt
+            # compute_effect_reach_star's principal/resource bookkeeping
+            # (e.g. a DIRECT_MUTATION edge whose `to` is actually a
+            # PRINCIPAL node would insert a principal id into the resource
+            # set) -- self-caught before any external review. An edge
+            # class this module does not recognize carries no fixed shape
+            # to check against; it is unconditionally accepted here and
+            # instead fails closed to unbounded in compute_effect_reach_star.
+            known = edge.known_class()
+            if known is not None:
+                expected_from, expected_to = _EXPECTED_NODE_KINDS[known]
+                if from_kind != expected_from or to_kind != expected_to:
+                    raise CapabilityGraphError(
+                        f"CausalEdge {known.value!r} ({from_kind.value} {edge.from_node!r} -> {to_kind.value} {edge.to_node!r}): "
+                        f"expects {expected_from.value} -> {expected_to.value}"
+                    )
 
     def node_kind(self, node_id: str) -> NodeKind | None:
         for node in self.nodes:
@@ -209,12 +257,20 @@ def classify_reach_state(result: EffectReachResult, seed_principals: frozenset[s
     return ReachState.TRANSITIVE_REACH_BOUNDED
 
 
-def check_high_risk_reach_state_admission(state: ReachState) -> None:
+def check_high_risk_reach_state_admission(reach: ReachState, enumeration: EnumerationState) -> None:
     """High-risk mutation requires bounded/neutralized transitive reach
-    (G2-00 SS9.5, verbatim)."""
+    AND appropriate domain-scoped observation (G2-00 SS9.5, verbatim).
+    Review finding: a version of this check that only inspected
+    `ReachState` would admit high-risk work with bounded reach over a
+    Facility whose enumeration is ATTRIBUTION_SCOPED or NON_ENUMERABLE --
+    an unenumerable effect boundary that SS9.5's "appropriate domain-scoped
+    observation" clause exists specifically to reject. Only DOMAIN_SCOPED
+    counts as appropriate."""
 
-    if state == ReachState.TRANSITIVE_REACH_UNBOUNDED:
+    if reach == ReachState.TRANSITIVE_REACH_UNBOUNDED:
         raise HighRiskUnboundedReachRejected("ReachState is TRANSITIVE_REACH_UNBOUNDED: high-risk mutation requires bounded/neutralized transitive reach")
+    if enumeration != EnumerationState.DOMAIN_SCOPED:
+        raise HighRiskUnboundedReachRejected(f"EnumerationState is {enumeration.value}, not DOMAIN_SCOPED: high-risk mutation requires appropriate domain-scoped observation")
 
 
 # ============================================================================
@@ -275,6 +331,66 @@ def verify_positive_control_detected(query: EffectivePolicyClaim, attachment: Po
 
 
 # ============================================================================
+# Effective-policy query adapters (G2-16 roadmap deliverable, round-2
+# review finding): a real, disposable, in-memory substrate the adapters
+# below genuinely query -- mirrors G2-14's LocalSandboxFacility pattern.
+# No live adapter against a real external substrate exists; this is the
+# reference/local implementation the roadmap's later milestones (or a
+# real Facility integration) would extend with a genuine remote query.
+# ============================================================================
+
+
+@dataclass
+class LocalAutomationSubstrate:
+    # resource_id -> automation sources declared directly on that
+    # resource (what a real per-resource effective-policy query sees).
+    direct_automation: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # resource_id -> the scope_id containing it (e.g. a repo's org).
+    containing_scope: dict[str, str] = field(default_factory=dict)
+    # scope_id -> automation sources every resource within that scope
+    # inherits (org policy, enterprise policy, ...); scope_id may itself
+    # have a containing scope for multi-level inheritance.
+    scope_automation: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+    def attach_resource(self, resource_id: str, automation_sources: tuple[str, ...] = (), containing_scope_id: str | None = None) -> None:
+        self.direct_automation[resource_id] = automation_sources
+        if containing_scope_id is not None:
+            self.containing_scope[resource_id] = containing_scope_id
+
+    def declare_scope_automation(self, scope_id: str, automation_sources: tuple[str, ...], containing_scope_id: str | None = None) -> None:
+        self.scope_automation[scope_id] = automation_sources
+        if containing_scope_id is not None:
+            self.containing_scope[scope_id] = containing_scope_id
+
+
+def query_effective_policy(substrate: LocalAutomationSubstrate, resource_id: str) -> EffectivePolicyClaim:
+    """The primary source (G2-00 SS9.4: "SUBSTRATE EFFECTIVE-POLICY
+    QUERY"): genuinely queries the substrate for a resource's own direct
+    automation declaration -- deliberately NOT the containing-scope
+    inherited automation, mirroring a real effective-policy query's blind
+    spot for scope-level inheritance. That gap is exactly why
+    `traverse_containing_scope`/`cross_check_effective_policy` exist as an
+    independent second source."""
+
+    return EffectivePolicyClaim(resource_id=resource_id, automation_sources=substrate.direct_automation.get(resource_id, ()))
+
+
+def traverse_containing_scope(substrate: LocalAutomationSubstrate, resource_id: str) -> ContainingScopeTraversalResult:
+    """The cross-check source: genuinely walks the resource's containing-
+    scope chain, unioning every scope-level automation declaration found
+    along the way with the resource's own direct declaration."""
+
+    sources: set[str] = set(substrate.direct_automation.get(resource_id, ()))
+    scope_id = substrate.containing_scope.get(resource_id)
+    visited: set[str] = set()
+    while scope_id is not None and scope_id not in visited:
+        visited.add(scope_id)
+        sources.update(substrate.scope_automation.get(scope_id, ()))
+        scope_id = substrate.containing_scope.get(scope_id)
+    return ContainingScopeTraversalResult(resource_id=resource_id, automation_sources=tuple(sorted(sources)))
+
+
+# ============================================================================
 # SUBSTRATE_CAPABILITY_GENERATION (G2-00 SS9.4): "Qualification binds
 # SUBSTRATE_CAPABILITY_GENERATION; relevant substrate changes invalidate
 # prior containment qualification."
@@ -331,6 +447,15 @@ class ObservationCoverGapDetected(CapabilityGraphError):
 
 
 def check_observation_cover_containment(authorized_mutation_domain: frozenset[str], effect_reach: EffectReachResult, observation_cover: ObservationCover) -> None:
+    # Review finding: an unbounded result's reached_resources is only the
+    # *known* subset -- an unrecognized causal-edge class means the true
+    # reachable set is not bounded at all, so EFFECT_REACH* subset
+    # OBSERVATION_COVER cannot be established no matter how small (even
+    # empty) the enumerated sets happen to be.
+    if effect_reach.unbounded:
+        raise ObservationCoverGapDetected(
+            "EFFECT_REACH* is TRANSITIVE_REACH_UNBOUNDED: AUTHORIZED_MUTATION_DOMAIN subset EFFECT_REACH* subset OBSERVATION_COVER cannot be established over an unbounded reach set"
+        )
     uncovered_by_reach = sorted(r for r in authorized_mutation_domain if r not in effect_reach.reached_resources)
     if uncovered_by_reach:
         raise ObservationCoverGapDetected(
