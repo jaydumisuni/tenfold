@@ -1169,3 +1169,29 @@ def independent_classify_effect_census(expected: list[dict], observed: list[dict
             residue_class = "UNJOURNALED_EFFECT"
         entries.append({"effect_id": effect_id, "residue_class": residue_class})
     return entries
+
+
+def independent_check_evidence_packet_generation_current(packet: dict, current_campaign_generation: int, current_dispatch_epoch: int) -> bool:
+    """Independent re-derivation of the `"evidence_packet"` Trust Table
+    row's own generation-currency check (G2-00 SS4.1: "generation,
+    provenance, detector/tool/input bindings"; G2-19), operating on a raw
+    dict rather than importing `tenfold.gen2.bootstrap_protocol`'s own
+    `EvidencePacketV1` dataclass or `check_evidence_packet_generation_
+    current` -- an independent implementation written from the same Trust
+    Table row text, not a call into the artifact it reconciles against.
+    Returns True only when the packet is structurally well-formed AND its
+    campaign_generation/dispatch_epoch match the caller's current,
+    independently-known values; a stale/wrong-generation packet returns
+    False rather than raising, so a caller can accumulate findings.
+    """
+    required_fields = ("packet_id", "task_id", "assignment_id", "dispatch_digest", "campaign_id", "node_id", "worker_identity", "source_binding")
+    for field_name in required_fields:
+        if not packet.get(field_name, "").strip():
+            return False
+    if packet.get("campaign_generation", 0) <= 0 or packet.get("dispatch_epoch", 0) <= 0:
+        return False
+    if packet["campaign_generation"] != current_campaign_generation:
+        return False
+    if packet["dispatch_epoch"] != current_dispatch_epoch:
+        return False
+    return True

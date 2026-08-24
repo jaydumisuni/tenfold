@@ -56,8 +56,10 @@ impl TrustTableRow {
     /// to record, and is not distinguishable from a row nobody filled in.
     /// This is deliberately independent of `fixture_qualified`: a row can
     /// be well-formed metadata (every field honestly filled in) while its
-    /// fixture is still honestly unqualified — that is exactly the
-    /// `facility_declaration`/`evidence_packet` state today.
+    /// fixture is still honestly unqualified — that was the
+    /// `facility_declaration`/`evidence_packet` state until the
+    /// milestones that finally built the real runtime behind each claim
+    /// (G2-14, G2-19) activated them.
     pub fn is_well_formed(&self) -> bool {
         !self.artifact_identity.trim().is_empty()
             && !self.independently_checks.is_empty()
@@ -282,7 +284,11 @@ pub fn initial_trust_table() -> TrustTable {
             authority_generation: 1,
             required_negative_fixture: "stale/wrong-generation evidence".into(),
             failure_result: "reject".into(),
-            fixture_qualified: false,
+            // G2-19 (rust/bootstrap_protocol) is the real crate genuinely
+            // backing this claim now -- flipped from the honest `false`
+            // G2-03 seeded this row with, left unqualified through every
+            // milestone from G2-04 through G2-18.
+            fixture_qualified: true,
         },
         TrustTableRow {
             artifact_identity: "external_assurance".into(),
@@ -342,6 +348,7 @@ mod tests {
             "external_assurance",
             "runtime_obligation",
             "facility_declaration",
+            "evidence_packet",
         ] {
             assert!(table.admit(identity).is_ok(), "expected {identity} to be admitted");
         }
@@ -349,13 +356,28 @@ mod tests {
 
     #[test]
     fn fail_closed_admission_for_artifact_with_no_qualified_fixture() {
-        // A row's mere presence is not admission: evidence_packet is a
-        // real, well-formed Trust Table row, but no fixture has genuinely
-        // killed the mutation its required_negative_fixture describes yet
-        // (tenfold.gen2.mutation_fixtures leaves it PENDING_IMPLEMENTATION
-        // honestly). admit() must refuse it exactly like a missing row.
-        let table = initial_trust_table();
-        let identity = "evidence_packet";
+        // A row's mere presence is not admission: a newly-extended row can
+        // be well-formed metadata (every field honestly filled in) while
+        // its fixture is still honestly unqualified -- admit() must refuse
+        // it exactly like a missing row. As of G2-19, every one of the 11
+        // initial minimum-family rows is genuinely fixture_qualified
+        // (evidence_packet, the last honest gap since G2-03, was activated
+        // by rust/bootstrap_protocol), so this scenario is now exercised
+        // against a freshly-extended row rather than a pre-seeded one.
+        let mut table = initial_trust_table();
+        let identity = "future_family_pending_qualification";
+        table
+            .extend(TrustTableRow {
+                artifact_identity: identity.to_string(),
+                independently_checks: vec!["check".into()],
+                trusts_only: "trusts".into(),
+                trust_bounded_reason: "reason".into(),
+                authority_generation: 1,
+                required_negative_fixture: "fixture".into(),
+                failure_result: "reject".into(),
+                fixture_qualified: false,
+            })
+            .unwrap();
         assert_eq!(
             table.admit(identity),
             Err(TrustTableError::UnqualifiedFixture { artifact_identity: identity.to_string() }),

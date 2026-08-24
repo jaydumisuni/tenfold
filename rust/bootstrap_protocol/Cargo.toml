@@ -1,0 +1,23 @@
+[package]
+name = "tenfold-bootstrap-protocol"
+version = "0.1.0"
+edition = "2021"
+description = "tenfold.bootstrap.v1 -- the frozen cross-runtime interoperability protocol (G2-00 SS3, SS4, SS15, G2-19) for Tenfold Gen 2.0."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+trust_table = { package = "tenfold-trust-table", path = "../trust_table" }
+identity_generation = { package = "tenfold-identity-generation", path = "../identity_generation" }
+dispatch_lease = { package = "tenfold-dispatch-lease", path = "../dispatch_lease" }
+chronicle = { package = "tenfold-chronicle", path = "../chronicle" }
+proof_graph = { package = "tenfold-proof-graph", path = "../proof_graph" }
+effect_census = { package = "tenfold-effect-census", path = "../effect_census" }
+
+[lib]
+name = "bootstrap_protocol"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bootstrap_protocol_cli"
+path = "src/bin/bootstrap_protocol_cli.rs"

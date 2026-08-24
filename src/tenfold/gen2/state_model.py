@@ -724,6 +724,61 @@ def build_g2_18_state_model() -> StateModel:
 
 
 # ============================================================================
+# G2-19 production State Model extension (G2-00 SS3, SS4, SS15;
+# docs/08-gen2-roadmap.md's G2-19 deliverable set). Carries real Rust
+# ownership: the frozen tenfold.bootstrap.v1 protocol is a genuine
+# cross-runtime authority-bearing wire contract (G2-00 SS4.1), built
+# directly on identity_generation/dispatch_lease/proof_graph/chronicle/
+# effect_census.
+# ============================================================================
+
+G2_19_REQUIRED_STATE_MODEL_FIELD_IDS: frozenset[str] = frozenset(
+    {
+        "bootstrap_protocol_corpus_state",
+        "task_packet_state",
+        "evidence_packet_generation_state",
+        "facility_request_result_state",
+        "bootstrap_protocol_rust_runtime",
+    }
+)
+
+
+def build_g2_19_state_model() -> StateModel:
+    """Extends the G2-18 State Model with G2-19's frozen
+    tenfold.bootstrap.v1 cross-runtime protocol fields (G2-00 SS3, SS4,
+    SS15; `tenfold.gen2.bootstrap_protocol` + `rust/bootstrap_protocol`)."""
+    return build_g2_18_state_model().extend(
+        (
+            StateModelField(
+                "bootstrap_protocol_corpus_state", AuthorityHolder.GEN1_PYTHON,
+                "bootstrap_protocol.validate_bootstrap_corpus / BootstrapCorpusV1 / PROTOCOL_VERSION",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-19",
+            ),
+            StateModelField(
+                "task_packet_state", AuthorityHolder.GEN1_PYTHON,
+                "bootstrap_protocol.TaskPacketV1",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-19",
+            ),
+            StateModelField(
+                "evidence_packet_generation_state", AuthorityHolder.GEN1_PYTHON,
+                "bootstrap_protocol.EvidencePacketV1 / check_evidence_packet_generation_current",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-19",
+            ),
+            StateModelField(
+                "facility_request_result_state", AuthorityHolder.GEN1_PYTHON,
+                "bootstrap_protocol.FacilityRequestV1 / FacilityResultV1 / check_facility_result_matches_request",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-19",
+            ),
+            StateModelField(
+                "bootstrap_protocol_rust_runtime", AuthorityHolder.GEN2_RUST,
+                "bootstrap_protocol::validate_bootstrap_corpus / admit_validate_task_packet / admit_check_evidence_packet_generation_current / admit_check_facility_result_matches_request",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-19",
+            ),
+        )
+    )
+
+
+# ============================================================================
 # Failure-space scenario generator base (G2-00 §14.1: "Failure-space
 # qualification reports 1-wise, pairwise, 3-wise high-risk, transition and
 # forbidden-state coverage according to frozen risk policy. No mathematical

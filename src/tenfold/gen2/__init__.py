@@ -381,6 +381,27 @@ from .effect_census_bridge import (
     rust_close_effect_issuance,
     rust_reopen_effect_issuance,
 )
+from .bootstrap_protocol import (
+    PROTOCOL_VERSION,
+    BootstrapProtocolError,
+    EvidencePacketV1,
+    FacilityRequestV1,
+    FacilityResultV1,
+    RuntimeIdentity,
+    RuntimeKind,
+    TaskPacketV1,
+    check_evidence_packet_generation_current,
+    check_facility_result_matches_request,
+    validate_bootstrap_corpus,
+)
+from .bootstrap_protocol_bridge import (
+    BootstrapProtocolCliBuildError,
+    BootstrapProtocolCliError,
+    rust_check_evidence_packet_generation_current,
+    rust_check_facility_result_matches_request,
+    rust_validate_bootstrap_corpus,
+    rust_validate_task_packet,
+)
 
 __all__ = [
     "ArtifactBinding",
@@ -712,4 +733,21 @@ __all__ = [
     "rust_check_observation_cover_recheck",
     "rust_close_effect_issuance",
     "rust_reopen_effect_issuance",
+    "PROTOCOL_VERSION",
+    "BootstrapProtocolError",
+    "EvidencePacketV1",
+    "FacilityRequestV1",
+    "FacilityResultV1",
+    "RuntimeIdentity",
+    "RuntimeKind",
+    "TaskPacketV1",
+    "check_evidence_packet_generation_current",
+    "check_facility_result_matches_request",
+    "validate_bootstrap_corpus",
+    "BootstrapProtocolCliBuildError",
+    "BootstrapProtocolCliError",
+    "rust_check_evidence_packet_generation_current",
+    "rust_check_facility_result_matches_request",
+    "rust_validate_bootstrap_corpus",
+    "rust_validate_task_packet",
 ]

@@ -158,6 +158,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tenfold-bootstrap-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tenfold-chronicle",
+ "tenfold-dispatch-lease",
+ "tenfold-effect-census",
+ "tenfold-identity-generation",
+ "tenfold-proof-graph",
+ "tenfold-trust-table",
+]
+
+[[package]]
 name = "tenfold-capability-graph"
 version = "0.1.0"
 dependencies = [

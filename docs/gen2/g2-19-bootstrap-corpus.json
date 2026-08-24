@@ -1,0 +1,111 @@
+{
+  "protocol_version": "tenfold.bootstrap.v1",
+  "campaign_identity": {
+    "campaign_id": "tenfold-gen2-0-construction",
+    "generation": 1
+  },
+  "organization_generation": 1,
+  "authority_generation": {
+    "campaign_id": "tenfold-gen2-0-construction",
+    "foreman_epoch": 1
+  },
+  "runtime_identity": {
+    "runtime_id": "gen2-rust-bootstrap-protocol",
+    "runtime_kind": "GEN2_RUST",
+    "version": "0.1.0"
+  },
+  "task_packet": {
+    "task_id": "g2-19-corpus-task-1",
+    "campaign_id": "tenfold-gen2-0-construction",
+    "campaign_generation": 1,
+    "node_id": "g2-19",
+    "assignment_id": "g2-19-corpus-assignment-1",
+    "attempt": 1,
+    "objective": "freeze tenfold.bootstrap.v1",
+    "scope": ["rust/bootstrap_protocol", "src/tenfold/gen2/bootstrap_protocol.py"],
+    "capabilities": [],
+    "permissions": [],
+    "evidence_obligations": [],
+    "stop_conditions": [],
+    "reporting_officer": "verification",
+    "source_binding": "g2-19-corpus-source",
+    "dispatch_digest": "g2-19-corpus-dispatch-digest",
+    "foreman_epoch": 1,
+    "lease_id": "g2-19-corpus-lease-1",
+    "lease_epoch": 1,
+    "lease_generation": 1,
+    "request_binding": "g2-19-corpus-request-binding"
+  },
+  "evidence_packet": {
+    "packet_id": "g2-19-corpus-packet-1",
+    "task_id": "g2-19-corpus-task-1",
+    "assignment_id": "g2-19-corpus-assignment-1",
+    "attempt": 1,
+    "dispatch_digest": "g2-19-corpus-dispatch-digest",
+    "campaign_id": "tenfold-gen2-0-construction",
+    "campaign_generation": 1,
+    "node_id": "g2-19",
+    "worker_identity": "opus-handoff-tenfold-gen1-workspace",
+    "source_binding": "g2-19-corpus-source",
+    "observations": [],
+    "artifacts": [],
+    "results": [],
+    "limitations": [],
+    "anomalies": [],
+    "questions": [],
+    "dispatch_epoch": 1
+  },
+  "lease": {
+    "lease_id": "g2-19-corpus-lease-1",
+    "campaign_id": "tenfold-gen2-0-construction",
+    "campaign_generation": 1,
+    "epoch": 1,
+    "generation": 1,
+    "owner_lane": "g2-19-corpus-lane",
+    "namespace": "g2-19-corpus-namespace",
+    "surfaces": ["g2-19-corpus-surface"],
+    "conflict_groups": [],
+    "resources": [],
+    "active": true
+  },
+  "facility_request": {
+    "request_id": "g2-19-corpus-request-1",
+    "facility_id": "g2-19-corpus-facility-1",
+    "facility_generation": 1,
+    "operation": "read",
+    "authority_ref": "authority@g2-19-corpus"
+  },
+  "facility_result": {
+    "request_id": "g2-19-corpus-request-1",
+    "facility_id": "g2-19-corpus-facility-1",
+    "facility_generation": 1,
+    "outcome": "ACKNOWLEDGED",
+    "evidence_refs": ["g2-19-corpus-evidence-1"]
+  },
+  "assurance_result": {
+    "assurance_type": "independent_authority_review",
+    "expected_campaign_generation": 1,
+    "expected_milestone_id": "g2-19",
+    "expected_obligation_ids": ["g2-19-corpus-obligation-1"],
+    "supplied_request_digest": "g2-19-corpus-req-digest",
+    "supplied_response_digest": "g2-19-corpus-resp-digest",
+    "supplied_authority_identity": "g2-19-corpus-authority-1",
+    "supplied_authority_generation": 1,
+    "supplied_campaign_generation": 1,
+    "supplied_milestone_id": "g2-19",
+    "supplied_obligation_ids": ["g2-19-corpus-obligation-1"],
+    "retained_request_digest": "g2-19-corpus-req-digest",
+    "retained_response_digest": "g2-19-corpus-resp-digest",
+    "retained_authority_identity": "g2-19-corpus-authority-1",
+    "retained_authority_generation": 1
+  },
+  "chronicle_event": {
+    "sequence": 1,
+    "event_type": "g2-19-corpus-event",
+    "payload_digest": "g2-19-corpus-payload-digest",
+    "previous_entry_digest": null,
+    "writer_id": "g2-19-corpus-writer",
+    "writer_generation": 1,
+    "entry_digest": "a79928c923fb01d9af72787254bb150a67f528e97809a8e6c18638600983b228"
+  }
+}
