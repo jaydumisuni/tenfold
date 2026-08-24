@@ -780,16 +780,25 @@ def build_g2_19_state_model() -> StateModel:
 
 # ============================================================================
 # G2-20 production State Model extension (G2-00 §14; docs/08-gen2-
-# roadmap.md's G2-20 deliverable: "Facility-held authority-state
-# mapping"). Closes a concrete, mechanically-confirmed gap: through
-# G2-19, `AuthorityHolder.FACILITY` had zero State Model fields, despite
-# G2-00 §14 naming Facility-held authority state as one of the four
-# authority holders the State Model must cover. `facility.
-# LocalSandboxFacility` (G2-14) genuinely holds authority-bearing state
-# distinct from Python's own model of a Facility's contract/declaration
-# (`facility_contract_state`, GEN1_PYTHON-held): the actual committed
-# resource map, the Facility's own generation counter, its effect log,
-# and in-flight-ownership state for recovery takeover.
+# roadmap.md's G2-20 deliverables: "Facility-held authority-state
+# mapping" and "Chronicle projection-state mapping"). Closes two
+# concrete, mechanically-confirmed gaps: through G2-19,
+# `AuthorityHolder.FACILITY` and `AuthorityHolder.CHRONICLE_PROJECTION`
+# both had zero State Model fields, despite G2-00 §14 naming both as
+# authority holders the State Model must cover -- every prior chronicle_*
+# field is GEN2_RUST-held (the live engine's own internal writer-lease/
+# sequence/durability state), never the distinct *projected* read-view
+# other components consume.
+#
+# Round-2 review finding: the original version of this section stopped
+# at 4 Facility fields and named zero Chronicle-projection fields,
+# despite this module's own module-level docstring already claiming
+# "Chronicle projection-state mapping" as delivered. `facility.
+# LocalSandboxFacility._execution_count` -- genuinely mutated by
+# `execute()` and used to derive the authoritative ACK sequence -- was
+# also missing; a migration/reconstruction based on the original 4-field
+# roster could restore committed effects while silently resetting the
+# next ACK sequence.
 #
 # Scope boundary, honestly disclosed (not silently claimed complete):
 # Recovery-specific authority state is explicitly excluded here --
@@ -811,6 +820,8 @@ G2_20_REQUIRED_STATE_MODEL_FIELD_IDS: frozenset[str] = frozenset(
         "facility_generation_state",
         "facility_effect_log_state",
         "facility_in_flight_owner_state",
+        "facility_execution_count_state",
+        "chronicle_projection_state",
     }
 )
 
@@ -818,7 +829,11 @@ G2_20_REQUIRED_STATE_MODEL_FIELD_IDS: frozenset[str] = frozenset(
 def build_g2_20_state_model() -> StateModel:
     """Extends the G2-19 State Model with G2-20's Facility-held authority
     fields (G2-00 §14; `tenfold.gen2.facility.LocalSandboxFacility`) --
-    the first fields to use `AuthorityHolder.FACILITY`."""
+    the first fields to use `AuthorityHolder.FACILITY` -- and the first
+    field to use `AuthorityHolder.CHRONICLE_PROJECTION`
+    (`chronicle_bridge.dump_as_chronicle_events`, the derived read-view of
+    committed Chronicle history other components consume, distinct from
+    the live Rust engine's own GEN2_RUST-held internal state)."""
     return build_g2_19_state_model().extend(
         (
             StateModelField(
@@ -841,6 +856,16 @@ def build_g2_20_state_model() -> StateModel:
                 "facility.LocalSandboxFacility._in_flight_owner / begin_operation_in_flight / resolve_in_flight_via_takeover",
                 StateModelDisposition.RUNTIME_MAPPED, "G2-20",
             ),
+            StateModelField(
+                "facility_execution_count_state", AuthorityHolder.FACILITY,
+                "facility.LocalSandboxFacility._execution_count",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-20",
+            ),
+            StateModelField(
+                "chronicle_projection_state", AuthorityHolder.CHRONICLE_PROJECTION,
+                "chronicle_bridge.dump_as_chronicle_events",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-20",
+            ),
         )
     )
 
@@ -855,12 +880,27 @@ def build_g2_20_state_model() -> StateModel:
 # Operationalizes this mechanically over the existing `StateModelField`
 # schema rather than inventing a parallel one: every field already names
 # an `invariant_ref` (the concrete runtime location backing it) and an
-# `owning_holder`. Two or more fields sharing the same `invariant_ref`
-# genuinely describe the *same* invariant from different registration
-# points (e.g. chronicle_writer_id/chronicle_writer_generation both cite
-# "chronicle::ChronicleEngine (writer lease)") -- grouping by
-# `invariant_ref` and requiring a single `owning_holder` per group is
-# real, checkable ownership-split detection, not a printed claim.
+# `owning_holder`. Two or more fields sharing the *same, literal*
+# `invariant_ref` string genuinely describe the same invariant from
+# different registration points (e.g. chronicle_writer_id/
+# chronicle_writer_generation both cite "chronicle::ChronicleEngine
+# (writer lease)") -- grouping by `invariant_ref` and requiring a single
+# `owning_holder` per group catches that real class of bug.
+#
+# Round-2 review finding: this string-grouping check, by itself, cannot
+# detect the more important cross-runtime case -- a Python field and its
+# own Rust re-derivation of the SAME invariant naturally have DIFFERENT
+# description strings (e.g. dispatch_campaign_state_projection cites
+# "Foreman.runtime.states / CampaignSnapshot.state_map()" while
+# dispatch_rust_campaign_node_state cites "dispatch_lease::
+# CampaignNodeState / Frontier" for the same underlying campaign-node-
+# state invariant), so this function silently treats them as two
+# unrelated single-owner invariants and never flags that both could be
+# mistaken for simultaneously-valid owners. `check_cross_runtime_
+# authoritative_ownership` below is the mechanism that closes that gap,
+# using an explicit, deliberately-authored pairing roster rather than
+# incidental string matching -- this function's own scope is now
+# disclosed as the narrower (still real) literal-string-collision check.
 # ============================================================================
 
 
@@ -872,9 +912,12 @@ class InvariantOwnershipEntry:
 
 
 def build_invariant_ownership_matrix(model: StateModel) -> tuple[InvariantOwnershipEntry, ...]:
-    """Groups every field in `model` by `invariant_ref` and raises if any
-    group's fields disagree on `owning_holder` -- a genuine, mechanical
-    check for "no invariant split across Python/Rust" (G2-00 §15)."""
+    """Groups every field in `model` by the literal `invariant_ref`
+    string and raises if any group's fields disagree on `owning_holder`.
+    Catches an exact-description ownership collision; does NOT by itself
+    detect a Python field and its differently-described Rust
+    re-derivation of the same conceptual invariant -- see
+    `check_cross_runtime_authoritative_ownership` for that."""
     model.validate()
     by_ref: dict[str, list[StateModelField]] = {}
     for field_entry in model.fields:
@@ -888,6 +931,100 @@ def build_invariant_ownership_matrix(model: StateModel) -> tuple[InvariantOwners
             raise StateModelError(f"INVARIANT_SPLIT: invariant_ref {invariant_ref!r} has multiple owning holders: {sorted(h.value for h in holders)}")
         entries.append(InvariantOwnershipEntry(invariant_ref, next(iter(holders)), tuple(f.field_id for f in fields)))
     return tuple(entries)
+
+
+# ============================================================================
+# G2-20 cross-runtime authoritative ownership (round-2 review finding,
+# closing the gap `build_invariant_ownership_matrix` above cannot: "Use a
+# shared invariant/slice identity plus generation-valid ownership so
+# shadow Rust cannot be mistaken for a second valid owner.")
+#
+# Every `*_rust_runtime` field registered from G2-12 onward is, by this
+# campaign's own established naming convention, EXPLICITLY the Rust
+# re-derivation of a specific, already-named Python-side capability
+# (e.g. `proof_graph_rust_runtime` re-derives what `proof_graph_node_
+# state`/`proof_evidence_admission`/... track; `capability_graph_rust_
+# runtime` re-derives `capability_causation_graph_state`/
+# `effect_reach_star_state`). This is a deliberately-authored pairing
+# roster keyed on that real, existing naming convention -- not incidental
+# string matching -- and each pairing records which holder is the
+# CURRENTLY authoritative one, matching G2-00 §15's actual model: "Only
+# one active owner exists" at any generation, with a not-yet-migrated
+# implementation legitimately existing as a differential-tested shadow,
+# not a second valid owner. As of G2-20, `docs/08-gen2-roadmap.md`'s own
+# dependency spine has qualified Tenfold Gen 1 as the sole construction/
+# authority runtime through G2-23 -- so every pairing's authoritative
+# holder is GEN1_PYTHON today; migrating any one of them to GEN2_RUST is
+# each later slice-migration milestone's (G2-21 through G2-23) own
+# separately-scoped, Freeze/Prove-gated decision, never silently implied
+# by this roster.
+# ============================================================================
+
+
+@dataclass(frozen=True)
+class CrossRuntimeInvariantPairing:
+    invariant_identity: str
+    authoritative_field_id: str
+    shadow_field_id: str
+    authoritative_holder: AuthorityHolder
+
+    def validate(self) -> None:
+        if not self.invariant_identity.strip():
+            raise StateModelError("invariant_identity must be a non-empty string")
+        if not self.authoritative_field_id.strip() or not self.shadow_field_id.strip():
+            raise StateModelError(f"CrossRuntimeInvariantPairing {self.invariant_identity!r}: field ids must be non-empty")
+        if self.authoritative_field_id == self.shadow_field_id:
+            raise StateModelError(f"CrossRuntimeInvariantPairing {self.invariant_identity!r}: authoritative_field_id and shadow_field_id must differ")
+
+
+def build_g2_20_cross_runtime_invariant_pairings() -> tuple[CrossRuntimeInvariantPairing, ...]:
+    """The production cross-runtime pairing roster: every genuine Python-
+    side capability that also has a named `*_rust_runtime` re-derivation,
+    as of G2-20."""
+    return (
+        CrossRuntimeInvariantPairing("campaign_dispatch_admission", "dispatch_campaign_state_projection", "dispatch_rust_campaign_node_state", AuthorityHolder.GEN1_PYTHON),
+        CrossRuntimeInvariantPairing("proof_graph_admission", "proof_graph_node_state", "proof_graph_rust_runtime", AuthorityHolder.GEN1_PYTHON),
+        CrossRuntimeInvariantPairing("runtime_obligation_derivation", "runtime_obligation_registry_state", "runtime_obligation_rust_runtime", AuthorityHolder.GEN1_PYTHON),
+        CrossRuntimeInvariantPairing("facility_property_qualification", "facility_contract_state", "facility_rust_runtime", AuthorityHolder.GEN1_PYTHON),
+        CrossRuntimeInvariantPairing("capability_causation_reach", "capability_causation_graph_state", "capability_graph_rust_runtime", AuthorityHolder.GEN1_PYTHON),
+        CrossRuntimeInvariantPairing("root_issuing_authority_plane", "authority_chain_state", "root_authority_rust_runtime", AuthorityHolder.GEN1_PYTHON),
+        CrossRuntimeInvariantPairing("effect_census_classification", "effect_census_residue_state", "effect_census_rust_runtime", AuthorityHolder.GEN1_PYTHON),
+        CrossRuntimeInvariantPairing("bootstrap_protocol_corpus", "bootstrap_protocol_corpus_state", "bootstrap_protocol_rust_runtime", AuthorityHolder.GEN1_PYTHON),
+    )
+
+
+def check_cross_runtime_authoritative_ownership(model: StateModel, pairings: tuple[CrossRuntimeInvariantPairing, ...]) -> None:
+    """For every pairing: both field ids must exist in `model`, must not
+    be the same field, and the authoritative field's `owning_holder` must
+    genuinely match `authoritative_holder` (a shadow re-derivation
+    silently promoted to authoritative -- or vice versa -- is exactly the
+    "shadow Rust mistaken for a second valid owner" failure this check
+    exists to catch). Also requires every `*_rust_runtime` field actually
+    present in `model` to be covered by some pairing's `shadow_field_id`
+    -- an un-paired Rust re-derivation is itself a reconciliation gap."""
+    model.validate()
+    field_ids = model.field_ids()
+    seen_identities: set[str] = set()
+    paired_shadow_ids: set[str] = set()
+    for pairing in pairings:
+        pairing.validate()
+        if pairing.invariant_identity in seen_identities:
+            raise StateModelError(f"duplicate CrossRuntimeInvariantPairing invariant_identity: {pairing.invariant_identity}")
+        seen_identities.add(pairing.invariant_identity)
+        for field_id in (pairing.authoritative_field_id, pairing.shadow_field_id):
+            if field_id not in field_ids:
+                raise StateModelError(f"CrossRuntimeInvariantPairing {pairing.invariant_identity!r}: field_id {field_id!r} is not registered in the State Model")
+        actual_holder = next(f.owning_holder for f in model.fields if f.field_id == pairing.authoritative_field_id)
+        if actual_holder is not pairing.authoritative_holder:
+            raise StateModelError(
+                f"CROSS_RUNTIME_OWNERSHIP_MISMATCH: {pairing.invariant_identity!r} claims {pairing.authoritative_holder.value} is authoritative, "
+                f"but {pairing.authoritative_field_id!r} is registered as {actual_holder.value}"
+            )
+        paired_shadow_ids.add(pairing.shadow_field_id)
+
+    unpaired_rust_runtime_fields = sorted(f.field_id for f in model.fields if f.field_id.endswith("_rust_runtime") and f.field_id not in paired_shadow_ids)
+    if unpaired_rust_runtime_fields:
+        raise StateModelError(f"CROSS_RUNTIME_OWNERSHIP_UNRECONCILED: *_rust_runtime field(s) with no pairing: {unpaired_rust_runtime_fields}")
 
 
 # ============================================================================
@@ -1018,6 +1155,21 @@ def build_g2_20_invariant_reconciliation_manifest() -> InvariantReconciliationMa
                 "genuine committed state can only advance under the Facility's own current generation "
                 "(G2-20 Facility-held state closure).",
                 "facility.LocalSandboxFacility.generation / bump_generation()",
+            ),
+            InvariantCandidate(
+                "INV-FACILITY-EXECUTION-COUNT-INTEGRITY", InvariantSourceView.IMPLEMENTATION_DERIVED,
+                "The next ACK sequence a Facility returns is derived from its own execution counter, "
+                "never re-derivable from committed state alone (round-2 review finding, G2-20): a "
+                "migration/reconstruction that restores committed effects while resetting the "
+                "execution counter would silently corrupt future ACK sequencing.",
+                "facility.LocalSandboxFacility._execution_count",
+            ),
+            InvariantCandidate(
+                "INV-CHRONICLE-PROJECTION-FIDELITY", InvariantSourceView.STATE_MODEL_DERIVED,
+                "A Chronicle projection is a faithful derived read-view of genuinely committed "
+                "Chronicle history, never an independent or divergent record (round-2 review finding, "
+                "G2-20: the missing Chronicle-projection holder).",
+                "chronicle_bridge.dump_as_chronicle_events",
             ),
         )
     )

@@ -59,6 +59,7 @@ from tenfold.gen2.state_model import (
     G2_19_REQUIRED_STATE_MODEL_FIELD_IDS,
     G2_20_REQUIRED_STATE_MODEL_FIELD_IDS,
     AuthorityHolder,
+    CrossRuntimeInvariantPairing,
     FailureSpaceCoverageReport,
     FailureSpaceDimension,
     InvariantCandidate,
@@ -69,9 +70,11 @@ from tenfold.gen2.state_model import (
     StateModelError,
     StateModelField,
     build_g2_19_state_model,
+    build_g2_20_cross_runtime_invariant_pairings,
     build_g2_20_invariant_reconciliation_manifest,
     build_g2_20_state_model,
     build_invariant_ownership_matrix,
+    check_cross_runtime_authoritative_ownership,
     check_standing_gate_d_full,
     check_transition_coverage,
     generate_forbidden_state_scenarios,
@@ -121,23 +124,29 @@ def test_g2_20_state_model_coverage_failure_on_missing_field() -> None:
         model.check_coverage(frozenset({"facility_generation_state", "never_registered_field"}))
 
 
-def test_g2_20_new_fields_are_genuinely_facility_held() -> None:
-    """The concrete gap this milestone closes: through G2-19,
-    AuthorityHolder.FACILITY had zero fields. Every field G2-20 adds must
-    genuinely use it."""
+def test_g2_20_new_fields_are_genuinely_facility_or_chronicle_projection_held() -> None:
+    """The two concrete gaps this milestone closes: through G2-19,
+    AuthorityHolder.FACILITY and AuthorityHolder.CHRONICLE_PROJECTION both
+    had zero fields. Every field G2-20 adds must genuinely use one or the
+    other -- never fall back to GEN1_PYTHON/GEN2_RUST."""
     model = build_g2_20_state_model()
     g2_20_fields = {f.field_id: f for f in model.fields if f.field_id in G2_20_REQUIRED_STATE_MODEL_FIELD_IDS}
     assert set(g2_20_fields) == G2_20_REQUIRED_STATE_MODEL_FIELD_IDS
     for field_id, field_entry in g2_20_fields.items():
-        assert field_entry.owning_holder is AuthorityHolder.FACILITY, field_id
+        assert field_entry.owning_holder in (AuthorityHolder.FACILITY, AuthorityHolder.CHRONICLE_PROJECTION), field_id
         assert field_entry.disposition is StateModelDisposition.RUNTIME_MAPPED, field_id
+    assert g2_20_fields["chronicle_projection_state"].owning_holder is AuthorityHolder.CHRONICLE_PROJECTION
+    facility_field_ids = G2_20_REQUIRED_STATE_MODEL_FIELD_IDS - {"chronicle_projection_state"}
+    for field_id in facility_field_ids:
+        assert g2_20_fields[field_id].owning_holder is AuthorityHolder.FACILITY, field_id
 
 
-def test_g2_20_no_facility_held_field_existed_before_this_milestone() -> None:
-    """Confirms the gap was real, not already (silently) closed: no field
-    introduced at any earlier milestone used AuthorityHolder.FACILITY."""
+def test_g2_20_no_facility_or_chronicle_projection_held_field_existed_before_this_milestone() -> None:
+    """Confirms both gaps were real, not already (silently) closed: no
+    field introduced at any earlier milestone used AuthorityHolder.
+    FACILITY or AuthorityHolder.CHRONICLE_PROJECTION."""
     pre_g2_20 = build_g2_19_state_model()
-    assert all(f.owning_holder is not AuthorityHolder.FACILITY for f in pre_g2_20.fields)
+    assert all(f.owning_holder not in (AuthorityHolder.FACILITY, AuthorityHolder.CHRONICLE_PROJECTION) for f in pre_g2_20.fields)
 
 
 # ============================================================================
@@ -180,9 +189,94 @@ def test_g2_20_facility_in_flight_owner_state_is_genuinely_mapped() -> None:
     assert resolved_as_committed is True
 
 
+def test_g2_20_facility_execution_count_state_is_genuinely_mapped() -> None:
+    """Round-2 review finding: the execution counter drives the
+    authoritative ACK sequence and must be mapped separately from
+    _committed -- restoring committed state alone cannot reconstruct it."""
+    facility = LocalSandboxFacility()
+    ack_1 = facility.execute("key-1", "value-1", generation=facility.generation)
+    ack_2 = facility.execute("key-1", "value-2", generation=facility.generation)
+    assert ack_1 == "ack:key-1:1"
+    assert ack_2 == "ack:key-1:2"
+    assert facility._execution_count["key-1"] == 2
+
+
+def test_g2_20_chronicle_projection_state_is_genuinely_mapped() -> None:
+    """Round-2 review finding: AuthorityHolder.CHRONICLE_PROJECTION had
+    zero fields through the round-1 construction despite this module's
+    own docstring claiming the deliverable -- exercise the real
+    dump_as_chronicle_events projection against a real Chronicle log."""
+    import tempfile
+    from pathlib import Path
+
+    from tenfold.gen2.chronicle_bridge import append_entry, dump_as_chronicle_events, open_chronicle
+
+    tmpdir = tempfile.mkdtemp()
+    log_path = Path(tmpdir) / "g2-20-projection.chronicle"
+    open_chronicle(log_path, "writer-1", 1)
+    append_entry(log_path, "writer-1", 1, "writer-1", 1, "g2-20-test-event", "payload-digest-1")
+    projected = dump_as_chronicle_events(log_path, "evt", "campaign-1")
+    assert len(projected) == 1
+
+
+# ============================================================================
+# Cross-runtime authoritative ownership (round-2 review finding, Finding
+# 3): the literal invariant_ref grouping above cannot detect a Python
+# field and its differently-described Rust re-derivation of the same
+# conceptual invariant -- this mechanism uses an explicit pairing roster
+# instead.
+# ============================================================================
+
+
+def test_g2_20_production_cross_runtime_pairings_are_all_genuinely_authoritative_gen1() -> None:
+    model = build_g2_20_state_model()
+    pairings = build_g2_20_cross_runtime_invariant_pairings()
+    assert len(pairings) > 0
+    check_cross_runtime_authoritative_ownership(model, pairings)
+    for pairing in pairings:
+        assert pairing.authoritative_holder is AuthorityHolder.GEN1_PYTHON
+
+
+def test_g2_20_cross_runtime_pairings_cover_every_rust_runtime_field() -> None:
+    """Every *_rust_runtime field actually registered in the accumulated
+    model must be covered by some pairing -- an unpaired Rust
+    re-derivation is itself a reconciliation gap."""
+    model = build_g2_20_state_model()
+    pairings = build_g2_20_cross_runtime_invariant_pairings()
+    rust_runtime_field_ids = {f.field_id for f in model.fields if f.field_id.endswith("_rust_runtime")}
+    paired_shadow_ids = {p.shadow_field_id for p in pairings}
+    assert rust_runtime_field_ids <= paired_shadow_ids
+
+
+def test_g2_20_cross_runtime_ownership_check_detects_a_mismatched_authoritative_holder() -> None:
+    """Mutation-style proof: a pairing that falsely claims GEN2_RUST is
+    authoritative today (when the field is actually GEN1_PYTHON-held)
+    must be rejected -- this is exactly the 'shadow Rust mistaken for a
+    second valid owner' failure the review finding named."""
+    model = build_g2_20_state_model()
+    bad_pairing = (CrossRuntimeInvariantPairing("bogus_identity", "proof_graph_node_state", "proof_graph_rust_runtime", AuthorityHolder.GEN2_RUST),)
+    with pytest.raises(StateModelError, match="CROSS_RUNTIME_OWNERSHIP_MISMATCH"):
+        check_cross_runtime_authoritative_ownership(model, bad_pairing)
+
+
+def test_g2_20_cross_runtime_ownership_check_detects_an_unpaired_rust_runtime_field() -> None:
+    model = build_g2_20_state_model()
+    missing_one = tuple(p for p in build_g2_20_cross_runtime_invariant_pairings() if p.shadow_field_id != "capability_graph_rust_runtime")
+    with pytest.raises(StateModelError, match="CROSS_RUNTIME_OWNERSHIP_UNRECONCILED"):
+        check_cross_runtime_authoritative_ownership(model, missing_one)
+
+
+def test_g2_20_cross_runtime_pairing_rejects_identical_field_ids() -> None:
+    with pytest.raises(StateModelError):
+        CrossRuntimeInvariantPairing("id", "same_field", "same_field", AuthorityHolder.GEN1_PYTHON).validate()
+
+
 # ============================================================================
 # Invariant Ownership Matrix (Acceptance: "every accepted invariant has
-# exactly one owner; no invariant split").
+# exactly one owner; no invariant split"). Narrower scope, honestly
+# disclosed: catches an exact invariant_ref string collision, not a
+# cross-runtime pair described in different terms -- see the cross-
+# runtime ownership tests above for that.
 # ============================================================================
 
 
@@ -260,19 +354,41 @@ def test_g2_20_invariant_candidate_rejects_blank_description() -> None:
 
 # ============================================================================
 # Full state-model-derived scenario generator: 3-wise.
+#
+# Round-2 review finding (Finding 4): the original version of these
+# dimensions used pure schema metadata (AuthorityHolder/
+# StateModelDisposition/InvariantSourceView enum labels) -- the generated
+# triples only ever combined *labels describing the model*, never a real
+# runtime failure outcome, so `check_standing_gate_d_full` could accept
+# G2-20 as proven without exercising a single accumulated high-risk
+# runtime interaction. `_runtime_failure_dimensions` below uses the
+# genuine failure/outcome classes real milestone functions already
+# return -- ReachState (G2-16 `classify_reach_state`), ProofState
+# (G2-12 `constitutional.ProofState`), TerminalEffectSignal (G2-18
+# `classify_terminal_signal`), plus the real binary outcomes of Chronicle
+# writer-identity matching (G2-10) and WriteLease fencing (G2-11) -- so
+# the 3-wise triples genuinely combine accumulated runtime failure
+# classes across milestones, not schema labels.
 # ============================================================================
 
 
-def _sample_dimensions() -> tuple[FailureSpaceDimension, ...]:
+def _runtime_failure_dimensions() -> tuple[FailureSpaceDimension, ...]:
+    from tenfold.gen2.capability_graph import ReachState
+    from tenfold.gen2.constitutional import ProofState
+    from tenfold.gen2.effect_census import TerminalEffectSignal
+
     return (
-        FailureSpaceDimension("authority_holder", tuple(h.value for h in AuthorityHolder)),
-        FailureSpaceDimension("disposition", tuple(d.value for d in StateModelDisposition)),
-        FailureSpaceDimension("invariant_source_view", tuple(v.value for v in InvariantSourceView)),
+        FailureSpaceDimension("generation_freshness", ("CURRENT_GENERATION", "STALE_GENERATION")),
+        FailureSpaceDimension("chronicle_writer_match", ("MATCHING_WRITER", "MISMATCHED_WRITER")),
+        FailureSpaceDimension("lease_fencing_state", ("ACTIVE_LEASE", "FENCED_LEASE")),
+        FailureSpaceDimension("proof_state", tuple(s.value for s in ProofState)),
+        FailureSpaceDimension("effect_reach_state", tuple(s.value for s in ReachState)),
+        FailureSpaceDimension("terminal_effect_signal", tuple(s.value for s in TerminalEffectSignal)),
     )
 
 
 def test_g2_20_generate_three_wise_covers_every_required_triple() -> None:
-    dims = _sample_dimensions()
+    dims = _runtime_failure_dimensions()
     report = FailureSpaceCoverageReport(
         one_wise=generate_one_wise(dims),
         pairwise=generate_pairwise(dims),
@@ -289,7 +405,7 @@ def test_g2_20_three_wise_falls_back_to_pairwise_under_three_dimensions() -> Non
 
 def test_g2_20_standing_gate_d_full_passes_against_the_combined_required_roster() -> None:
     model = build_g2_20_state_model()
-    dims = _sample_dimensions()
+    dims = _runtime_failure_dimensions()
     report = FailureSpaceCoverageReport(
         one_wise=generate_one_wise(dims),
         pairwise=generate_pairwise(dims),
@@ -301,7 +417,7 @@ def test_g2_20_standing_gate_d_full_passes_against_the_combined_required_roster(
 
 def test_g2_20_standing_gate_d_full_fails_closed_on_missing_three_wise() -> None:
     model = build_g2_20_state_model()
-    dims = _sample_dimensions()
+    dims = _runtime_failure_dimensions()
     report = FailureSpaceCoverageReport(one_wise=generate_one_wise(dims), pairwise=generate_pairwise(dims), dimension_ids=tuple(d.dimension_id for d in dims))
     with pytest.raises(StateModelError, match="STANDING_GATE_D_FAILURE"):
         check_standing_gate_d_full(model, _ALL_REQUIRED_FIELD_IDS, report, dims)
