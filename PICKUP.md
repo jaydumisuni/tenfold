@@ -22,7 +22,7 @@ This file records the repository recovery point. Always recover live GitHub stat
 - Canonical review/freeze record: `docs/09-gen2-review-record.md`.
 - Canonical chat-workspace execution rule: `docs/10-chat-workspace-execution.md`.
 - Complete generational evolution map: `docs/11-generational-evolution-map.md`.
-- Gen-2 implementation: **IN PROGRESS** (G2-01 PROVEN; G2-02 PROVEN; G2-03 PROVEN; G2-04 PROVEN; G2-05 PROVEN; G2-06 PROVEN; G2-07 PROVEN; G2-08 PROVEN; G2-09 PROVEN; G2-10 PROVEN; G2-11 PROVEN; G2-12 PROVEN; G2-13 PROVEN; G2-14 PROVEN; G2-15 PROVEN).
+- Gen-2 implementation: **IN PROGRESS** (G2-01 PROVEN; G2-02 PROVEN; G2-03 PROVEN; G2-04 PROVEN; G2-05 PROVEN; G2-06 PROVEN; G2-07 PROVEN; G2-08 PROVEN; G2-09 PROVEN; G2-10 PROVEN; G2-11 PROVEN; G2-12 PROVEN; G2-13 PROVEN; G2-14 PROVEN; G2-15 PROVEN; G2-16 PROVEN).
 - Gen-2 qualification: **IN PROGRESS**.
 - G2-01 — Gen-1 Reference and Inheritance Freeze: **PROVEN**. Proven candidate `8e33f7a4240e18141ae44d6733043660f64c1640`. Canonical review/proof record: `docs/gen2/G2-01-review-record.md`.
 - G2-02 — Constitutional Schema and Policy Foundation: **PROVEN**. Proven candidate `a3a9b19702b203ad79aecebdf039eb12254e8daf`. Canonical review/proof record: `docs/gen2/G2-02-review-record.md`.
@@ -39,7 +39,8 @@ This file records the repository recovery point. Always recover live GitHub stat
 - G2-13 — Runtime Obligations, Invariants and Observer: **PROVEN**. Proven candidate `4ecfc2f5d0288e6141214de62bf98c62a575081c`. Canonical review/proof record: `docs/gen2/G2-13-review-record.md`.
 - G2-14 — Facility Capability ABI (READ-ONLY / SANDBOX GATE): **PROVEN**. Proven candidate `6ea383ce3b6708e80f3ea973150f13ed6439819f`. Canonical review/proof record: `docs/gen2/G2-14-review-record.md`.
 - G2-15 — Execution Environment Isolation and P0: **PROVEN**. Proven candidate `f333ba0a47ef8c95bcc1bebda1f3e0c727dbca64`. Canonical review/proof record: `docs/gen2/G2-15-review-record.md`.
-- Current next Gen-2 milestone: **G2-16 — Capability Graph / Effective Automation / EFFECT_REACH*** (real dependency frontier: ready, since G2-15 is PROVEN).
+- G2-16 — Capability Graph / Effective Automation / EFFECT_REACH*: **PROVEN**. Proven candidate `0daa0aa9cd8e79a28bee7ca8d716fa371388b1d5`. Canonical review/proof record: `docs/gen2/G2-16-review-record.md`.
+- Current next Gen-2 milestone: **G2-17 — Root / Issuing Authority Planes** (real dependency frontier: ready, since G2-16 is PROVEN).
 - Construction runtime: **qualified Tenfold Gen 1** (authoritative through G2-23 per the frozen roadmap).
 
 Do not restart Gen-2 architecture design from chat memory. Recover G2-00, the Gen-2 roadmap, workspace rule and generational evolution map first. Reopen G2-00 only if implementation/evidence demonstrates a real frozen-authority violation or the Owner explicitly authorises an architecture change.
