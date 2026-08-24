@@ -18,9 +18,12 @@ milestone does not duplicate their schemas -- it binds them into one
 frozen, versioned corpus (`docs/gen2/g2-19-bootstrap-corpus.json`, loaded
 and independently validated by both real Rust and real Python below).
 Three families are genuinely new: RuntimeIdentity, TaskPacketV1, and
-FacilityRequestV1/FacilityResultV1. EvidencePacketV1 activates the
-pre-existing `"evidence_packet"` Trust Table row seeded at G2-03, the
-last honest PENDING_IMPLEMENTATION gap, left that way through G2-18.
+FacilityRequestV1/FacilityResultV1. EvidencePacketV1 builds the
+generation-currency third of the pre-existing `"evidence_packet"` Trust
+Table row's claim (seeded at G2-03); provenance and detector/tool/input
+bindings remain unbuilt, so that row honestly remains
+`fixture_qualified: false` (round-2 review finding: do not overclaim by
+activating a row before every check it promises genuinely exists).
 Every differential test below compares the real Python re-derivation
 (`tenfold.gen2.bootstrap_protocol`) against the real compiled Rust
 re-derivation (via `tenfold.gen2.bootstrap_protocol_bridge`'s CLI
@@ -190,6 +193,15 @@ def test_g2_19_task_packet_rejects_zero_campaign_generation() -> None:
         _task_packet(campaign_generation=0).validate()
 
 
+def test_g2_19_task_packet_rejects_blank_dispatch_digest_in_python_and_rust() -> None:
+    """Round-2 review finding (Finding 3): dispatch_digest was
+    structurally present but never checked for non-emptiness."""
+    with pytest.raises(BootstrapProtocolCliError):
+        rust_validate_task_packet({**_task_packet_dict(), "dispatch_digest": ""})
+    with pytest.raises(BootstrapProtocolError):
+        _task_packet(dispatch_digest="").validate()
+
+
 def test_g2_19_task_packet_rust_cli_rejects_an_unknown_field() -> None:
     with pytest.raises(BootstrapProtocolCliError):
         rust_validate_task_packet({**_task_packet_dict(), "unexpected_field": "x"})
@@ -232,6 +244,21 @@ def test_g2_19_facility_result_matching_request_accepted_in_python_and_rust() ->
     result = {"request_id": "req-1", "facility_id": "fac-1", "facility_generation": 1, "outcome": "ACKNOWLEDGED", "evidence_refs": []}
     rust_check_facility_result_matches_request(request, result)
     check_facility_result_matches_request(FacilityRequestV1(**request), FacilityResultV1(**{**result, "evidence_refs": ()}))
+
+
+def test_g2_19_facility_result_rejects_an_invalid_outcome_in_python_and_rust() -> None:
+    """Round-2 review finding (Finding 4): Rust's outcome field is the
+    real TerminalEffectSignal enum and rejects any other string at the
+    JSON deserialization boundary; Python's mirror previously accepted
+    arbitrary strings for outcome, since it stores it as a bare str."""
+    request = {"request_id": "req-1", "facility_id": "fac-1", "facility_generation": 1, "operation": "read", "authority_ref": "authority@ref"}
+    result = {"request_id": "req-1", "facility_id": "fac-1", "facility_generation": 1, "outcome": "NOT_A_REAL_SIGNAL", "evidence_refs": []}
+    with pytest.raises(BootstrapProtocolCliError):
+        rust_check_facility_result_matches_request(request, result)
+
+    py_result = FacilityResultV1(request_id="req-1", facility_id="fac-1", facility_generation=1, outcome="NOT_A_REAL_SIGNAL", evidence_refs=())
+    with pytest.raises(BootstrapProtocolError):
+        py_result.validate()
 
 
 def test_g2_19_facility_result_bound_to_a_different_request_rejected_in_python_and_rust() -> None:
@@ -300,6 +327,30 @@ def test_g2_19_python_independently_verifies_the_chronicle_entry_digest() -> Non
 def test_g2_19_corpus_rejects_a_tampered_chronicle_digest_in_python_and_rust() -> None:
     corpus = json.loads(_CORPUS_PATH.read_text(encoding="utf-8"))
     corpus["chronicle_event"]["entry_digest"] = "tampered" * 8
+    with pytest.raises(BootstrapProtocolCliError):
+        rust_validate_bootstrap_corpus(corpus)
+    with pytest.raises(BootstrapProtocolError):
+        validate_bootstrap_corpus(corpus)
+
+
+def test_g2_19_corpus_rejects_evidence_packet_with_mismatched_campaign_generation_in_python_and_rust() -> None:
+    """Round-2 review finding (Finding 2): a structurally well-formed,
+    internally self-consistent evidence packet must still be rejected if
+    its campaign_generation does not match this corpus's own
+    campaign_identity.generation -- a corpus cannot vouch for evidence
+    from a different campaign generation merely because the packet
+    validates on its own."""
+    corpus = json.loads(_CORPUS_PATH.read_text(encoding="utf-8"))
+    corpus["evidence_packet"]["campaign_generation"] = 99
+    with pytest.raises(BootstrapProtocolCliError):
+        rust_validate_bootstrap_corpus(corpus)
+    with pytest.raises(BootstrapProtocolError):
+        validate_bootstrap_corpus(corpus)
+
+
+def test_g2_19_corpus_rejects_evidence_packet_with_mismatched_dispatch_epoch_in_python_and_rust() -> None:
+    corpus = json.loads(_CORPUS_PATH.read_text(encoding="utf-8"))
+    corpus["evidence_packet"]["dispatch_epoch"] = 99
     with pytest.raises(BootstrapProtocolCliError):
         rust_validate_bootstrap_corpus(corpus)
     with pytest.raises(BootstrapProtocolError):

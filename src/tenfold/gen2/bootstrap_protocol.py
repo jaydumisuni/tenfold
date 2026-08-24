@@ -15,9 +15,12 @@ for Gen-1's real `tenfold.contracts.TaskPacket`), and
 `FacilityRequestV1`/`FacilityResultV1` (distinct from G2-14's
 `facility_declaration`, which covers a Facility's own property
 declaration, not the wire request/response pair of invoking one).
-`EvidencePacketV1` activates the pre-existing `"evidence_packet"` Trust
-Table row seeded at G2-03, honestly left `fixture_qualified: false`
-through G2-18.
+`EvidencePacketV1` builds the generation-currency third of the pre-
+existing `"evidence_packet"` Trust Table row's claim (seeded at G2-03);
+provenance and detector/tool/input bindings remain unbuilt, so that row
+honestly remains `fixture_qualified: false` (round-2 review finding,
+G2-19 -- do not overclaim by activating a row before every check it
+promises genuinely exists).
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ import json
 from dataclasses import dataclass, field
 from enum import Enum
 
+from .effect_census import TerminalEffectSignal
 from .identity_generation import AuthorityGeneration, CampaignIdentity, OrganizationGeneration
 from .proof_graph import AssuranceBindingClaim
 from .verifier import independent_reconcile_external_assurance
@@ -100,6 +104,7 @@ class TaskPacketV1:
             ("objective", self.objective),
             ("reporting_officer", self.reporting_officer),
             ("source_binding", self.source_binding),
+            ("dispatch_digest", self.dispatch_digest),
         ):
             if not value or not value.strip():
                 raise BootstrapProtocolError(f"TaskPacketV1: {field_name} must be non-empty")
@@ -110,9 +115,11 @@ class TaskPacketV1:
 
 
 # ============================================================================
-# Evidence Packet -- activates the pre-existing "evidence_packet" Trust
-# Table row (seeded at G2-03, honestly left fixture_qualified: false
-# through G2-18). Required negative fixture, verbatim from that row:
+# Evidence Packet -- builds the generation-currency third of the pre-
+# existing "evidence_packet" Trust Table row's claim (seeded at G2-03).
+# Provenance and detector/tool/input bindings remain unbuilt, so that row
+# honestly remains fixture_qualified: false (round-2 review finding,
+# G2-19). Required negative fixture, verbatim from that row:
 # "stale/wrong-generation evidence".
 # ============================================================================
 
@@ -224,6 +231,10 @@ class FacilityResultV1:
             raise BootstrapProtocolError(f"FacilityResultV1 {self.request_id!r}: facility_id must be non-empty")
         if self.facility_generation <= 0:
             raise BootstrapProtocolError(f"FacilityResultV1 {self.request_id!r}: facility_generation must be positive")
+        try:
+            TerminalEffectSignal(self.outcome)
+        except ValueError:
+            raise BootstrapProtocolError(f"FacilityResultV1 {self.request_id!r}: outcome {self.outcome!r} is not a valid TerminalEffectSignal") from None
 
 
 def check_facility_result_matches_request(request: FacilityRequestV1, result: FacilityResultV1) -> None:
@@ -313,10 +324,18 @@ def validate_bootstrap_corpus(corpus: dict) -> None:
     tp = corpus["task_packet"]
     TaskPacketV1(**{**tp, "scope": tuple(tp["scope"]), "capabilities": tuple(tp["capabilities"]), "permissions": tuple(tp["permissions"]), "evidence_obligations": tuple(tp["evidence_obligations"]), "stop_conditions": tuple(tp["stop_conditions"])}).validate()
 
+    # Round-2 review finding (G2-19, Finding 2): a structurally well-formed,
+    # internally self-consistent evidence packet is not enough -- it must
+    # genuinely be CURRENT for this same corpus. Bind it to the corpus's
+    # own campaign_identity.generation and lease.epoch (the corpus's only
+    # "current campaign_generation"/"current dispatch_epoch" reference
+    # points) rather than trusting a caller-supplied packet that merely
+    # validates on its own.
     ep = corpus["evidence_packet"]
-    EvidencePacketV1(
+    evidence_packet = EvidencePacketV1(
         **{**ep, "observations": tuple(ep["observations"]), "artifacts": tuple(ep["artifacts"]), "results": tuple(ep["results"]), "limitations": tuple(ep["limitations"]), "anomalies": tuple(ep["anomalies"]), "questions": tuple(ep["questions"])}
-    ).validate()
+    )
+    check_evidence_packet_generation_current(evidence_packet, corpus["campaign_identity"]["generation"], corpus["lease"]["epoch"])
 
     _validate_lease_dict(corpus["lease"])
 

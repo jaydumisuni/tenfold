@@ -2910,8 +2910,11 @@ def build_initial_mutation_suite() -> MutationSuite:
             "An EvidencePacketV1 produced against a campaign_generation/dispatch_epoch other than "
             "the caller's current, independently-known values -- stale/wrong-generation evidence -- "
             "is rejected by both the real compiled Rust bootstrap_protocol kernel and the real "
-            "Python re-derivation, activating the evidence_packet row seeded PENDING_IMPLEMENTATION "
-            "at G2-03 (G2-19).",
+            "Python re-derivation, killing the required_negative_fixture of the evidence_packet row "
+            "seeded PENDING_IMPLEMENTATION at G2-03. Proves only the generation third of that row's "
+            "independently_checks claim; provenance and detector/tool/input bindings remain unbuilt, "
+            "so the row itself honestly stays fixture_qualified: false (G2-19, round-2 review "
+            "finding).",
             "G2-00 SS4.1; G2-19",
             "evidence_packet",
             _g2_19_stale_evidence_packet_kill_check,

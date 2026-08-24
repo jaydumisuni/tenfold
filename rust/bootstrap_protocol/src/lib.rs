@@ -131,6 +131,7 @@ impl TaskPacketV1 {
             ("objective", &self.objective),
             ("reporting_officer", &self.reporting_officer),
             ("source_binding", &self.source_binding),
+            ("dispatch_digest", &self.dispatch_digest),
         ] {
             if value.trim().is_empty() {
                 return Err(err(format!("TaskPacketV1: {field} must be non-empty")));
@@ -357,7 +358,14 @@ pub fn validate_bootstrap_corpus(corpus: &BootstrapCorpusV1) -> Result<(), Boots
     corpus.authority_generation.validate().map_err(|e| err(e.to_string()))?;
     corpus.runtime_identity.validate()?;
     corpus.task_packet.validate()?;
-    corpus.evidence_packet.validate()?;
+    // Round-2 review finding (G2-19): a structurally well-formed evidence
+    // packet is not enough -- it must genuinely be CURRENT for this same
+    // corpus, not merely internally self-consistent. Bind it to the
+    // corpus's own campaign_identity.generation and lease.epoch (the
+    // corpus's only "current campaign_generation"/"current dispatch_epoch"
+    // reference points) rather than trusting a caller-supplied packet that
+    // happens to validate() on its own.
+    check_evidence_packet_generation_current(&corpus.evidence_packet, corpus.campaign_identity.generation, corpus.lease.epoch)?;
     validate_lease(&corpus.lease)?;
     check_facility_result_matches_request(&corpus.facility_request, &corpus.facility_result)?;
     if !corpus.assurance_result.reconciled() {
@@ -429,6 +437,16 @@ pub fn admit_validate_task_packet(table: &trust_table::TrustTable, packet: &Task
     packet.validate()
 }
 
+/// Gates the standalone (not corpus-embedded) generation-currency check
+/// behind full Trust Table admission of "evidence_packet" -- which, as of
+/// G2-19, always fails closed, since that row honestly remains
+/// `fixture_qualified: false` (round-2 review finding: only the
+/// generation third of its claim is genuinely built). Kept as a real,
+/// tested function -- proving fail-closed admission is itself a
+/// requirement -- but intentionally not exposed via the CLI; the free
+/// `check_evidence_packet_generation_current` above is what the CLI and
+/// the corpus proof actually use for the capability this crate genuinely
+/// built.
 pub fn admit_check_evidence_packet_generation_current(table: &trust_table::TrustTable, packet: &EvidencePacketV1, current_campaign_generation: u64, current_dispatch_epoch: u64) -> Result<(), BootstrapProtocolError> {
     table.admit("evidence_packet").map_err(|e| err(e.to_string()))?;
     check_evidence_packet_generation_current(packet, current_campaign_generation, current_dispatch_epoch)
@@ -439,9 +457,21 @@ pub fn admit_check_facility_result_matches_request(table: &trust_table::TrustTab
     check_facility_result_matches_request(request, result)
 }
 
+/// Deliberately does NOT `table.admit("evidence_packet")`: that row's own
+/// `independently_checks` claims "generation, provenance, detector/tool/
+/// input bindings", and this crate only genuinely built the generation
+/// third (round-2 review finding, G2-19 -- see the row's definition in
+/// `rust/trust_table`). Requiring that admission here would make the
+/// whole corpus proof either falsely claim full evidence_packet
+/// qualification (if the row were wrongly marked qualified) or always
+/// fail closed for a reason unrelated to this corpus's own genuine
+/// validity (now that the row is honestly unqualified). Instead, the
+/// evidence_packet field is checked by `validate_bootstrap_corpus` itself
+/// via the free (non-admission-gated) `check_evidence_packet_generation_
+/// current` -- exactly the capability this milestone actually built,
+/// no more.
 pub fn admit_validate_bootstrap_corpus(table: &trust_table::TrustTable, corpus: &BootstrapCorpusV1) -> Result<(), BootstrapProtocolError> {
     table.admit("task_packet").map_err(|e| err(e.to_string()))?;
-    table.admit("evidence_packet").map_err(|e| err(e.to_string()))?;
     table.admit("facility_request_result").map_err(|e| err(e.to_string()))?;
     table.admit("bootstrap_protocol_corpus").map_err(|e| err(e.to_string()))?;
     validate_bootstrap_corpus(corpus)
@@ -620,6 +650,15 @@ mod tests {
         assert!(p.validate().is_err());
     }
 
+    #[test]
+    fn task_packet_rejects_blank_dispatch_digest() {
+        // Round-2 review finding (G2-19, Finding 3): dispatch_digest was
+        // structurally present but never checked for non-emptiness.
+        let mut p = task_packet();
+        p.dispatch_digest = "".into();
+        assert!(p.validate().is_err());
+    }
+
     // ---- EvidencePacketV1 / stale-generation ----
 
     #[test]
@@ -697,6 +736,26 @@ mod tests {
         assert!(validate_bootstrap_corpus(&c).is_err());
     }
 
+    #[test]
+    fn corpus_rejects_evidence_packet_with_mismatched_campaign_generation() {
+        // Round-2 review finding (G2-19, Finding 2): a structurally
+        // well-formed, internally self-consistent evidence packet must
+        // still be rejected if its campaign_generation does not match
+        // this corpus's own campaign_identity.generation -- a corpus
+        // cannot vouch for evidence from a different campaign generation
+        // merely because the packet validates on its own.
+        let mut c = valid_corpus();
+        c.evidence_packet.campaign_generation = 99;
+        assert!(validate_bootstrap_corpus(&c).is_err());
+    }
+
+    #[test]
+    fn corpus_rejects_evidence_packet_with_mismatched_dispatch_epoch() {
+        let mut c = valid_corpus();
+        c.evidence_packet.dispatch_epoch = 99;
+        assert!(validate_bootstrap_corpus(&c).is_err());
+    }
+
     // ---- Trust Table admission ----
 
     #[test]
@@ -736,17 +795,24 @@ mod tests {
 
     #[test]
     fn admit_check_evidence_packet_generation_current_fails_closed_when_table_has_no_row() {
-        // Unlike task_packet/facility_request_result (new rows), evidence_
-        // packet is already genuinely admitted by initial_trust_table()
-        // alone (activated by this milestone) -- an entirely empty table
-        // is what proves fail-closed admission here.
         let table = trust_table::TrustTable::new();
         assert!(admit_check_evidence_packet_generation_current(&table, &evidence_packet(1, 1), 1, 1).is_err());
     }
 
     #[test]
-    fn admit_check_evidence_packet_generation_current_succeeds_once_admitted() {
-        admit_check_evidence_packet_generation_current(&admitted_table(), &evidence_packet(1, 1), 1, 1).unwrap();
+    fn admit_check_evidence_packet_generation_current_fails_closed_even_for_a_current_generation_packet() {
+        // Round-2 review finding (G2-19, Finding 1): the "evidence_packet"
+        // row honestly remains fixture_qualified: false -- only the
+        // generation third of its independently_checks claim is built, not
+        // provenance/detector/tool/input bindings. admit() must therefore
+        // still refuse it even for a packet that is genuinely current, and
+        // even against admitted_table() (which admits task_packet/
+        // facility_request_result/bootstrap_protocol_corpus, but never
+        // activates evidence_packet). The free check_evidence_packet_
+        // generation_current above is the one genuinely exercised
+        // capability; this admit_-gated wrapper is intentionally not
+        // usable yet.
+        assert!(admit_check_evidence_packet_generation_current(&admitted_table(), &evidence_packet(1, 1), 1, 1).is_err());
     }
 
     #[test]

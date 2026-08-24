@@ -3,8 +3,20 @@
 //! `tenfold.bootstrap.v1` checks for differential testing against Gen-2's
 //! own Python-side re-derivation.
 //!
-//! Every command checks the relevant Trust Table admission first (G2-00
-//! §4.1): `"task_packet"`, `"evidence_packet"`, `"facility_request_result"`.
+//! `validate-task-packet` and `facility-result-matches-request` check the
+//! relevant Trust Table admission first (G2-00 §4.1): `"task_packet"`,
+//! `"facility_request_result"`, both genuinely `fixture_qualified`.
+//! `validate-corpus` checks Trust Table admission of `"task_packet"`,
+//! `"facility_request_result"`, and `"bootstrap_protocol_corpus"` (also
+//! genuinely qualified), but deliberately not `"evidence_packet"` --
+//! round-2 review finding (G2-19): that row's own claim ("generation,
+//! provenance, detector/tool/input bindings") is only a third built, so
+//! it honestly remains `fixture_qualified: false`; requiring its
+//! admission here would either overclaim or make every corpus fail
+//! closed for a reason unrelated to the corpus's own genuine validity.
+//! `evidence-packet-generation-current` therefore calls the free
+//! (non-admission-gated) `check_evidence_packet_generation_current`
+//! directly -- exactly the capability this crate genuinely built.
 //!
 //! Subcommands (each prints one line: ACCEPT/JSON on success (exit 0), or
 //! "ERROR: <message>" (exit 1); a usage error exits 2):
@@ -15,8 +27,8 @@
 //! - `validate-corpus` — reads a `BootstrapCorpusV1` JSON object from stdin, prints ACCEPT/ERROR.
 
 use bootstrap_protocol::{
-    admit_check_evidence_packet_generation_current, admit_check_facility_result_matches_request, admit_validate_bootstrap_corpus, admit_validate_task_packet, BootstrapCorpusV1,
-    EvidencePacketV1, FacilityRequestV1, FacilityResultV1, TaskPacketV1,
+    admit_check_facility_result_matches_request, admit_validate_bootstrap_corpus, admit_validate_task_packet, check_evidence_packet_generation_current, BootstrapCorpusV1, EvidencePacketV1,
+    FacilityRequestV1, FacilityResultV1, TaskPacketV1,
 };
 use serde::Deserialize;
 use std::io::Read;
@@ -98,7 +110,7 @@ fn main() -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            match admit_check_evidence_packet_generation_current(&admitted_table(), &request.packet, request.current_campaign_generation, request.current_dispatch_epoch) {
+            match check_evidence_packet_generation_current(&request.packet, request.current_campaign_generation, request.current_dispatch_epoch) {
                 Ok(()) => {
                     println!("ACCEPT");
                     ExitCode::SUCCESS
