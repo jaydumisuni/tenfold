@@ -283,11 +283,11 @@ def test_g2_17_admit_boundary_recomputes_from_the_graph_in_rust() -> None:
 
 def test_g2_17_created_principal_within_bound_accepted_in_python_and_rust() -> None:
     bound_dict = {"issuing_plane_id": "issuer-1", "generation": 1, "max_scopes": ["read:repo", "write:deploy"]}
-    query_dict = {"principal_id": "svc-1", "creator_plane_id": "issuer-1", "effective_scopes": ["read:repo"]}
+    query_dict = {"principal_id": "svc-1", "creator_plane_id": "issuer-1", "effective_scopes": ["read:repo"], "substrate_query_digest": "digest-1"}
     rust_check_created_principal_within_mintable_bound(bound_dict, query_dict)
 
     bound = MintableScopeBound(issuing_plane_id="issuer-1", generation=1, max_scopes=frozenset({"read:repo", "write:deploy"}))
-    query = CreatedPrincipalAuthorityQuery(principal_id="svc-1", creator_plane_id="issuer-1", effective_scopes=frozenset({"read:repo"}))
+    query = CreatedPrincipalAuthorityQuery(principal_id="svc-1", creator_plane_id="issuer-1", effective_scopes=frozenset({"read:repo"}), substrate_query_digest="digest-1")
     check_created_principal_within_mintable_bound(bound, query)
 
 
@@ -297,19 +297,34 @@ def test_g2_17_created_principal_escalation_detected_in_python_and_rust() -> Non
     "Never assume authority(created) subset authority(creator)" -- the
     creator's own authority is never referenced by this check at all."""
     bound_dict = {"issuing_plane_id": "issuer-1", "generation": 1, "max_scopes": ["read:repo"]}
-    query_dict = {"principal_id": "svc-1", "creator_plane_id": "issuer-1", "effective_scopes": ["read:repo", "admin:org"]}
+    query_dict = {"principal_id": "svc-1", "creator_plane_id": "issuer-1", "effective_scopes": ["read:repo", "admin:org"], "substrate_query_digest": "digest-1"}
     with pytest.raises(RootAuthorityCliError):
         rust_check_created_principal_within_mintable_bound(bound_dict, query_dict)
 
     bound = MintableScopeBound(issuing_plane_id="issuer-1", generation=1, max_scopes=frozenset({"read:repo"}))
-    query = CreatedPrincipalAuthorityQuery(principal_id="svc-1", creator_plane_id="issuer-1", effective_scopes=frozenset({"read:repo", "admin:org"}))
+    query = CreatedPrincipalAuthorityQuery(principal_id="svc-1", creator_plane_id="issuer-1", effective_scopes=frozenset({"read:repo", "admin:org"}), substrate_query_digest="digest-1")
     with pytest.raises(RootAuthorityError):
         check_created_principal_within_mintable_bound(bound, query)
 
 
 def test_g2_17_created_principal_query_rejects_a_creator_plane_mismatch() -> None:
     bound = MintableScopeBound(issuing_plane_id="issuer-1", generation=1, max_scopes=frozenset({"read:repo"}))
-    query = CreatedPrincipalAuthorityQuery(principal_id="svc-1", creator_plane_id="issuer-2", effective_scopes=frozenset({"read:repo"}))
+    query = CreatedPrincipalAuthorityQuery(principal_id="svc-1", creator_plane_id="issuer-2", effective_scopes=frozenset({"read:repo"}), substrate_query_digest="digest-1")
+    with pytest.raises(RootAuthorityError):
+        check_created_principal_within_mintable_bound(bound, query)
+
+
+def test_g2_17_created_principal_query_rejects_a_blank_substrate_query_digest_in_python_and_rust() -> None:
+    """Round-2 review finding: without a binding to the substrate that
+    produced it, effective_scopes is an untrusted, unbound list -- a
+    caller could under-report inherited/default permissions."""
+    bound_dict = {"issuing_plane_id": "issuer-1", "generation": 1, "max_scopes": ["read:repo"]}
+    query_dict = {"principal_id": "svc-1", "creator_plane_id": "issuer-1", "effective_scopes": ["read:repo"], "substrate_query_digest": "  "}
+    with pytest.raises(RootAuthorityCliError):
+        rust_check_created_principal_within_mintable_bound(bound_dict, query_dict)
+
+    bound = MintableScopeBound(issuing_plane_id="issuer-1", generation=1, max_scopes=frozenset({"read:repo"}))
+    query = CreatedPrincipalAuthorityQuery(principal_id="svc-1", creator_plane_id="issuer-1", effective_scopes=frozenset({"read:repo"}), substrate_query_digest="  ")
     with pytest.raises(RootAuthorityError):
         check_created_principal_within_mintable_bound(bound, query)
 
@@ -326,7 +341,10 @@ def test_g2_17_query_created_principal_authority_genuinely_queries_the_substrate
     substrate = LocalPrincipalAuthoritySubstrate()
     substrate.register_created_principal("svc-1", "issuer-1", assigned_scopes=("read:repo", "admin:org"))
     query = query_created_principal_authority(substrate, "svc-1")
-    assert query == CreatedPrincipalAuthorityQuery(principal_id="svc-1", creator_plane_id="issuer-1", effective_scopes=frozenset({"read:repo", "admin:org"}))
+    assert query.principal_id == "svc-1"
+    assert query.creator_plane_id == "issuer-1"
+    assert query.effective_scopes == frozenset({"read:repo", "admin:org"})
+    assert query.substrate_query_digest
 
 
 def test_g2_17_query_created_principal_authority_rejects_an_unregistered_principal() -> None:
@@ -380,31 +398,98 @@ def test_g2_17_successor_cannot_widen_bound_silently_in_python_and_rust() -> Non
 def test_g2_17_successor_widening_with_a_valid_root_amendment_accepted_in_python_and_rust() -> None:
     predecessor_dict = {"issuing_plane_id": "issuer-1", "generation": 1, "max_scopes": ["read:repo"]}
     successor_dict = {"issuing_plane_id": "issuer-1", "generation": 2, "max_scopes": ["read:repo", "admin:org"]}
-    amendment_dict = {"predecessor_bound_generation": 1, "new_generation": 2, "justification": "org migration requires admin scope", "assurance_ref": "assurance-ref-1"}
+    amendment_dict = {
+        "predecessor_bound_generation": 1,
+        "new_generation": 2,
+        "approved_max_scopes": ["read:repo", "admin:org"],
+        "justification": "org migration requires admin scope",
+        "assurance_ref": "assurance-ref-1",
+    }
     rust_check_successor_bound_non_expansion(predecessor_dict, successor_dict, amendment_dict)
 
     predecessor = MintableScopeBound(issuing_plane_id="issuer-1", generation=1, max_scopes=frozenset({"read:repo"}))
     successor = MintableScopeBound(issuing_plane_id="issuer-1", generation=2, max_scopes=frozenset({"read:repo", "admin:org"}))
-    amendment = RootAmendment(predecessor_bound_generation=1, new_generation=2, justification="org migration requires admin scope", assurance_ref="assurance-ref-1")
+    amendment = RootAmendment(
+        predecessor_bound_generation=1, new_generation=2, approved_max_scopes=frozenset({"read:repo", "admin:org"}), justification="org migration requires admin scope", assurance_ref="assurance-ref-1"
+    )
     check_successor_bound_non_expansion(predecessor, successor, amendment)
 
 
 def test_g2_17_amendment_bound_to_the_wrong_predecessor_generation_rejected() -> None:
     predecessor = MintableScopeBound(issuing_plane_id="issuer-1", generation=1, max_scopes=frozenset({"read:repo"}))
     successor = MintableScopeBound(issuing_plane_id="issuer-1", generation=2, max_scopes=frozenset({"read:repo", "admin:org"}))
-    amendment = RootAmendment(predecessor_bound_generation=99, new_generation=2, justification="justification", assurance_ref="assurance-ref-1")
+    amendment = RootAmendment(predecessor_bound_generation=99, new_generation=2, approved_max_scopes=frozenset({"read:repo", "admin:org"}), justification="justification", assurance_ref="assurance-ref-1")
     with pytest.raises(RootAuthorityError):
         check_successor_bound_non_expansion(predecessor, successor, amendment)
 
 
+def test_g2_17_amendment_approving_different_scopes_rejected_in_python_and_rust() -> None:
+    """Round-2 review finding: an amendment must approve the successor's
+    exact resulting scope set, not merely match generation numbers --
+    otherwise one amendment could be reused to authorize an arbitrary
+    expansion."""
+    predecessor_dict = {"issuing_plane_id": "issuer-1", "generation": 1, "max_scopes": ["read:repo"]}
+    successor_dict = {"issuing_plane_id": "issuer-1", "generation": 2, "max_scopes": ["read:repo", "admin:org"]}
+    amendment_dict = {
+        "predecessor_bound_generation": 1,
+        "new_generation": 2,
+        "approved_max_scopes": ["read:repo", "some-other-scope"],
+        "justification": "justification",
+        "assurance_ref": "assurance-ref-1",
+    }
+    with pytest.raises(RootAuthorityCliError):
+        rust_check_successor_bound_non_expansion(predecessor_dict, successor_dict, amendment_dict)
+
+    predecessor = MintableScopeBound(issuing_plane_id="issuer-1", generation=1, max_scopes=frozenset({"read:repo"}))
+    successor = MintableScopeBound(issuing_plane_id="issuer-1", generation=2, max_scopes=frozenset({"read:repo", "admin:org"}))
+    amendment = RootAmendment(
+        predecessor_bound_generation=1, new_generation=2, approved_max_scopes=frozenset({"read:repo", "some-other-scope"}), justification="justification", assurance_ref="assurance-ref-1"
+    )
+    with pytest.raises(RootAuthorityError):
+        check_successor_bound_non_expansion(predecessor, successor, amendment)
+
+
+def test_g2_17_successor_check_rejects_a_different_issuing_plane_in_python_and_rust() -> None:
+    """Round-2 review finding: an unrelated bound for a different plane
+    must not be silently treated as a genuine successor merely because
+    its scopes happen to be a subset."""
+    predecessor_dict = {"issuing_plane_id": "issuer-1", "generation": 1, "max_scopes": ["read:repo", "admin:org"]}
+    unrelated_dict = {"issuing_plane_id": "issuer-2", "generation": 2, "max_scopes": ["read:repo"]}
+    with pytest.raises(RootAuthorityCliError):
+        rust_check_successor_bound_non_expansion(predecessor_dict, unrelated_dict, None)
+
+    predecessor = MintableScopeBound(issuing_plane_id="issuer-1", generation=1, max_scopes=frozenset({"read:repo", "admin:org"}))
+    unrelated = MintableScopeBound(issuing_plane_id="issuer-2", generation=2, max_scopes=frozenset({"read:repo"}))
+    with pytest.raises(RootAuthorityError):
+        check_successor_bound_non_expansion(predecessor, unrelated, None)
+
+
+def test_g2_17_successor_check_rejects_a_non_advancing_generation_in_python_and_rust() -> None:
+    predecessor_dict = {"issuing_plane_id": "issuer-1", "generation": 2, "max_scopes": ["read:repo", "admin:org"]}
+    stale_dict = {"issuing_plane_id": "issuer-1", "generation": 1, "max_scopes": ["read:repo"]}
+    with pytest.raises(RootAuthorityCliError):
+        rust_check_successor_bound_non_expansion(predecessor_dict, stale_dict, None)
+
+    predecessor = MintableScopeBound(issuing_plane_id="issuer-1", generation=2, max_scopes=frozenset({"read:repo", "admin:org"}))
+    stale = MintableScopeBound(issuing_plane_id="issuer-1", generation=1, max_scopes=frozenset({"read:repo"}))
+    with pytest.raises(RootAuthorityError):
+        check_successor_bound_non_expansion(predecessor, stale, None)
+
+
 def test_g2_17_root_amendment_rejects_blank_justification() -> None:
-    amendment = RootAmendment(predecessor_bound_generation=1, new_generation=2, justification="  ", assurance_ref="assurance-ref-1")
+    amendment = RootAmendment(predecessor_bound_generation=1, new_generation=2, approved_max_scopes=frozenset({"read:repo"}), justification="  ", assurance_ref="assurance-ref-1")
     with pytest.raises(RootAuthorityError):
         amendment.validate()
 
 
 def test_g2_17_root_amendment_rejects_non_increasing_generation() -> None:
-    amendment = RootAmendment(predecessor_bound_generation=2, new_generation=2, justification="justification", assurance_ref="assurance-ref-1")
+    amendment = RootAmendment(predecessor_bound_generation=2, new_generation=2, approved_max_scopes=frozenset({"read:repo"}), justification="justification", assurance_ref="assurance-ref-1")
+    with pytest.raises(RootAuthorityError):
+        amendment.validate()
+
+
+def test_g2_17_root_amendment_rejects_empty_approved_max_scopes() -> None:
+    amendment = RootAmendment(predecessor_bound_generation=1, new_generation=2, approved_max_scopes=frozenset(), justification="justification", assurance_ref="assurance-ref-1")
     with pytest.raises(RootAuthorityError):
         amendment.validate()
 

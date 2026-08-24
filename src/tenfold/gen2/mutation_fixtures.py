@@ -1500,7 +1500,7 @@ def _g2_17_created_principal_escalation_kill_check() -> None:
     # rejected by both the real compiled Rust root_authority kernel and
     # the real Python re-derivation, regardless of what the creator holds.
     bound_dict = {"issuing_plane_id": "issuer-1", "generation": 1, "max_scopes": ["read:repo"]}
-    query_dict = {"principal_id": "svc-account-1", "creator_plane_id": "issuer-1", "effective_scopes": ["read:repo", "admin:org"]}
+    query_dict = {"principal_id": "svc-account-1", "creator_plane_id": "issuer-1", "effective_scopes": ["read:repo", "admin:org"], "substrate_query_digest": "digest-1"}
     try:
         rust_check_created_principal_within_mintable_bound(bound_dict, query_dict)
     except RootAuthorityCliError:

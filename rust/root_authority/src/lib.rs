@@ -259,16 +259,47 @@ impl MintableScopeBound {
 /// `MintableScopeBound*`, never against whatever the creator happens to
 /// hold, so a created principal that escalates beyond even its creator is
 /// still caught rather than dismissed as structurally impossible.
+///
+/// Review finding: without any binding to the substrate that produced it,
+/// a caller could under-report `effective_scopes` (omitting inherited/
+/// default permissions settlement actually granted) and this check would
+/// accept it purely on the submitted set. `substrate_query_digest` is a
+/// required, non-empty binding to the actual substrate state the query
+/// was taken from (the real `query_created_principal_authority` adapter
+/// computes it from the substrate's own state); Rust cannot independently
+/// re-derive substrate contents (substrate discovery is Python-only, G2-00
+/// SS4), so it mechanically requires this provenance binding to be
+/// present -- mirroring the same structural-provenance-only boundary
+/// already accepted for `evidence_packet`/`external_assurance` elsewhere
+/// in this Trust Table -- rather than silently trusting a bare,
+/// unbound list.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreatedPrincipalAuthorityQuery {
     pub principal_id: String,
     pub creator_plane_id: String,
     pub effective_scopes: BTreeSet<String>,
+    pub substrate_query_digest: String,
+}
+
+impl CreatedPrincipalAuthorityQuery {
+    pub fn validate(&self) -> Result<(), RootAuthorityError> {
+        if self.principal_id.trim().is_empty() {
+            return Err(err("CreatedPrincipalAuthorityQuery: principal_id must be non-empty"));
+        }
+        if self.substrate_query_digest.trim().is_empty() {
+            return Err(err(format!(
+                "CreatedPrincipalAuthorityQuery {:?}: substrate_query_digest must be non-empty -- effective_scopes must be bound to a genuine substrate query, not an unbound list",
+                self.principal_id
+            )));
+        }
+        Ok(())
+    }
 }
 
 pub fn check_created_principal_within_mintable_bound(bound: &MintableScopeBound, query: &CreatedPrincipalAuthorityQuery) -> Result<(), RootAuthorityError> {
     bound.validate()?;
+    query.validate()?;
     if query.creator_plane_id != bound.issuing_plane_id {
         return Err(err(format!(
             "CreatedPrincipalAuthorityQuery creator_plane_id {:?} does not match MintableScopeBound issuing_plane_id {:?}",
@@ -289,11 +320,19 @@ pub fn check_created_principal_within_mintable_bound(bound: &MintableScopeBound,
 // Successor non-expansion / Root amendment protocol (G2-00 SS10.1).
 // ============================================================================
 
+/// Review finding: without binding to the exact scope set it approves, an
+/// amendment for one expansion (or a fabricated one) could be reused to
+/// authorize an arbitrary `max_scopes` in the same generation transition.
+/// G2-00 SS10.1, verbatim: "Root approves the exact causal bound."
+/// `approved_max_scopes` is that exact bound; `check_successor_bound_
+/// non_expansion` requires the successor's `max_scopes` to equal it
+/// precisely, not merely to be covered by generation/justification alone.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RootAmendment {
     pub predecessor_bound_generation: u64,
     pub new_generation: u64,
+    pub approved_max_scopes: BTreeSet<String>,
     pub justification: String,
     pub assurance_ref: String,
 }
@@ -305,6 +344,9 @@ impl RootAmendment {
         }
         if self.assurance_ref.trim().is_empty() {
             return Err(err("RootAmendment: assurance_ref must be non-empty"));
+        }
+        if self.approved_max_scopes.is_empty() {
+            return Err(err("RootAmendment: approved_max_scopes must be non-empty"));
         }
         if self.new_generation <= self.predecessor_bound_generation {
             return Err(err(format!(
@@ -321,10 +363,33 @@ impl RootAmendment {
 /// fresh authority generation." A successor that does not widen the bound
 /// needs no amendment at all; one that does requires a well-formed
 /// amendment binding both the exact predecessor generation it widens from
-/// and the exact successor generation it authorizes.
+/// and the exact successor generation it authorizes, and approving the
+/// exact resulting scope set -- not merely a plausible-looking generation
+/// match.
+///
+/// Review findings, both fixed here: (1) `successor` must genuinely
+/// describe the same issuing plane at a strictly later generation than
+/// `predecessor` -- otherwise an unrelated or stale bound could be
+/// silently treated as "no widening occurred" merely because its scopes
+/// happen to be a subset. (2) an amendment must approve the successor's
+/// *exact* `max_scopes`, not just match generation numbers -- otherwise
+/// one amendment could be reused to authorize an arbitrary expansion in
+/// the same generation transition.
 pub fn check_successor_bound_non_expansion(predecessor: &MintableScopeBound, successor: &MintableScopeBound, amendment: Option<&RootAmendment>) -> Result<(), RootAuthorityError> {
     predecessor.validate()?;
     successor.validate()?;
+    if successor.issuing_plane_id != predecessor.issuing_plane_id {
+        return Err(err(format!(
+            "successor MintableScopeBound issuing_plane_id {:?} does not match predecessor issuing_plane_id {:?}: not a genuine successor",
+            successor.issuing_plane_id, predecessor.issuing_plane_id
+        )));
+    }
+    if successor.generation <= predecessor.generation {
+        return Err(err(format!(
+            "successor MintableScopeBound generation ({}) must be strictly greater than predecessor generation ({})",
+            successor.generation, predecessor.generation
+        )));
+    }
     let widened: Vec<&String> = successor.max_scopes.difference(&predecessor.max_scopes).collect();
     if widened.is_empty() {
         return Ok(());
@@ -345,6 +410,12 @@ pub fn check_successor_bound_non_expansion(predecessor: &MintableScopeBound, suc
             amendment.new_generation, successor.generation
         )));
     }
+    if amendment.approved_max_scopes != successor.max_scopes {
+        return Err(err(format!(
+            "RootAmendment approved_max_scopes {:?} does not match the successor bound's exact max_scopes {:?} -- Root approves the exact causal bound, not merely a generation match",
+            amendment.approved_max_scopes, successor.max_scopes
+        )));
+    }
     Ok(())
 }
 
@@ -360,8 +431,8 @@ pub fn trust_table_row() -> trust_table::TrustTableRow {
             "AuthorityChain structural validity: Root-first, single ROOT, non-decreasing generation along the chain".into(),
             "CAUSAL_PREIMAGE* reverse reachability over the declared causal edges, with the same fail-closed unknown-edge rule as EFFECT_REACH*".into(),
             "EFFECT_REACH*(campaign) intersect AUTHORITY_CONTROL_PLANE_CAUSAL_PREIMAGE = empty, always recomputed from the graph at the admit_* boundary, never trusting a caller-supplied result".into(),
-            "created-principal effective authority within the Root-approved MINTABLE_SCOPE_BOUND*, independent of whatever the creator itself holds".into(),
-            "successor issuing-plane bound non-expansion, requiring a well-formed Root amendment binding the exact predecessor/successor generations for any widening".into(),
+            "created-principal effective authority within the Root-approved MINTABLE_SCOPE_BOUND*, independent of whatever the creator itself holds, and bound to a non-empty substrate_query_digest so an unbound list is never accepted".into(),
+            "successor issuing-plane bound non-expansion: same issuing plane, strictly-advancing generation, and (for any widening) a well-formed Root amendment binding the exact predecessor/successor generations and approving the successor's exact resulting scope set".into(),
         ],
         trusts_only: "Python-discovered graph nodes/edges, plane declarations and created-principal authority queries, reach/preimage-computed and containment-checked independently".into(),
         trust_bounded_reason: "G2-00 SS10: substrate discovery (what nodes/edges/plane declarations/created-principal authority actually exist) is Python's job (simulation and analysis); the reverse causal preimage, the control-plane exclusion law, MINTABLE_SCOPE_BOUND* containment and successor non-expansion are mechanically re-derived by Rust independent of whatever completeness the producer claims about its own graph or declarations".into(),
@@ -577,7 +648,22 @@ mod tests {
     }
 
     fn created_query(principal_id: &str, creator_plane_id: &str, scopes: &[&str]) -> CreatedPrincipalAuthorityQuery {
-        CreatedPrincipalAuthorityQuery { principal_id: principal_id.to_string(), creator_plane_id: creator_plane_id.to_string(), effective_scopes: set(scopes) }
+        CreatedPrincipalAuthorityQuery {
+            principal_id: principal_id.to_string(),
+            creator_plane_id: creator_plane_id.to_string(),
+            effective_scopes: set(scopes),
+            substrate_query_digest: "digest-1".to_string(),
+        }
+    }
+
+    fn amendment(predecessor_bound_generation: u64, new_generation: u64, approved_scopes: &[&str]) -> RootAmendment {
+        RootAmendment {
+            predecessor_bound_generation,
+            new_generation,
+            approved_max_scopes: set(approved_scopes),
+            justification: "justification".to_string(),
+            assurance_ref: "assurance-ref-1".to_string(),
+        }
     }
 
     #[test]
@@ -604,6 +690,17 @@ mod tests {
         assert!(check_created_principal_within_mintable_bound(&b, &q).is_err());
     }
 
+    #[test]
+    fn created_principal_query_rejects_a_blank_substrate_query_digest() {
+        // Review finding: without a binding to the substrate that
+        // produced it, effective_scopes is an untrusted, unbound list --
+        // a caller could under-report inherited/default permissions.
+        let b = bound("issuer-1", 1, &["read:repo"]);
+        let mut q = created_query("svc-account-1", "issuer-1", &["read:repo"]);
+        q.substrate_query_digest = "  ".to_string();
+        assert!(check_created_principal_within_mintable_bound(&b, &q).is_err());
+    }
+
     // ---- successor non-expansion / Root amendment ----
 
     #[test]
@@ -624,36 +721,73 @@ mod tests {
     fn successor_widening_bound_with_valid_amendment_accepted() {
         let predecessor = bound("issuer-1", 1, &["read:repo"]);
         let successor = bound("issuer-1", 2, &["read:repo", "admin:org"]);
-        let amendment = RootAmendment { predecessor_bound_generation: 1, new_generation: 2, justification: "org migration requires admin scope".into(), assurance_ref: "assurance-ref-1".into() };
-        check_successor_bound_non_expansion(&predecessor, &successor, Some(&amendment)).unwrap();
+        let a = amendment(1, 2, &["read:repo", "admin:org"]);
+        check_successor_bound_non_expansion(&predecessor, &successor, Some(&a)).unwrap();
     }
 
     #[test]
     fn successor_widening_bound_with_amendment_bound_to_wrong_predecessor_generation_rejected() {
         let predecessor = bound("issuer-1", 1, &["read:repo"]);
         let successor = bound("issuer-1", 2, &["read:repo", "admin:org"]);
-        let amendment = RootAmendment { predecessor_bound_generation: 99, new_generation: 2, justification: "justification".into(), assurance_ref: "assurance-ref-1".into() };
-        assert!(check_successor_bound_non_expansion(&predecessor, &successor, Some(&amendment)).is_err());
+        let a = amendment(99, 2, &["read:repo", "admin:org"]);
+        assert!(check_successor_bound_non_expansion(&predecessor, &successor, Some(&a)).is_err());
     }
 
     #[test]
     fn successor_widening_bound_with_amendment_bound_to_wrong_successor_generation_rejected() {
         let predecessor = bound("issuer-1", 1, &["read:repo"]);
         let successor = bound("issuer-1", 2, &["read:repo", "admin:org"]);
-        let amendment = RootAmendment { predecessor_bound_generation: 1, new_generation: 99, justification: "justification".into(), assurance_ref: "assurance-ref-1".into() };
-        assert!(check_successor_bound_non_expansion(&predecessor, &successor, Some(&amendment)).is_err());
+        let a = amendment(1, 99, &["read:repo", "admin:org"]);
+        assert!(check_successor_bound_non_expansion(&predecessor, &successor, Some(&a)).is_err());
+    }
+
+    #[test]
+    fn successor_widening_bound_with_amendment_approving_different_scopes_rejected() {
+        // Review finding: an amendment must approve the successor's exact
+        // resulting scope set, not merely match generation numbers --
+        // otherwise one amendment could authorize an arbitrary expansion.
+        let predecessor = bound("issuer-1", 1, &["read:repo"]);
+        let successor = bound("issuer-1", 2, &["read:repo", "admin:org"]);
+        let a = amendment(1, 2, &["read:repo", "some-other-scope"]);
+        assert!(check_successor_bound_non_expansion(&predecessor, &successor, Some(&a)).is_err());
+    }
+
+    #[test]
+    fn successor_check_rejects_a_different_issuing_plane() {
+        // Review finding: an unrelated bound for a different plane must
+        // not be silently treated as a genuine successor merely because
+        // its scopes happen to be a subset.
+        let predecessor = bound("issuer-1", 1, &["read:repo", "admin:org"]);
+        let unrelated = bound("issuer-2", 2, &["read:repo"]);
+        assert!(check_successor_bound_non_expansion(&predecessor, &unrelated, None).is_err());
+    }
+
+    #[test]
+    fn successor_check_rejects_a_non_advancing_generation() {
+        let predecessor = bound("issuer-1", 2, &["read:repo", "admin:org"]);
+        let stale = bound("issuer-1", 1, &["read:repo"]);
+        assert!(check_successor_bound_non_expansion(&predecessor, &stale, None).is_err());
+        let same_generation = bound("issuer-1", 2, &["read:repo"]);
+        assert!(check_successor_bound_non_expansion(&predecessor, &same_generation, None).is_err());
     }
 
     #[test]
     fn root_amendment_rejects_blank_justification() {
-        let amendment = RootAmendment { predecessor_bound_generation: 1, new_generation: 2, justification: "  ".into(), assurance_ref: "assurance-ref-1".into() };
-        assert!(amendment.validate().is_err());
+        let mut a = amendment(1, 2, &["read:repo"]);
+        a.justification = "  ".to_string();
+        assert!(a.validate().is_err());
     }
 
     #[test]
     fn root_amendment_rejects_non_increasing_generation() {
-        let amendment = RootAmendment { predecessor_bound_generation: 2, new_generation: 2, justification: "justification".into(), assurance_ref: "assurance-ref-1".into() };
-        assert!(amendment.validate().is_err());
+        let a = amendment(2, 2, &["read:repo"]);
+        assert!(a.validate().is_err());
+    }
+
+    #[test]
+    fn root_amendment_rejects_empty_approved_max_scopes() {
+        let a = amendment(1, 2, &[]);
+        assert!(a.validate().is_err());
     }
 
     // ---- Trust Table admission ----

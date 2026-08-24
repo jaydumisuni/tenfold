@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from hashlib import sha256
 
 from .capability_graph import CapabilityCausationGraph, EffectReachResult
 
@@ -199,11 +200,29 @@ class CreatedPrincipalAuthorityQuery:
     against the Root-approved MINTABLE_SCOPE_BOUND*, never against
     whatever the creator happens to hold, so a created principal that
     escalates beyond even its creator is still caught rather than
-    dismissed as structurally impossible."""
+    dismissed as structurally impossible.
+
+    Review finding: without any binding to the substrate that produced
+    it, a caller could under-report `effective_scopes` (omitting
+    inherited/default permissions settlement actually granted) and the
+    check would accept it purely on the submitted set. `substrate_query_
+    digest` is a required, non-empty binding to the actual substrate
+    state the query was taken from -- `query_created_principal_authority`
+    computes it from the real substrate's own state."""
 
     principal_id: str
     creator_plane_id: str
     effective_scopes: frozenset[str]
+    substrate_query_digest: str
+
+    def validate(self) -> None:
+        if not self.principal_id or not self.principal_id.strip():
+            raise RootAuthorityError("CreatedPrincipalAuthorityQuery: principal_id must be non-empty")
+        if not self.substrate_query_digest or not self.substrate_query_digest.strip():
+            raise RootAuthorityError(
+                f"CreatedPrincipalAuthorityQuery {self.principal_id!r}: substrate_query_digest must be non-empty -- "
+                "effective_scopes must be bound to a genuine substrate query, not an unbound list"
+            )
 
 
 @dataclass
@@ -235,19 +254,28 @@ def query_created_principal_authority(substrate: LocalPrincipalAuthoritySubstrat
     """Genuinely queries the substrate's actual assigned scopes for this
     principal, rather than a caller hand-constructing the claim -- the
     real adapter this milestone's "substrate effective-authority query
-    after settlement" deliverable names."""
+    after settlement" deliverable names. `substrate_query_digest` is
+    computed from the substrate's actual state for this principal, so a
+    caller who bypasses this adapter and hand-constructs the query must
+    also fabricate a matching digest, rather than silently under-reporting
+    scopes with no binding at all."""
 
     if principal_id not in substrate.assigned_scopes:
         raise RootAuthorityError(f"principal {principal_id!r} is not registered in this substrate")
+    scopes = tuple(sorted(substrate.assigned_scopes[principal_id]))
+    creator_plane_id = substrate.creator_of[principal_id]
+    digest = sha256(f"{principal_id}|{creator_plane_id}|{','.join(scopes)}".encode("utf-8")).hexdigest()
     return CreatedPrincipalAuthorityQuery(
         principal_id=principal_id,
-        creator_plane_id=substrate.creator_of[principal_id],
-        effective_scopes=frozenset(substrate.assigned_scopes[principal_id]),
+        creator_plane_id=creator_plane_id,
+        effective_scopes=frozenset(scopes),
+        substrate_query_digest=digest,
     )
 
 
 def check_created_principal_within_mintable_bound(bound: MintableScopeBound, query: CreatedPrincipalAuthorityQuery) -> None:
     bound.validate()
+    query.validate()
     if query.creator_plane_id != bound.issuing_plane_id:
         raise RootAuthorityError(
             f"CreatedPrincipalAuthorityQuery creator_plane_id {query.creator_plane_id!r} does not match "
@@ -268,8 +296,15 @@ def check_created_principal_within_mintable_bound(bound: MintableScopeBound, que
 
 @dataclass(frozen=True)
 class RootAmendment:
+    """Review finding: without binding to the exact scope set it
+    approves, an amendment for one expansion (or a fabricated one) could
+    be reused to authorize an arbitrary max_scopes in the same generation
+    transition. G2-00 SS10.1, verbatim: "Root approves the exact causal
+    bound." `approved_max_scopes` is that exact bound."""
+
     predecessor_bound_generation: int
     new_generation: int
+    approved_max_scopes: frozenset[str]
     justification: str
     assurance_ref: str
 
@@ -278,6 +313,8 @@ class RootAmendment:
             raise RootAuthorityError("RootAmendment: justification must be non-empty")
         if not self.assurance_ref or not self.assurance_ref.strip():
             raise RootAuthorityError("RootAmendment: assurance_ref must be non-empty")
+        if not self.approved_max_scopes:
+            raise RootAuthorityError("RootAmendment: approved_max_scopes must be non-empty")
         if self.new_generation <= self.predecessor_bound_generation:
             raise RootAuthorityError(
                 f"RootAmendment: new_generation ({self.new_generation}) must be strictly greater than "
@@ -291,10 +328,28 @@ def check_successor_bound_non_expansion(predecessor: MintableScopeBound, success
     fresh authority generation." A successor that does not widen the
     bound needs no amendment at all; one that does requires a well-formed
     amendment binding both the exact predecessor generation it widens
-    from and the exact successor generation it authorizes."""
+    from and the exact successor generation it authorizes, and approving
+    the exact resulting scope set.
+
+    Review findings, both fixed here: (1) `successor` must genuinely
+    describe the same issuing plane at a strictly later generation than
+    `predecessor` -- otherwise an unrelated or stale bound could be
+    silently treated as "no widening occurred" merely because its scopes
+    happen to be a subset. (2) an amendment must approve the successor's
+    *exact* max_scopes, not just match generation numbers."""
 
     predecessor.validate()
     successor.validate()
+    if successor.issuing_plane_id != predecessor.issuing_plane_id:
+        raise RootAuthorityError(
+            f"successor MintableScopeBound issuing_plane_id {successor.issuing_plane_id!r} does not match "
+            f"predecessor issuing_plane_id {predecessor.issuing_plane_id!r}: not a genuine successor"
+        )
+    if successor.generation <= predecessor.generation:
+        raise RootAuthorityError(
+            f"successor MintableScopeBound generation ({successor.generation}) must be strictly greater than "
+            f"predecessor generation ({predecessor.generation})"
+        )
     widened = sorted(successor.max_scopes - predecessor.max_scopes)
     if not widened:
         return
@@ -310,4 +365,10 @@ def check_successor_bound_non_expansion(predecessor: MintableScopeBound, success
         raise RootAuthorityError(
             f"RootAmendment new_generation ({amendment.new_generation}) does not match the actual successor bound "
             f"generation ({successor.generation})"
+        )
+    if amendment.approved_max_scopes != successor.max_scopes:
+        raise RootAuthorityError(
+            f"RootAmendment approved_max_scopes {sorted(amendment.approved_max_scopes)!r} does not match the "
+            f"successor bound's exact max_scopes {sorted(successor.max_scopes)!r} -- Root approves the exact "
+            "causal bound, not merely a generation match"
         )
