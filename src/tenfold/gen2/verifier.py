@@ -1195,3 +1195,17 @@ def independent_check_evidence_packet_generation_current(packet: dict, current_c
     if packet["dispatch_epoch"] != current_dispatch_epoch:
         return False
     return True
+
+
+def independent_check_valid_authority_owner_count(active_owners: tuple[str, ...]) -> bool:
+    """Independent re-derivation of G2-21's own acceptance clause,
+    verbatim: "ValidAuthorityOwnerCount = 1; no dual issuer." Operating
+    on a bare tuple of owner-ref strings rather than importing
+    `tenfold.gen2.authority_transfer.check_valid_authority_owner_count`
+    -- an independent implementation of the same constraint, not a call
+    into the artifact it reconciles against. Returns True only when
+    exactly one distinct owner ref is present; zero (no active owner) or
+    more than one (a dual-issuer split) both return False rather than
+    raising, so a caller can accumulate findings.
+    """
+    return len(set(active_owners)) == 1

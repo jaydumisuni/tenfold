@@ -1000,12 +1000,16 @@ def check_cross_runtime_authoritative_ownership(model: StateModel, pairings: tup
     silently promoted to authoritative -- or vice versa -- is exactly the
     "shadow Rust mistaken for a second valid owner" failure this check
     exists to catch). Also requires every `*_rust_runtime` field actually
-    present in `model` to be covered by some pairing's `shadow_field_id`
-    -- an un-paired Rust re-derivation is itself a reconciliation gap."""
+    present in `model` to be covered by some pairing, in either role --
+    a Rust re-derivation that has itself become authoritative (G2-21's
+    own `identity_generation_rust_runtime`) is still covered by naming it
+    once, just as the authoritative_field_id rather than the
+    shadow_field_id; an un-paired Rust re-derivation in neither role is
+    itself a reconciliation gap."""
     model.validate()
     field_ids = model.field_ids()
     seen_identities: set[str] = set()
-    paired_shadow_ids: set[str] = set()
+    paired_ids: set[str] = set()
     for pairing in pairings:
         pairing.validate()
         if pairing.invariant_identity in seen_identities:
@@ -1020,9 +1024,10 @@ def check_cross_runtime_authoritative_ownership(model: StateModel, pairings: tup
                 f"CROSS_RUNTIME_OWNERSHIP_MISMATCH: {pairing.invariant_identity!r} claims {pairing.authoritative_holder.value} is authoritative, "
                 f"but {pairing.authoritative_field_id!r} is registered as {actual_holder.value}"
             )
-        paired_shadow_ids.add(pairing.shadow_field_id)
+        paired_ids.add(pairing.authoritative_field_id)
+        paired_ids.add(pairing.shadow_field_id)
 
-    unpaired_rust_runtime_fields = sorted(f.field_id for f in model.fields if f.field_id.endswith("_rust_runtime") and f.field_id not in paired_shadow_ids)
+    unpaired_rust_runtime_fields = sorted(f.field_id for f in model.fields if f.field_id.endswith("_rust_runtime") and f.field_id not in paired_ids)
     if unpaired_rust_runtime_fields:
         raise StateModelError(f"CROSS_RUNTIME_OWNERSHIP_UNRECONCILED: *_rust_runtime field(s) with no pairing: {unpaired_rust_runtime_fields}")
 
@@ -1172,6 +1177,68 @@ def build_g2_20_invariant_reconciliation_manifest() -> InvariantReconciliationMa
                 "chronicle_bridge.dump_as_chronicle_events",
             ),
         )
+    )
+
+
+# ============================================================================
+# G2-21 production State Model extension (G2-00 §§15-16; docs/08-gen2-
+# roadmap.md's G2-21 deliverables). The first slice-migration milestone:
+# closes the "no `*_rust_runtime` field for identity_generation" gap
+# G2-20's own cross-runtime pairing roster disclosed as pre-existing
+# (identity_generation had real Rust ownership from G2-09 but was never
+# registered as its own State Model field), and adds the new Trust-
+# Table-admitted `authority_transfer` artifact family this milestone's
+# Trust Table extension introduces.
+# ============================================================================
+
+G2_21_REQUIRED_STATE_MODEL_FIELD_IDS: frozenset[str] = frozenset(
+    {
+        "identity_generation_rust_runtime",
+        "authority_transfer_record_state",
+    }
+)
+
+
+def build_g2_21_state_model() -> StateModel:
+    """Extends the G2-20 State Model with G2-21's identity_generation
+    Rust-runtime and authority_transfer-record fields (G2-00 SS15-16;
+    `tenfold.gen2.authority_transfer` + `rust/identity_generation`)."""
+    return build_g2_20_state_model().extend(
+        (
+            StateModelField(
+                "identity_generation_rust_runtime", AuthorityHolder.GEN2_RUST,
+                "identity_generation::check_exact_state_binding / check_generation_not_stale / check_valid_authority_owner_count",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-21",
+            ),
+            StateModelField(
+                "authority_transfer_record_state", AuthorityHolder.GEN2_RUST,
+                "identity_generation::AuthorityTransferRecord / admit_transition (Trust Table row \"authority_transfer\")",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-21",
+            ),
+        )
+    )
+
+
+# ============================================================================
+# G2-21 cross-runtime authoritative ownership update: extends G2-20's
+# roster with the Identity/Generation pairing, now genuinely migrated.
+# G2-21's own Result, verbatim: "Gen2 owns Identity/Generation
+# authority" -- reflected here by naming GEN2_RUST as the authoritative
+# holder for this one pairing, while every other G2-20 pairing's
+# authoritative holder remains unchanged (GEN1_PYTHON), matching the
+# roadmap's own phased, per-slice migration design (G2-00 §15: "No
+# invariant is split across Python/Rust. Identity/Generation transfers
+# first."). Disclosed scope: this reflects that the transfer MACHINERY
+# for this slice genuinely reached IRREVERSIBLY_COMMITTED on a real
+# constructed transfer -- see `authority_transfer.py`'s own module
+# docstring for the honest boundary between that and any live call site
+# actually consulting Rust at runtime.
+# ============================================================================
+
+
+def build_g2_21_cross_runtime_invariant_pairings() -> tuple[CrossRuntimeInvariantPairing, ...]:
+    return build_g2_20_cross_runtime_invariant_pairings() + (
+        CrossRuntimeInvariantPairing("identity_generation_authority", "identity_generation_rust_runtime", "authority_generation", AuthorityHolder.GEN2_RUST),
     )
 
 
