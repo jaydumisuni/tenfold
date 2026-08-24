@@ -201,6 +201,31 @@ def test_g2_23_standing_gate_b_reuses_g2_21s_independent_verifier() -> None:
 
 
 # ============================================================================
+# Round-2 review fix: the owner-count check is no longer a bare assertion
+# against a caller-constructed tuple -- it also genuinely re-exercises
+# the mechanism against a dual-issuer claim and requires that to fail.
+# ============================================================================
+
+
+def test_g2_23_verify_single_owner_and_fence_succeeds_for_a_genuine_single_owner() -> None:
+    from tenfold.gen2.dispatch_mutation_transfer import _verify_single_owner_and_fence
+
+    _verify_single_owner_and_fence(GEN1_DISPATCH_REF, GEN2_DISPATCH_REF)
+
+
+def test_g2_23_verify_single_owner_and_fence_fails_closed_if_the_underlying_mechanism_stops_rejecting_dual_issuers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Proves the self-verification is real, not vacuous: if
+    `check_valid_authority_owner_count` were ever broken/bypassed such
+    that it stopped rejecting a dual-issuer claim, `_verify_single_owner_
+    and_fence` must itself raise rather than silently proceeding."""
+    import tenfold.gen2.dispatch_mutation_transfer as dmt
+
+    monkeypatch.setattr(dmt, "check_valid_authority_owner_count", lambda owners: None)
+    with pytest.raises(SliceTransferError, match="failed to reject a dual-issuer claim"):
+        dmt._verify_single_owner_and_fence(GEN1_DISPATCH_REF, GEN2_DISPATCH_REF)
+
+
+# ============================================================================
 # Rehearsal + abort/reinstatement (both slices).
 # ============================================================================
 

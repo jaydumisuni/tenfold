@@ -37,10 +37,11 @@
 //! the start rather than waiting for the identical finding to recur.
 
 use dispatch_lease::{
-    admit_check_mutation_admission, admit_compute_frontier, dispatch_state_transfer_trust_table_row, mutation_admission_transfer_trust_table_row, CampaignNodeState, LeaseRegistry,
-    LiveAuthorityState, MutationAdmissionClaim, WriteLease,
+    admit_check_mutation_admission, admit_compute_frontier, admit_check_dispatch_state_transfer_transition, admit_check_mutation_admission_transfer_transition,
+    admit_dispatch_state_transfer_transition, admit_mutation_admission_transfer_transition, dispatch_state_transfer_trust_table_row, mutation_admission_transfer_trust_table_row,
+    CampaignNodeState, LeaseRegistry, LiveAuthorityState, MutationAdmissionClaim, WriteLease,
 };
-use identity_generation::{admit_check_authority_transfer_transition_for, admit_transition_for, AuthorityTransferRecord, AuthorityTransferStabilizationPolicy, AuthorityTransferStage};
+use identity_generation::{AuthorityTransferRecord, AuthorityTransferStabilizationPolicy, AuthorityTransferStage};
 use serde::Deserialize;
 use std::fs;
 use std::io::Read;
@@ -351,7 +352,20 @@ fn main() -> ExitCode {
                 Ok(v) => v,
                 Err(e) => return usage_error(&e.to_string()),
             };
-            match admit_check_authority_transfer_transition_for(&admitted_table(), &request.artifact_identity, request.current, request.new_stage) {
+            // Dispatched through this crate's own named per-slice wrappers
+            // (not the raw generic `identity_generation::admit_check_
+            // authority_transfer_transition_for`) so an unrecognized
+            // artifact_identity is rejected here rather than silently
+            // reaching the generic Trust-Table admit check.
+            let result = match request.artifact_identity.as_str() {
+                "dispatch_state_transfer" => admit_check_dispatch_state_transfer_transition(&admitted_table(), request.current, request.new_stage),
+                "mutation_admission_transfer" => admit_check_mutation_admission_transfer_transition(&admitted_table(), request.current, request.new_stage),
+                other => {
+                    println!("REJECT: unknown artifact_identity {other:?}");
+                    return ExitCode::from(1);
+                }
+            };
+            match result {
                 Ok(()) => {
                     println!("ACCEPT");
                     ExitCode::SUCCESS
@@ -371,7 +385,22 @@ fn main() -> ExitCode {
                 Ok(v) => v,
                 Err(e) => return usage_error(&e.to_string()),
             };
-            match admit_transition_for(&admitted_table(), &request.artifact_identity, &request.record, request.new_stage, &request.policy) {
+            // Round-2 review fix: dispatch through this crate's own named
+            // wrappers, each of which binds the record's own from/to refs
+            // to its specific slice before admitting it -- the raw
+            // generic `identity_generation::admit_transition_for` is
+            // never called directly here, so a record submitted under
+            // the wrong artifact_identity can no longer be wrongly
+            // admitted through a different slice's Trust Table row.
+            let result = match request.artifact_identity.as_str() {
+                "dispatch_state_transfer" => admit_dispatch_state_transfer_transition(&admitted_table(), &request.record, request.new_stage, &request.policy),
+                "mutation_admission_transfer" => admit_mutation_admission_transfer_transition(&admitted_table(), &request.record, request.new_stage, &request.policy),
+                other => {
+                    println!("REJECT: unknown artifact_identity {other:?}");
+                    return ExitCode::from(1);
+                }
+            };
+            match result {
                 Ok(new_record) => {
                     println!("{}", serde_json::to_string(&new_record).expect("AuthorityTransferRecord serializes"));
                     ExitCode::SUCCESS

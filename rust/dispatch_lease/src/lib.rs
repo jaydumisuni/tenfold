@@ -571,6 +571,20 @@ pub fn mutation_admission_transfer_trust_table_row() -> trust_table::TrustTableR
     }
 }
 
+// Round-2 review finding: the generic `admit_transition_for` admits
+// solely by `artifact_identity`, a bare string with no structural
+// binding to the record's own content -- a "dispatch_state_transfer"
+// record could otherwise be wrongly admitted through the
+// "mutation_admission_transfer" row (or vice versa) since both rows'
+// mechanics are identical. These constants are this crate's own
+// hardcoded, non-caller-suppliable expected refs per slice; the named
+// wrappers below bind every record to its own slice before it ever
+// reaches `transition()`.
+pub const DISPATCH_STATE_TRANSFER_FROM_REF: &str = "gen1-dispatch-state";
+pub const DISPATCH_STATE_TRANSFER_TO_REF: &str = "gen2-dispatch-state";
+pub const MUTATION_ADMISSION_TRANSFER_FROM_REF: &str = "gen1-mutation-admission";
+pub const MUTATION_ADMISSION_TRANSFER_TO_REF: &str = "gen2-mutation-admission";
+
 pub fn admit_check_dispatch_state_transfer_transition(
     table: &trust_table::TrustTable,
     current: identity_generation::AuthorityTransferStage,
@@ -585,7 +599,16 @@ pub fn admit_dispatch_state_transfer_transition(
     new_stage: identity_generation::AuthorityTransferStage,
     policy: &identity_generation::AuthorityTransferStabilizationPolicy,
 ) -> Result<identity_generation::AuthorityTransferRecord, DispatchLeaseError> {
-    identity_generation::admit_transition_for(table, "dispatch_state_transfer", record, new_stage, policy).map_err(|e| err(e.to_string()))
+    identity_generation::admit_transition_for(
+        table,
+        "dispatch_state_transfer",
+        DISPATCH_STATE_TRANSFER_FROM_REF,
+        DISPATCH_STATE_TRANSFER_TO_REF,
+        record,
+        new_stage,
+        policy,
+    )
+    .map_err(|e| err(e.to_string()))
 }
 
 pub fn admit_check_mutation_admission_transfer_transition(
@@ -602,7 +625,16 @@ pub fn admit_mutation_admission_transfer_transition(
     new_stage: identity_generation::AuthorityTransferStage,
     policy: &identity_generation::AuthorityTransferStabilizationPolicy,
 ) -> Result<identity_generation::AuthorityTransferRecord, DispatchLeaseError> {
-    identity_generation::admit_transition_for(table, "mutation_admission_transfer", record, new_stage, policy).map_err(|e| err(e.to_string()))
+    identity_generation::admit_transition_for(
+        table,
+        "mutation_admission_transfer",
+        MUTATION_ADMISSION_TRANSFER_FROM_REF,
+        MUTATION_ADMISSION_TRANSFER_TO_REF,
+        record,
+        new_stage,
+        policy,
+    )
+    .map_err(|e| err(e.to_string()))
 }
 
 #[cfg(test)]
@@ -738,6 +770,25 @@ mod tests {
     #[test]
     fn admit_mutation_admission_transfer_transition_rejects_incomplete_evidence_even_when_admitted() {
         let result = admit_mutation_admission_transfer_transition(&admitted_dispatch_transfer_table(), &stabilizing_mutation_record(), AuthorityTransferStage::STABILIZATION_PROVEN, &full_transfer_policy());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn admit_mutation_admission_transfer_transition_rejects_a_record_genuinely_bound_to_the_dispatch_slice() {
+        // Round-2 review finding: a record with dispatch_state_transfer's
+        // own from/to refs must not be admittable through the
+        // mutation_admission_transfer wrapper (or vice versa), even
+        // though both Trust Table rows exist with identical mechanics and
+        // the record itself carries full evidence.
+        let record = AuthorityTransferRecord { stabilization_evidence: full_transfer_evidence(), ..stabilizing_dispatch_record() };
+        let result = admit_mutation_admission_transfer_transition(&admitted_dispatch_transfer_table(), &record, AuthorityTransferStage::STABILIZATION_PROVEN, &full_transfer_policy());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn admit_dispatch_state_transfer_transition_rejects_a_record_genuinely_bound_to_the_mutation_slice() {
+        let record = AuthorityTransferRecord { stabilization_evidence: full_transfer_evidence(), ..stabilizing_mutation_record() };
+        let result = admit_dispatch_state_transfer_transition(&admitted_dispatch_transfer_table(), &record, AuthorityTransferStage::STABILIZATION_PROVEN, &full_transfer_policy());
         assert!(result.is_err());
     }
 
