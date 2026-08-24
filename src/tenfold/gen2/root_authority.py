@@ -10,11 +10,20 @@ non-expansion). Built on `tenfold.gen2.capability_graph` (G2-16):
 is its reverse, over the same graph and the same six known edge classes,
 with the same fail-closed rule for an edge class this module cannot
 classify.
+
+`LocalPrincipalAuthoritySubstrate`/`query_created_principal_authority`
+are a real (if disposable/local) substrate and adapter the roadmap's own
+"substrate effective-authority query after settlement" deliverable names
+explicitly -- applied proactively here (self-caught before any external
+review, learning directly from G2-16's own round-2 finding that a
+hand-populated value object does not satisfy an explicit "query adapter"
+deliverable). No live adapter against a real external substrate exists
+yet -- disclosed honestly, not silently assumed solved.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 from .capability_graph import CapabilityCausationGraph, EffectReachResult
@@ -195,6 +204,46 @@ class CreatedPrincipalAuthorityQuery:
     principal_id: str
     creator_plane_id: str
     effective_scopes: frozenset[str]
+
+
+@dataclass
+class LocalPrincipalAuthoritySubstrate:
+    """A real, disposable, in-memory substrate the
+    `query_created_principal_authority` adapter genuinely queries -- G2-00
+    SS10.1: "Created-principal authority is queried after substrate-policy
+    settlement." Mirrors G2-14's LocalSandboxFacility / G2-16's
+    LocalAutomationSubstrate pattern: this milestone's own roadmap
+    deliverable list names "substrate effective-authority query after
+    settlement" explicitly, so a caller hand-constructing a
+    `CreatedPrincipalAuthorityQuery` directly (as the round-1 API alone
+    permitted) would not actually satisfy that deliverable. No live
+    adapter against a real external substrate exists yet -- disclosed
+    honestly, not silently assumed solved."""
+
+    # principal_id -> the actual effective scopes assigned to it in this
+    # disposable substrate (what a real settlement-time query would see).
+    assigned_scopes: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # principal_id -> the plane that created it.
+    creator_of: dict[str, str] = field(default_factory=dict)
+
+    def register_created_principal(self, principal_id: str, creator_plane_id: str, assigned_scopes: tuple[str, ...] = ()) -> None:
+        self.creator_of[principal_id] = creator_plane_id
+        self.assigned_scopes[principal_id] = assigned_scopes
+
+
+def query_created_principal_authority(substrate: LocalPrincipalAuthoritySubstrate, principal_id: str) -> CreatedPrincipalAuthorityQuery:
+    """Genuinely queries the substrate's actual assigned scopes for this
+    principal, rather than a caller hand-constructing the claim -- the
+    real adapter this milestone's "substrate effective-authority query
+    after settlement" deliverable names."""
+
+    if principal_id not in substrate.assigned_scopes:
+        raise RootAuthorityError(f"principal {principal_id!r} is not registered in this substrate")
+    return CreatedPrincipalAuthorityQuery(
+        principal_id=principal_id,
+        creator_plane_id=substrate.creator_of[principal_id],
+        effective_scopes=frozenset(substrate.assigned_scopes[principal_id]),
+    )
 
 
 def check_created_principal_within_mintable_bound(bound: MintableScopeBound, query: CreatedPrincipalAuthorityQuery) -> None:

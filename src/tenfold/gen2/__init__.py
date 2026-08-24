@@ -323,6 +323,7 @@ from .root_authority import (
     AuthorityPlane,
     CausalPreimageResult,
     CreatedPrincipalAuthorityQuery,
+    LocalPrincipalAuthoritySubstrate,
     MintableScopeBound,
     PlaneRole,
     RootAmendment,
@@ -331,6 +332,7 @@ from .root_authority import (
     check_created_principal_within_mintable_bound,
     check_successor_bound_non_expansion,
     compute_causal_preimage_star,
+    query_created_principal_authority,
 )
 from .root_authority_bridge import (
     RootAuthorityCliBuildError,
@@ -620,6 +622,7 @@ __all__ = [
     "AuthorityPlane",
     "CausalPreimageResult",
     "CreatedPrincipalAuthorityQuery",
+    "LocalPrincipalAuthoritySubstrate",
     "MintableScopeBound",
     "PlaneRole",
     "RootAmendment",
@@ -628,6 +631,7 @@ __all__ = [
     "check_created_principal_within_mintable_bound",
     "check_successor_bound_non_expansion",
     "compute_causal_preimage_star",
+    "query_created_principal_authority",
     "RootAuthorityCliBuildError",
     "RootAuthorityCliError",
     "rust_check_control_plane_exclusion",

@@ -184,7 +184,7 @@ from .capability_graph_bridge import (
 from .root_authority import (
     AuthorityChain,
     AuthorityPlane,
-    CreatedPrincipalAuthorityQuery,
+    LocalPrincipalAuthoritySubstrate,
     MintableScopeBound,
     PlaneRole,
     RootAmendment,
@@ -193,6 +193,7 @@ from .root_authority import (
     check_created_principal_within_mintable_bound,
     check_successor_bound_non_expansion,
     compute_causal_preimage_star,
+    query_created_principal_authority,
 )
 from .root_authority_bridge import (
     RootAuthorityCliError,
@@ -1508,7 +1509,9 @@ def _g2_17_created_principal_escalation_kill_check() -> None:
         raise AssertionError("rust root_authority kernel incorrectly admitted a created principal whose effective authority exceeds MINTABLE_SCOPE_BOUND*")
 
     bound = MintableScopeBound(issuing_plane_id="issuer-1", generation=1, max_scopes=frozenset({"read:repo"}))
-    query = CreatedPrincipalAuthorityQuery(principal_id="svc-account-1", creator_plane_id="issuer-1", effective_scopes=frozenset({"read:repo", "admin:org"}))
+    substrate = LocalPrincipalAuthoritySubstrate()
+    substrate.register_created_principal("svc-account-1", "issuer-1", assigned_scopes=("read:repo", "admin:org"))
+    query = query_created_principal_authority(substrate, "svc-account-1")
     check_created_principal_within_mintable_bound(bound, query)
 
 

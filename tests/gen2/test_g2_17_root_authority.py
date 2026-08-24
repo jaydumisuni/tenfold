@@ -28,6 +28,7 @@ from tenfold.gen2.root_authority import (
     AuthorityPlane,
     CausalPreimageResult,
     CreatedPrincipalAuthorityQuery,
+    LocalPrincipalAuthoritySubstrate,
     MintableScopeBound,
     PlaneRole,
     RootAmendment,
@@ -36,6 +37,7 @@ from tenfold.gen2.root_authority import (
     check_created_principal_within_mintable_bound,
     check_successor_bound_non_expansion,
     compute_causal_preimage_star,
+    query_created_principal_authority,
 )
 from tenfold.gen2.root_authority_bridge import (
     RootAuthorityCliError,
@@ -308,6 +310,39 @@ def test_g2_17_created_principal_escalation_detected_in_python_and_rust() -> Non
 def test_g2_17_created_principal_query_rejects_a_creator_plane_mismatch() -> None:
     bound = MintableScopeBound(issuing_plane_id="issuer-1", generation=1, max_scopes=frozenset({"read:repo"}))
     query = CreatedPrincipalAuthorityQuery(principal_id="svc-1", creator_plane_id="issuer-2", effective_scopes=frozenset({"read:repo"}))
+    with pytest.raises(RootAuthorityError):
+        check_created_principal_within_mintable_bound(bound, query)
+
+
+# ============================================================================
+# LocalPrincipalAuthoritySubstrate / query_created_principal_authority --
+# the roadmap's own "substrate effective-authority query after
+# settlement" deliverable: a real adapter that genuinely queries a
+# substrate, not a caller hand-constructing the claim.
+# ============================================================================
+
+
+def test_g2_17_query_created_principal_authority_genuinely_queries_the_substrate() -> None:
+    substrate = LocalPrincipalAuthoritySubstrate()
+    substrate.register_created_principal("svc-1", "issuer-1", assigned_scopes=("read:repo", "admin:org"))
+    query = query_created_principal_authority(substrate, "svc-1")
+    assert query == CreatedPrincipalAuthorityQuery(principal_id="svc-1", creator_plane_id="issuer-1", effective_scopes=frozenset({"read:repo", "admin:org"}))
+
+
+def test_g2_17_query_created_principal_authority_rejects_an_unregistered_principal() -> None:
+    substrate = LocalPrincipalAuthoritySubstrate()
+    with pytest.raises(RootAuthorityError):
+        query_created_principal_authority(substrate, "ghost")
+
+
+def test_g2_17_real_substrate_escalation_is_genuinely_detected() -> None:
+    """The escalation scenario run through the real adapter end-to-end,
+    not a hand-constructed claim that already contains the escalated
+    scope."""
+    substrate = LocalPrincipalAuthoritySubstrate()
+    substrate.register_created_principal("svc-1", "issuer-1", assigned_scopes=("read:repo", "admin:org"))
+    bound = MintableScopeBound(issuing_plane_id="issuer-1", generation=1, max_scopes=frozenset({"read:repo"}))
+    query = query_created_principal_authority(substrate, "svc-1")
     with pytest.raises(RootAuthorityError):
         check_created_principal_within_mintable_bound(bound, query)
 
