@@ -193,7 +193,7 @@ def test_g2_23_proof_graph_transfer_reaches_irreversibly_committed() -> None:
         result = execute_proof_graph_transfer(work_dir=Path(tmpdir))
     assert result.committed_record.stage == AuthorityTransferStage.IRREVERSIBLY_COMMITTED
     assert result.differential_agreements == result.differential_entries
-    assert result.differential_entries >= 6
+    assert result.differential_entries >= 13
 
 
 def test_g2_23_proof_graph_transfer_binds_genuine_evidence_for_every_mandatory_category() -> None:
@@ -201,6 +201,40 @@ def test_g2_23_proof_graph_transfer_binds_genuine_evidence_for_every_mandatory_c
         result = execute_proof_graph_transfer(work_dir=Path(tmpdir))
     bound = {cat for cat, refs in result.committed_record.stabilization_evidence.items() if refs}
     assert bound == set(STABILIZATION_EVIDENCE_CATEGORIES)
+
+
+# ============================================================================
+# Round-2 review fix (Finding 2, PR #77): admit_evidence and
+# derive_mandatory_assurance are now genuinely differential-tested too,
+# not just compute_proof_verdict.
+# ============================================================================
+
+
+def test_g2_23_admit_evidence_differential_is_genuinely_exercised() -> None:
+    from tenfold.gen2.proof_transfer import _run_admit_evidence_differential
+
+    agreements, entries = _run_admit_evidence_differential()
+    assert agreements == entries
+    assert entries >= 3
+
+
+def test_g2_23_mandatory_assurance_differential_is_genuinely_exercised() -> None:
+    from tenfold.gen2.proof_transfer import _run_mandatory_assurance_differential
+
+    agreements, entries = _run_mandatory_assurance_differential()
+    assert agreements == entries
+    assert entries >= 4
+
+
+def test_g2_23_admit_evidence_differential_fails_closed_on_a_genuine_disagreement(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Proves the admit_evidence differential is genuinely exercised, not
+    vacuous: if Rust ever accepted what Python rejects, the differential
+    must genuinely raise."""
+    import tenfold.gen2.proof_transfer as pt
+
+    monkeypatch.setattr(pt, "rust_admit_evidence", lambda node, new_state, evidence_refs: {**node, "state": new_state, "evidence_refs": evidence_refs})
+    with pytest.raises(pt.SliceTransferError, match="admit_evidence disagreement"):
+        pt._run_admit_evidence_differential()
 
 
 def test_g2_23_proof_graph_transfer_execution_fails_closed_on_a_genuine_python_rust_disagreement(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -213,7 +247,7 @@ def test_g2_23_proof_graph_transfer_execution_fails_closed_on_a_genuine_python_r
     def _fake_differential():
         raise SliceTransferError("simulated Python/Rust proof-verdict disagreement")
 
-    monkeypatch.setattr(pt, "_run_proof_verdict_differential", _fake_differential)
+    monkeypatch.setattr(pt, "_run_full_proof_differential", _fake_differential)
     with tempfile.TemporaryDirectory() as tmpdir:
         with pytest.raises(SliceTransferError, match="simulated Python/Rust proof-verdict disagreement"):
             execute_proof_graph_transfer(work_dir=Path(tmpdir))
