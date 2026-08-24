@@ -15,6 +15,7 @@ passing check.
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import time
@@ -229,6 +230,23 @@ from .effect_census_bridge import (
     rust_check_no_blind_replay,
     rust_check_no_new_intent_after_closure,
     rust_check_observation_cover_recheck,
+)
+from .bootstrap_protocol import (
+    BootstrapProtocolError,
+    EvidencePacketV1,
+    FacilityRequestV1,
+    FacilityResultV1,
+    TaskPacketV1,
+    check_evidence_packet_generation_current,
+    check_facility_result_matches_request,
+    validate_bootstrap_corpus,
+)
+from .bootstrap_protocol_bridge import (
+    BootstrapProtocolCliError,
+    rust_check_evidence_packet_generation_current,
+    rust_check_facility_result_matches_request,
+    rust_validate_bootstrap_corpus,
+    rust_validate_task_packet,
 )
 from tenfold.contracts import NodeState
 from tenfold.facility import FacilityError
@@ -1730,6 +1748,121 @@ def _g2_18_new_intent_after_issuance_closed_kill_check() -> None:
     check_no_new_intent_after_closure(barrier, "campaign-1", 1)
 
 
+def _g2_19_task_packet_v1() -> dict:
+    return {
+        "task_id": "task-1",
+        "campaign_id": "campaign-1",
+        "campaign_generation": 1,
+        "node_id": "g2-19",
+        "assignment_id": "assignment-1",
+        "attempt": 1,
+        "objective": "freeze protocol",
+        "scope": [],
+        "capabilities": [],
+        "permissions": [],
+        "evidence_obligations": [],
+        "stop_conditions": [],
+        "reporting_officer": "verification",
+        "source_binding": "sha-1",
+        "dispatch_digest": "digest-1",
+        "foreman_epoch": 1,
+        "lease_id": "lease-1",
+        "lease_epoch": 1,
+        "lease_generation": 1,
+        "request_binding": "request-1",
+    }
+
+
+def _g2_19_malformed_task_packet_kill_check() -> None:
+    # G2-19 acceptance, verbatim: "No informal hybrid cross-runtime
+    # authority channel exists." A malformed TaskPacketV1 (blank task_id)
+    # is rejected by both the real compiled Rust bootstrap_protocol
+    # kernel and the real Python re-derivation.
+    packet_dict = {**_g2_19_task_packet_v1(), "task_id": ""}
+    try:
+        rust_validate_task_packet(packet_dict)
+    except BootstrapProtocolCliError:
+        pass
+    else:
+        raise AssertionError("rust bootstrap_protocol kernel incorrectly admitted a TaskPacketV1 with a blank task_id")
+
+    packet = TaskPacketV1(**{**_g2_19_task_packet_v1(), "task_id": "", "scope": (), "capabilities": (), "permissions": (), "evidence_obligations": (), "stop_conditions": ()})
+    packet.validate()
+
+
+def _g2_19_stale_evidence_packet_kill_check() -> None:
+    # The "evidence_packet" Trust Table row's own required_negative_
+    # fixture, verbatim: "stale/wrong-generation evidence". Activates the
+    # row seeded PENDING_IMPLEMENTATION at G2-03, honestly left that way
+    # through G2-18.
+    packet_dict = {
+        "packet_id": "packet-1",
+        "task_id": "task-1",
+        "assignment_id": "assignment-1",
+        "attempt": 1,
+        "dispatch_digest": "digest-1",
+        "campaign_id": "campaign-1",
+        "campaign_generation": 1,
+        "node_id": "g2-19",
+        "worker_identity": "opus-handoff",
+        "source_binding": "sha-1",
+        "observations": [],
+        "artifacts": [],
+        "results": [],
+        "limitations": [],
+        "anomalies": [],
+        "questions": [],
+        "dispatch_epoch": 1,
+    }
+    try:
+        rust_check_evidence_packet_generation_current(packet_dict, 2, 1)
+    except BootstrapProtocolCliError:
+        pass
+    else:
+        raise AssertionError("rust bootstrap_protocol kernel incorrectly admitted stale/wrong-generation evidence")
+
+    packet = EvidencePacketV1(**{**packet_dict, "observations": (), "artifacts": (), "results": (), "limitations": (), "anomalies": (), "questions": ()})
+    check_evidence_packet_generation_current(packet, 2, 1)
+
+
+def _g2_19_facility_result_mismatch_kill_check() -> None:
+    request_dict = {"request_id": "req-1", "facility_id": "fac-1", "facility_generation": 1, "operation": "read", "authority_ref": "authority@ref"}
+    result_dict = {"request_id": "some-other-request", "facility_id": "fac-1", "facility_generation": 1, "outcome": "ACKNOWLEDGED", "evidence_refs": []}
+    try:
+        rust_check_facility_result_matches_request(request_dict, result_dict)
+    except BootstrapProtocolCliError:
+        pass
+    else:
+        raise AssertionError("rust bootstrap_protocol kernel incorrectly admitted a FacilityResultV1 bound to a different request")
+
+    request = FacilityRequestV1(**request_dict)
+    result = FacilityResultV1(**{**result_dict, "evidence_refs": ()})
+    check_facility_result_matches_request(request, result)
+
+
+def _g2_19_tampered_chronicle_digest_kill_check() -> None:
+    # Self-caught before external review, learning directly from G2-16/17's
+    # own review findings: Python's own corpus check must genuinely
+    # recompute the ChronicleEntry digest, not merely check that fields
+    # are non-empty. The frozen corpus's real chronicle_event, with its
+    # entry_digest corrupted, is rejected by both the real compiled Rust
+    # bootstrap_protocol kernel (chronicle::ChronicleEntry::
+    # verify_self_digest) and the real independent Python re-derivation
+    # (verify_chronicle_entry_self_digest).
+    corpus_path = Path(__file__).resolve().parents[3] / "docs" / "gen2" / "g2-19-bootstrap-corpus.json"
+    corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+    corpus["chronicle_event"]["entry_digest"] = "tampered" * 8
+
+    try:
+        rust_validate_bootstrap_corpus(corpus)
+    except BootstrapProtocolCliError:
+        pass
+    else:
+        raise AssertionError("rust bootstrap_protocol kernel incorrectly admitted a ChronicleEntry with a tampered entry_digest")
+
+    validate_bootstrap_corpus(corpus)
+
+
 def build_initial_mutation_suite() -> MutationSuite:
     suite = MutationSuite()
 
@@ -2756,6 +2889,62 @@ def build_initial_mutation_suite() -> MutationSuite:
             "effect_census",
             _g2_18_new_intent_after_issuance_closed_kill_check,
             EffectCensusError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G19-TASKPACKET-001",
+            MutationCategory.BOUNDARY_INDEPENDENCE_FAILURE,
+            "A malformed TaskPacketV1 (blank task_id) is rejected by both the real compiled Rust "
+            "bootstrap_protocol kernel and the real Python re-derivation (G2-19).",
+            "G2-00 SS3, SS4; G2-19",
+            "task_packet",
+            _g2_19_malformed_task_packet_kill_check,
+            BootstrapProtocolError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G19-EVIDENCEGEN-001",
+            MutationCategory.GENERATION_FENCING_VIOLATION,
+            "An EvidencePacketV1 produced against a campaign_generation/dispatch_epoch other than "
+            "the caller's current, independently-known values -- stale/wrong-generation evidence -- "
+            "is rejected by both the real compiled Rust bootstrap_protocol kernel and the real "
+            "Python re-derivation, killing the required_negative_fixture of the evidence_packet row "
+            "seeded PENDING_IMPLEMENTATION at G2-03. Proves only the generation third of that row's "
+            "independently_checks claim; provenance and detector/tool/input bindings remain unbuilt, "
+            "so the row itself honestly stays fixture_qualified: false (G2-19, round-2 review "
+            "finding).",
+            "G2-00 SS4.1; G2-19",
+            "evidence_packet",
+            _g2_19_stale_evidence_packet_kill_check,
+            BootstrapProtocolError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G19-FACILITYMISMATCH-001",
+            MutationCategory.BOUNDARY_INDEPENDENCE_FAILURE,
+            "A FacilityResultV1 bound to a request_id other than its own FacilityRequestV1's is "
+            "rejected by both the real compiled Rust bootstrap_protocol kernel and the real Python "
+            "re-derivation (G2-19).",
+            "G2-00 SS3, SS4; G2-19",
+            "facility_request_result",
+            _g2_19_facility_result_mismatch_kill_check,
+            BootstrapProtocolError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G19-CHRONICLETAMPER-001",
+            MutationCategory.CHRONICLE_DURABILITY_TAIL_LOSS,
+            "The frozen bootstrap corpus's real chronicle_event, with its entry_digest tampered, "
+            "is rejected by both the real compiled Rust bootstrap_protocol kernel and the real "
+            "independent Python digest re-derivation (self-caught before external review, G2-19).",
+            "G2-00 SS8; G2-19",
+            "bootstrap_protocol_corpus",
+            _g2_19_tampered_chronicle_digest_kill_check,
+            BootstrapProtocolError,
         )
     )
 

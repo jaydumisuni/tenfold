@@ -56,8 +56,12 @@ impl TrustTableRow {
     /// to record, and is not distinguishable from a row nobody filled in.
     /// This is deliberately independent of `fixture_qualified`: a row can
     /// be well-formed metadata (every field honestly filled in) while its
-    /// fixture is still honestly unqualified — that is exactly the
-    /// `facility_declaration`/`evidence_packet` state today.
+    /// fixture is still honestly unqualified — that was the
+    /// `facility_declaration` state until G2-14 built the real runtime
+    /// behind its claim; `evidence_packet` remains in that state as of
+    /// G2-19 (which builds only the "generation" third of its claim, not
+    /// "provenance"/"detector/tool/input bindings" -- round-2 review
+    /// finding, disclosed rather than overclaimed).
     pub fn is_well_formed(&self) -> bool {
         !self.artifact_identity.trim().is_empty()
             && !self.independently_checks.is_empty()
@@ -282,6 +286,16 @@ pub fn initial_trust_table() -> TrustTable {
             authority_generation: 1,
             required_negative_fixture: "stale/wrong-generation evidence".into(),
             failure_result: "reject".into(),
+            // Round-2 review finding (G2-19): rust/bootstrap_protocol
+            // genuinely builds the "generation" third of this row's own
+            // independently_checks claim (check_evidence_packet_
+            // generation_current), but "provenance" and "detector/tool/
+            // input bindings" remain unbuilt -- no detector/tool registry
+            // or provenance-binding check exists yet. Flipping
+            // fixture_qualified to true would overclaim what is actually
+            // verified, so this stays the same honest `false` G2-03
+            // seeded it with; a later milestone that builds the
+            // remaining two checks is where genuine activation belongs.
             fixture_qualified: false,
         },
         TrustTableRow {
@@ -352,8 +366,12 @@ mod tests {
         // A row's mere presence is not admission: evidence_packet is a
         // real, well-formed Trust Table row, but no fixture has genuinely
         // killed the mutation its required_negative_fixture describes yet
-        // (tenfold.gen2.mutation_fixtures leaves it PENDING_IMPLEMENTATION
-        // honestly). admit() must refuse it exactly like a missing row.
+        // -- as of G2-19, rust/bootstrap_protocol builds only the
+        // "generation" third of this row's independently_checks claim,
+        // not "provenance"/"detector/tool/input bindings", so the row
+        // honestly remains PENDING_IMPLEMENTATION (round-2 review
+        // finding: do not overclaim by flipping this flag early).
+        // admit() must refuse it exactly like a missing row.
         let table = initial_trust_table();
         let identity = "evidence_packet";
         assert_eq!(

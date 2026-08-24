@@ -174,14 +174,16 @@ def test_g2_03_initial_suite_exercises_a_meaningful_majority_of_fixtures() -> No
 
 
 def test_g2_03_initial_suite_binds_most_trust_table_rows_to_a_fixture() -> None:
-    # G2-03 deliverable: "one fixture per initial Trust Table row." Rows
-    # with no exercisable runtime yet (evidence_packet) are the only
-    # honest exception; facility_declaration gained a real fixture at
-    # G2-14 once its runtime (tenfold.gen2.facility, rust/facility)
-    # actually existed.
+    # G2-03 deliverable: "one fixture per initial Trust Table row."
+    # facility_declaration gained a real fixture at G2-14 once its
+    # runtime (tenfold.gen2.facility, rust/facility) actually existed;
+    # evidence_packet -- the last honest gap, seeded PENDING_IMPLEMENTATION
+    # at G2-03 -- gained one at G2-19 once its runtime
+    # (tenfold.gen2.bootstrap_protocol, rust/bootstrap_protocol) existed.
+    # All 11 initial rows are now genuinely bound to a killed fixture.
     suite = build_initial_mutation_suite()
     uncovered = suite.trust_table_coverage(_INITIAL_TRUST_TABLE_IDENTITIES)
-    assert uncovered == frozenset({"evidence_packet"})
+    assert uncovered == frozenset()
 
 
 def test_g2_03_initial_suite_fixture_count_matches_registered_categories() -> None:
