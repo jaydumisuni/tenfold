@@ -20,6 +20,12 @@
 //!   prints ACCEPT/ERROR from `LeaseRegistry::restore`.
 //! - `admission` — reads a JSON object `{"claim": ..., "live": ...}` from
 //!   stdin, prints ACCEPT/ERROR from `check_mutation_admission`.
+//! - `check-transfer-transition` (G2-23) — reads
+//!   `{"artifact_identity": "dispatch_state_transfer"|"mutation_admission_transfer", "current": AuthorityTransferStage, "new_stage": AuthorityTransferStage}`
+//!   from stdin, prints ACCEPT/REJECT.
+//! - `transition-transfer-record` (G2-23) — reads
+//!   `{"artifact_identity": "...", "record": AuthorityTransferRecord, "new_stage": AuthorityTransferStage, "policy": AuthorityTransferStabilizationPolicy}`
+//!   from stdin, prints the new record JSON on success.
 //!
 //! Each command prints one line: JSON/ACCEPT on success (exit 0), or
 //! "ERROR: <message>" (exit 1). A usage error exits 2.
@@ -31,9 +37,10 @@
 //! the start rather than waiting for the identical finding to recur.
 
 use dispatch_lease::{
-    admit_check_mutation_admission, admit_compute_frontier, CampaignNodeState, LeaseRegistry, LiveAuthorityState,
-    MutationAdmissionClaim, WriteLease,
+    admit_check_mutation_admission, admit_compute_frontier, dispatch_state_transfer_trust_table_row, mutation_admission_transfer_trust_table_row, CampaignNodeState, LeaseRegistry,
+    LiveAuthorityState, MutationAdmissionClaim, WriteLease,
 };
+use identity_generation::{admit_check_authority_transfer_transition_for, admit_transition_for, AuthorityTransferRecord, AuthorityTransferStabilizationPolicy, AuthorityTransferStage};
 use serde::Deserialize;
 use std::fs;
 use std::io::Read;
@@ -46,6 +53,35 @@ fn admitted_table() -> trust_table::TrustTable {
         .extend(dispatch_lease::trust_table_row())
         .expect("dispatch_lease's own trust_table_row() is well-formed and not a duplicate of the initial table");
     table
+        .extend(dispatch_state_transfer_trust_table_row())
+        .expect("dispatch_state_transfer_trust_table_row() is well-formed and not a duplicate of the initial table");
+    table
+        .extend(mutation_admission_transfer_trust_table_row())
+        .expect("mutation_admission_transfer_trust_table_row() is well-formed and not a duplicate of the initial table");
+    table
+}
+
+/// G2-23: generic requests shared by every slice-migration artifact this
+/// crate now owns ("dispatch_state_transfer" and "mutation_admission_
+/// transfer") -- `artifact_identity` selects which Trust Table row to
+/// admit through, reusing `identity_generation`'s generic, identity-
+/// parameterized wrappers directly rather than hand-writing a separate
+/// pair of subcommands per slice.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CheckTransferTransitionRequest {
+    artifact_identity: String,
+    current: AuthorityTransferStage,
+    new_stage: AuthorityTransferStage,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TransitionTransferRecordRequest {
+    artifact_identity: String,
+    record: AuthorityTransferRecord,
+    new_stage: AuthorityTransferStage,
+    policy: AuthorityTransferStabilizationPolicy,
 }
 
 fn usage_error(msg: &str) -> ExitCode {
@@ -302,6 +338,46 @@ fn main() -> ExitCode {
                 }
                 Err(e) => {
                     println!("ERROR: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        "check-transfer-transition" => {
+            let buf = match read_stdin() {
+                Ok(b) => b,
+                Err(code) => return code,
+            };
+            let request: CheckTransferTransitionRequest = match serde_json::from_str(&buf) {
+                Ok(v) => v,
+                Err(e) => return usage_error(&e.to_string()),
+            };
+            match admit_check_authority_transfer_transition_for(&admitted_table(), &request.artifact_identity, request.current, request.new_stage) {
+                Ok(()) => {
+                    println!("ACCEPT");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    println!("REJECT: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        "transition-transfer-record" => {
+            let buf = match read_stdin() {
+                Ok(b) => b,
+                Err(code) => return code,
+            };
+            let request: TransitionTransferRecordRequest = match serde_json::from_str(&buf) {
+                Ok(v) => v,
+                Err(e) => return usage_error(&e.to_string()),
+            };
+            match admit_transition_for(&admitted_table(), &request.artifact_identity, &request.record, request.new_stage, &request.policy) {
+                Ok(new_record) => {
+                    println!("{}", serde_json::to_string(&new_record).expect("AuthorityTransferRecord serializes"));
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    println!("REJECT: {e}");
                     ExitCode::from(1)
                 }
             }
