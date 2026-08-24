@@ -1081,3 +1081,39 @@ def independent_compute_effect_reach_star(nodes: list[dict], edges: list[dict], 
                     changed = True
 
     return {"reached_principals": frozenset(principals), "reached_resources": frozenset(resources), "unbounded": unbounded}
+
+
+def independent_compute_causal_preimage_star(nodes: list[dict], edges: list[dict], targets: list[str]) -> dict:
+    """Independent re-derivation of G2-00 SS10's `CAUSAL_PREIMAGE*`
+    reverse reachability, operating on raw dicts rather than importing
+    `tenfold.gen2.root_authority`'s own dataclasses or traversal loop --
+    an independent implementation written from the same G2-00 SS10 text,
+    not a call into the artifact it reconciles against. Returns
+    `{"preimage": frozenset[str], "unbounded": bool}`. Unknown edge
+    classes leading into an already-reached node force `unbounded=True`,
+    never silent omission, mirroring `independent_compute_effect_reach_star`.
+    """
+    node_ids = {n["node_id"] for n in nodes}
+    for target in targets:
+        if target not in node_ids:
+            raise ValueError(f"target {target!r} is not a node in this graph")
+
+    preimage: set[str] = set(targets)
+    unbounded = False
+
+    changed = True
+    while changed:
+        changed = False
+        for edge in edges:
+            src, dst, edge_class = edge["from"], edge["to"], edge["edge_class"]
+            if dst not in preimage:
+                continue
+            if edge_class in _KNOWN_CAUSAL_EDGE_CLASSES:
+                if src not in preimage:
+                    preimage.add(src)
+                    changed = True
+            elif not unbounded:
+                unbounded = True
+                changed = True
+
+    return {"preimage": frozenset(preimage), "unbounded": unbounded}
