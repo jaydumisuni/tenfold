@@ -21,23 +21,45 @@ census.py`'s own established differential discipline.
 
 Reuses `dispatch_mutation_transfer`'s already-generic
 `new_transfer_record`/`execute_slice_rehearsal`/`execute_slice_transfer`/
-`verify_single_owner_and_fence`/`authority_transfer_policy_to_dict`
-directly rather than re-deriving the same orchestration a third time
-(that module was already parameterized over transfer_id/from_ref/to_ref/
-differential_runner/admit_transition even when it carried only its own
-two slices). `verify_single_owner_and_fence`'s disclosed limitation
-applies identically here: there is no live-queryable "who currently
-holds Effect Census authority" state for this domain (unlike Chronicle's
-real `.lease` file G2-22 could query), so the owner-count check proves
-the mechanism itself discriminates single- from dual-ownership on this
-transfer's own declared endpoints, not that live Gen1/Gen2 state was
-queried.
+`authority_transfer_policy_to_dict` directly rather than re-deriving the
+same orchestration a third time (that module was already parameterized
+over transfer_id/from_ref/to_ref/differential_runner/admit_transition
+even when it carried only its own two slices).
+
+Round-2 review finding (PR #76): the original version reached
+`IRREVERSIBLY_COMMITTED` using only `verify_single_owner_and_fence`'s
+self-check (proving the CHECK mechanism discriminates single- from
+dual-ownership, never live state) -- while every cross-runtime pairing
+correctly stayed `GEN1_PYTHON`-authoritative, this created a genuine
+internal tension the reviewer flagged: a record claiming `to_ref` is now
+the sole owner, reaching `IRREVERSIBLY_COMMITTED`, with no live ownership
+ever verified (AGENTS.md: "Shadow Gen2... never a second valid authority
+owner"). Unlike Dispatch/Mutation (pure computations, genuinely no
+ownable live state), Effect Census's `EFFECT_ISSUANCE_CLOSED`/`OPEN`
+barrier IS a real, ownable, Chronicle-writer-lease-backed resource
+(`close_effect_issuance`/`reopen_effect_issuance` are themselves
+writer-lease-gated by the real compiled `rust/chronicle` engine, G2-10).
+`_transfer_and_verify_barrier_ownership` below genuinely transfers that
+lease from `GEN1_EFFECT_CENSUS_REF` to `GEN2_EFFECT_CENSUS_REF`, confirms
+the old writer is genuinely fenced out (a real `ChronicleCliError` on a
+post-transfer reopen attempt, not assumed), and derives the active-owner
+set by genuinely probing which candidate identity can currently reopen
+the barrier log -- reusing G2-22's already-proven Chronicle
+writer-lease-fencing mechanism as this slice's genuine live-ownership
+signal, exactly the "wire the actual barrier authority to Gen2 and
+verify ownership from that live state before committing" fix the
+reviewer asked for. `execute_slice_transfer`'s `verify_ownership`
+callback (generalized for this reuse) is supplied this genuine check
+instead of the disclosed-limitation self-check other slices still use.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 
+from .authority_transfer import check_valid_authority_owner_count
+from .chronicle_bridge import ChronicleCliError, open_chronicle
 from .constitutional import (
     AuthorityTransferRecord,
     AuthorityTransferStabilizationPolicy,
@@ -52,10 +74,14 @@ from .dispatch_mutation_transfer import (
 )
 from .effect_census import (
     EffectCensusError,
+    EffectIssuanceBarrier,
+    EffectIssuanceState,
     ExpectedEffect,
     ObservedEffect,
     check_effect_integrity,
     classify_effect_census,
+    close_effect_issuance,
+    reopen_effect_issuance,
 )
 from .effect_census_bridge import EffectCensusCliError, rust_check_effect_integrity, rust_transition_transfer_record
 
@@ -190,9 +216,64 @@ def _admit_transition(artifact_identity: str, record: AuthorityTransferRecord, n
     return AuthorityTransferRecord.from_dict(new_record_dict)
 
 
+_BARRIER_SCOPE_ID = "g2-23-effect-census-transfer-scope"
+
+
+def _derive_active_barrier_owners(barrier_log: Path) -> tuple[str, ...]:
+    """Genuinely derives which of the two candidate writer identities is
+    currently bound to the real Chronicle lease on `barrier_log`, by
+    attempting a real non-transfer reopen for each -- succeeds only for
+    an exact identity match against the real lease state on disk, never
+    trusted as a caller-supplied claim. Mirrors `chronicle_writer_
+    transfer.py`'s own already-proven `_derive_active_chronicle_owners`
+    (G2-22)."""
+    active = []
+    for writer_id, writer_generation in ((GEN1_EFFECT_CENSUS_REF, 1), (GEN2_EFFECT_CENSUS_REF, 2)):
+        try:
+            open_chronicle(barrier_log, writer_id, writer_generation)
+            active.append(writer_id)
+        except ChronicleCliError:
+            pass
+    return tuple(active)
+
+
+def _transfer_and_verify_barrier_ownership(work_dir: Path) -> Callable[[str, str], str]:
+    """Genuinely transfers the real `EFFECT_ISSUANCE_CLOSED` barrier's
+    Chronicle writer lease from `GEN1_EFFECT_CENSUS_REF` to
+    `GEN2_EFFECT_CENSUS_REF`, confirms the old writer is genuinely fenced
+    out, and returns a `verify_ownership`-shaped callback closing over the
+    now-transferred `barrier_log` -- every call to that callback
+    re-derives the active owner set from the real lease state on disk,
+    never from a hard-coded tuple."""
+    barrier_log = work_dir / "effect-census-transfer-barrier.chronicle"
+    open_chronicle(barrier_log, GEN1_EFFECT_CENSUS_REF, 1)
+    close_effect_issuance(barrier_log, GEN1_EFFECT_CENSUS_REF, 1, _BARRIER_SCOPE_ID, 1)
+    open_chronicle(barrier_log, GEN2_EFFECT_CENSUS_REF, 2, transfer=True)
+    try:
+        reopen_effect_issuance(barrier_log, GEN1_EFFECT_CENSUS_REF, 1, EffectIssuanceBarrier(scope_id=_BARRIER_SCOPE_ID, generation=1, state=EffectIssuanceState.CLOSED))
+    except ChronicleCliError:
+        pass
+    else:
+        raise SliceTransferError("the old Gen1 effect-census barrier writer was NOT genuinely fenced out after the real Chronicle lease transfer")
+
+    def _verify_ownership(from_ref: str, to_ref: str) -> str:
+        active_owners = _derive_active_barrier_owners(barrier_log)
+        check_valid_authority_owner_count(active_owners)
+        if active_owners != (to_ref,):
+            raise SliceTransferError(f"genuinely derived active effect-census barrier owner set {active_owners} does not confirm {to_ref} as the sole owner")
+        return (
+            f"ValidAuthorityOwnerCount == 1 genuinely derived from the real Chronicle barrier-lease state on disk "
+            f"(not a caller-supplied tuple): {active_owners}, confirmed as the sole owner after a genuine writer-lease "
+            f"transfer from {from_ref} (fenced out, ChronicleCliError on reopen) to {to_ref}"
+        )
+
+    return _verify_ownership
+
+
 def execute_effect_census_transfer(*, work_dir: Path, policy: AuthorityTransferStabilizationPolicy | None = None) -> SliceTransferExecutionResult:
     policy = policy or build_effect_census_transfer_policy()
     rehearsal = execute_effect_census_transfer_rehearsal(policy=policy)
+    verify_ownership = _transfer_and_verify_barrier_ownership(work_dir)
     return execute_slice_transfer(
         artifact_identity=ARTIFACT_IDENTITY,
         transfer_id=EFFECT_CENSUS_TRANSFER_ID,
@@ -202,6 +283,7 @@ def execute_effect_census_transfer(*, work_dir: Path, policy: AuthorityTransferS
         rehearsal=rehearsal,
         differential_runner=_run_effect_census_differential,
         admit_transition=_admit_transition,
+        verify_ownership=verify_ownership,
         chronicle_writer_id="effect-census-transfer-writer",
         work_dir=work_dir,
     )

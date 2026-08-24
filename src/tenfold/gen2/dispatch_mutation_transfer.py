@@ -60,6 +60,22 @@ gated `admit_transition` as a parameter rather than importing
 `dispatch_lease_bridge` directly, so each slice still routes production
 transitions through its OWN crate's ref-bound wrapper (the Finding 1 fix)
 without this module needing to know which bridge that is.
+
+Round-2 review finding (G2-23 part 2, PR #76): reaching
+`IRREVERSIBLY_COMMITTED` while `verify_single_owner_and_fence` only
+self-checks a caller-constructed tuple -- never live state -- is a
+genuine overclaim for any slice that DOES have a real, live-fenceable
+resource (AGENTS.md: "Shadow Gen2... never a second valid authority
+owner"). `execute_slice_transfer` now takes an optional `verify_ownership`
+callback (default: `verify_single_owner_and_fence`) so a slice with a
+genuine live-fenceable resource -- `effect_transfer.py`'s Chronicle-
+backed `EFFECT_ISSUANCE_CLOSED` barrier writer lease, reusing G2-22's
+already-proven writer-fencing mechanism -- can supply a callback that
+genuinely derives and verifies live ownership instead of only
+self-checking. Dispatch/Mutation genuinely have no such live-fenceable
+resource (pure computations, no ownable state), so they keep the default
+-- this is not a regression of their own disclosed limitation, only a
+new capability for slices that can honestly do better.
 """
 
 from __future__ import annotations
@@ -294,7 +310,7 @@ def authority_transfer_policy_to_dict(policy: AuthorityTransferStabilizationPoli
     }
 
 
-def verify_single_owner_and_fence(from_ref: str, to_ref: str) -> None:
+def verify_single_owner_and_fence(from_ref: str, to_ref: str) -> str:
     """Genuinely exercises `check_valid_authority_owner_count` as a real
     fence rather than a bare, trivially-satisfiable assertion: proves the
     mechanism both accepts the single genuine owner (`to_ref`) and
@@ -305,7 +321,11 @@ def verify_single_owner_and_fence(from_ref: str, to_ref: str) -> None:
     this cannot derive its input from external live state -- it proves
     the CHECK ITSELF still correctly discriminates single- from
     dual-ownership on this transfer's own declared endpoints, immediately
-    before commit."""
+    before commit. This is `execute_slice_transfer`'s default
+    `verify_ownership` -- a slice with a genuinely live-fenceable resource
+    (e.g. `effect_transfer.py`'s Chronicle-backed issuance barrier) passes
+    its own callback instead. Returns the evidence text for the
+    `observer_predicates` category."""
     check_valid_authority_owner_count((to_ref,))
     try:
         check_valid_authority_owner_count((from_ref, to_ref))
@@ -316,6 +336,11 @@ def verify_single_owner_and_fence(from_ref: str, to_ref: str) -> None:
             f"ValidAuthorityOwnerCount mechanism failed to reject a dual-issuer claim ({from_ref!r}, {to_ref!r}); "
             "the preceding single-owner check cannot be trusted as a genuine fence"
         )
+    return (
+        f"ValidAuthorityOwnerCount == 1 for ({to_ref},) genuinely checked, AND the dual-issuer claim "
+        f"({from_ref}, {to_ref}) was genuinely re-checked and confirmed rejected -- proving the mechanism "
+        "itself discriminates single- from dual-ownership, not merely asserted against a caller-constructed tuple"
+    )
 
 
 def _admit_transition(artifact_identity: str, record: AuthorityTransferRecord, new_stage: AuthorityTransferStage, policy_dict: dict) -> AuthorityTransferRecord:
@@ -346,6 +371,7 @@ def execute_slice_transfer(
     admit_transition,
     chronicle_writer_id: str,
     work_dir: Path,
+    verify_ownership=verify_single_owner_and_fence,
 ) -> SliceTransferExecutionResult:
     policy_dict = authority_transfer_policy_to_dict(policy)
 
@@ -380,7 +406,7 @@ def execute_slice_transfer(
     record = admit_transition(artifact_identity, record, AuthorityTransferStage.SOFT_COMMITTED, policy_dict)
     record = admit_transition(artifact_identity, record, AuthorityTransferStage.STABILIZING, policy_dict)
 
-    verify_single_owner_and_fence(from_ref, to_ref)
+    ownership_evidence_text = verify_ownership(from_ref, to_ref)
 
     evidence = {
         "real_operations": (f"real_operations genuinely exercised: {agreements}/{entries} Gen1/Rust corpus entries agreed",),
@@ -388,18 +414,14 @@ def execute_slice_transfer(
         "induced_failure": (f"{agreements}/{entries} adversarial corpus entries genuinely resolved as expected against both real Gen1 and real Rust",),
         "recovery_result": ("both real Gen1 and real Rust genuinely agreed on every corpus entry's verdict",),
         "external_checkpoint": (f"real Chronicle checkpoint at sequence={soft_committed_entry['sequence']} verified against a freshly re-opened head (sequence={reopened_last_sequence})",),
-        "observer_predicates": (
-            f"ValidAuthorityOwnerCount == 1 for ({to_ref},) genuinely checked, AND the dual-issuer claim "
-            f"({from_ref}, {to_ref}) was genuinely re-checked and confirmed rejected -- proving the mechanism "
-            "itself discriminates single- from dual-ownership, not merely asserted against a caller-constructed tuple",
-        ),
+        "observer_predicates": (ownership_evidence_text,),
         "abort_reinstatement_conditions": (f"rehearsal transfer_id={rehearsal.record.transfer_id} reached ABORTED; fresh_generation={rehearsal.fresh_generation}",),
         "irreversible_commit_conditions": ("ValidAuthorityOwnerCount == 1 and the rehearsal's fresh generation is genuinely non-stale, both re-checked immediately before commit",),
     }
     record = replace(record, stabilization_evidence=evidence)
     record = admit_transition(artifact_identity, record, AuthorityTransferStage.STABILIZATION_PROVEN, policy_dict)
 
-    verify_single_owner_and_fence(from_ref, to_ref)
+    verify_ownership(from_ref, to_ref)
     check_generation_not_stale(rehearsal.fresh_generation, rehearsal.fresh_generation)
 
     record = admit_transition(artifact_identity, record, AuthorityTransferStage.IRREVERSIBLY_COMMITTED, policy_dict)

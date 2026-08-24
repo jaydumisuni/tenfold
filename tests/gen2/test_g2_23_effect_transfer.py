@@ -204,6 +204,46 @@ def test_g2_23_effect_census_transfer_binds_genuine_evidence_for_every_mandatory
     assert bound == set(STABILIZATION_EVIDENCE_CATEGORIES)
 
 
+# ============================================================================
+# Round-2 review fix (PR #76): the barrier's Chronicle writer lease is
+# genuinely transferred and the old writer genuinely fenced out --
+# ownership is derived from real lease state, not a caller-supplied
+# tuple.
+# ============================================================================
+
+
+def test_g2_23_effect_census_transfer_genuinely_fences_the_old_gen1_barrier_writer() -> None:
+    import tenfold.gen2.effect_transfer as et
+    from tenfold.gen2.chronicle_bridge import ChronicleCliError, open_chronicle
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        work_dir = Path(tmpdir)
+        et._transfer_and_verify_barrier_ownership(work_dir)
+        barrier_log = work_dir / "effect-census-transfer-barrier.chronicle"
+        with pytest.raises(ChronicleCliError):
+            open_chronicle(barrier_log, GEN1_EFFECT_CENSUS_REF, 1)
+        # The new writer can genuinely reopen without a transfer.
+        open_chronicle(barrier_log, GEN2_EFFECT_CENSUS_REF, 2)
+
+
+def test_g2_23_effect_census_transfer_derives_ownership_from_real_lease_state_not_a_caller_supplied_tuple() -> None:
+    import tenfold.gen2.effect_transfer as et
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        verify_ownership = et._transfer_and_verify_barrier_ownership(Path(tmpdir))
+        evidence_text = verify_ownership(GEN1_EFFECT_CENSUS_REF, GEN2_EFFECT_CENSUS_REF)
+    assert "genuinely derived" in evidence_text
+    assert GEN2_EFFECT_CENSUS_REF in evidence_text
+
+
+def test_g2_23_effect_census_transfer_committed_evidence_reflects_genuine_live_derivation() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = execute_effect_census_transfer(work_dir=Path(tmpdir))
+    observer_text = " ".join(result.committed_record.stabilization_evidence["observer_predicates"])
+    assert "genuinely derived from the real Chronicle barrier-lease state" in observer_text
+    assert "fenced out" in observer_text
+
+
 def test_g2_23_effect_census_transfer_execution_fails_closed_on_a_genuine_python_rust_disagreement(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mutation-style proof: if the Python/Rust differential corpus ever
     disagreed, execute_effect_census_transfer must genuinely fail closed
