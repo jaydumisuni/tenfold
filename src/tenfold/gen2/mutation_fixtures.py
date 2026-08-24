@@ -235,7 +235,9 @@ from .effect_census_bridge import (
     rust_check_no_blind_replay,
     rust_check_no_new_intent_after_closure,
     rust_check_observation_cover_recheck,
+    rust_transition_transfer_record as rust_transition_effect_transfer_record,
 )
+from .effect_transfer import build_effect_census_transfer_policy
 from .bootstrap_protocol import (
     BootstrapProtocolError,
     EvidencePacketV1,
@@ -2074,6 +2076,31 @@ def _g2_23_mutation_admission_transfer_incomplete_evidence_kill_check() -> None:
     record.transition(AuthorityTransferStage.STABILIZATION_PROVEN, policy=policy)
 
 
+def _g2_23_effect_census_transfer_incomplete_evidence_kill_check() -> None:
+    # The "effect_census_transfer" Trust Table row's own required_
+    # negative_fixture, verbatim: "STABILIZATION_PROVEN claimed with
+    # incomplete evidence".
+    policy = build_effect_census_transfer_policy()
+    policy_dict = authority_transfer_policy_to_dict(policy)
+    record_dict = {
+        "transfer_id": "mut-g23-effect-census-incomplete",
+        "from_authority_ref": "gen1-effect-census",
+        "to_authority_ref": "gen2-effect-census",
+        "stage": "STABILIZING",
+        "stabilization_policy_generation": policy.policy_generation,
+        "stabilization_evidence": {"real_operations": ["op-1"]},
+    }
+    try:
+        rust_transition_effect_transfer_record("effect_census_transfer", record_dict, "STABILIZATION_PROVEN", policy_dict)
+    except EffectCensusCliError:
+        pass
+    else:
+        raise AssertionError("rust effect_census_transfer kernel incorrectly admitted STABILIZATION_PROVEN with incomplete evidence")
+
+    record = AuthorityTransferRecord(**{**record_dict, "stage": AuthorityTransferStage.STABILIZING})
+    record.transition(AuthorityTransferStage.STABILIZATION_PROVEN, policy=policy)
+
+
 def build_initial_mutation_suite() -> MutationSuite:
     suite = MutationSuite()
 
@@ -3265,6 +3292,21 @@ def build_initial_mutation_suite() -> MutationSuite:
             "G2-00 SS15; G2-23",
             "mutation_admission_transfer",
             _g2_23_mutation_admission_transfer_incomplete_evidence_kill_check,
+            ConstitutionalError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G23-EFFECTINCOMPLETE-001",
+            MutationCategory.RUNTIME_OBLIGATION_OMISSION,
+            "The \"effect_census_transfer\" Trust Table row's own required_negative_fixture, "
+            "verbatim: \"STABILIZATION_PROVEN claimed with incomplete evidence\" (only 1 of the 8 "
+            "mandatory categories bound), rejected by both the real compiled Rust kernel (reusing "
+            "identity_generation's transfer machinery via rust/effect_census) and the real Python "
+            "re-derivation (G2-23 part 2).",
+            "G2-00 SS15; G2-23",
+            "effect_census_transfer",
+            _g2_23_effect_census_transfer_incomplete_evidence_kill_check,
             ConstitutionalError,
         )
     )

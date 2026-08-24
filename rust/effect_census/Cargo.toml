@@ -11,6 +11,7 @@ sha2 = "0.10"
 trust_table = { package = "tenfold-trust-table", path = "../trust_table" }
 capability_graph = { package = "tenfold-capability-graph", path = "../capability_graph" }
 chronicle = { package = "tenfold-chronicle", path = "../chronicle" }
+identity_generation = { package = "tenfold-identity-generation", path = "../identity_generation" }
 
 [lib]
 name = "effect_census"

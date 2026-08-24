@@ -1314,14 +1314,17 @@ G2_23_REQUIRED_STATE_MODEL_FIELD_IDS: frozenset[str] = frozenset(
     {
         "dispatch_state_transfer_record_state",
         "mutation_admission_transfer_record_state",
+        "effect_census_transfer_record_state",
     }
 )
 
 
 def build_g2_23_state_model() -> StateModel:
-    """Extends the G2-22 State Model with G2-23's dispatch-state-transfer
-    and mutation-admission-transfer record fields (G2-00 SS15-16;
-    `tenfold.gen2.dispatch_mutation_transfer` + `rust/dispatch_lease`)."""
+    """Extends the G2-22 State Model with G2-23's dispatch-state-transfer,
+    mutation-admission-transfer and effect-census-transfer record fields
+    (G2-00 SS15-16; `tenfold.gen2.dispatch_mutation_transfer` +
+    `rust/dispatch_lease`; `tenfold.gen2.effect_transfer` +
+    `rust/effect_census`)."""
     return build_g2_22_state_model().extend(
         (
             StateModelField(
@@ -1332,6 +1335,11 @@ def build_g2_23_state_model() -> StateModel:
             StateModelField(
                 "mutation_admission_transfer_record_state", AuthorityHolder.GEN2_RUST,
                 "dispatch_lease::AuthorityTransferRecord (via identity_generation reuse) / admit_mutation_admission_transfer_transition (Trust Table row \"mutation_admission_transfer\")",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-23",
+            ),
+            StateModelField(
+                "effect_census_transfer_record_state", AuthorityHolder.GEN2_RUST,
+                "effect_census::AuthorityTransferRecord (via identity_generation reuse) / admit_effect_census_transfer_transition (Trust Table row \"effect_census_transfer\")",
                 StateModelDisposition.RUNTIME_MAPPED, "G2-23",
             ),
         )

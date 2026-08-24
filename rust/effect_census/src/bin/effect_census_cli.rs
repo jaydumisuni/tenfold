@@ -21,12 +21,15 @@
 //! - `observation-cover-recheck` — reads `{"census_time": ObservationCoverStateDigest, "verdict_time": ObservationCoverStateDigest}` from stdin, prints ACCEPT/ERROR.
 //! - `latency-bounds` — reads `{"barrier": EffectIssuanceBarrier, "bounds": LatencyBounds, "observed": ObservedLatencies}` from stdin, prints ACCEPT/ERROR.
 //! - `mandatory-boundaries` — reads `{"records": [EffectCensusRecord]}` from stdin, prints ACCEPT/ERROR. Coverage is derived from each record's own `boundary` field after independent validation, never from a bare caller-supplied roster claim.
+//! - `check-transfer-transition` (G2-23) — reads `{"artifact_identity": "effect_census_transfer", "current": AuthorityTransferStage, "new_stage": AuthorityTransferStage}` from stdin, prints ACCEPT/REJECT.
+//! - `transition-transfer-record` (G2-23) — reads `{"artifact_identity": "effect_census_transfer", "record": AuthorityTransferRecord, "new_stage": AuthorityTransferStage, "policy": AuthorityTransferStabilizationPolicy}` from stdin, prints the new record JSON on success.
 
 use effect_census::{
-    admit_check_effect_integrity, admit_check_latency_bounds, admit_check_mandatory_census_boundaries_covered, admit_check_no_blind_replay, admit_check_no_new_intent_after_closure,
-    admit_check_observation_cover_recheck, close_effect_issuance, reopen_effect_issuance, EffectCensusRecord, EffectIssuanceBarrier, ExpectedEffect, LatencyBounds, ObservationCoverStateDigest,
-    ObservedEffect, ObservedLatencies, TerminalEffectSignal,
+    admit_check_effect_census_transfer_transition, admit_check_effect_integrity, admit_check_latency_bounds, admit_check_mandatory_census_boundaries_covered, admit_check_no_blind_replay,
+    admit_check_no_new_intent_after_closure, admit_check_observation_cover_recheck, admit_effect_census_transfer_transition, close_effect_issuance, effect_census_transfer_trust_table_row,
+    reopen_effect_issuance, EffectCensusRecord, EffectIssuanceBarrier, ExpectedEffect, LatencyBounds, ObservationCoverStateDigest, ObservedEffect, ObservedLatencies, TerminalEffectSignal,
 };
+use identity_generation::{AuthorityTransferRecord, AuthorityTransferStabilizationPolicy, AuthorityTransferStage};
 use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::io::Read;
@@ -38,6 +41,7 @@ fn admitted_table() -> trust_table::TrustTable {
     table.extend(capability_graph::trust_table_row()).expect("capability_graph's own Trust Table row is well-formed and non-duplicate");
     table.extend(chronicle::trust_table_row()).expect("chronicle's own Trust Table row is well-formed and non-duplicate");
     table.extend(effect_census::trust_table_row()).expect("effect_census's own Trust Table row is well-formed and non-duplicate");
+    table.extend(effect_census_transfer_trust_table_row()).expect("effect_census_transfer_trust_table_row() is well-formed and non-duplicate");
     table
 }
 
@@ -98,6 +102,23 @@ struct LatencyBoundsRequest {
 #[serde(deny_unknown_fields)]
 struct MandatoryBoundariesRequest {
     records: Vec<EffectCensusRecord>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CheckTransferTransitionRequest {
+    artifact_identity: String,
+    current: AuthorityTransferStage,
+    new_stage: AuthorityTransferStage,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TransitionTransferRecordRequest {
+    artifact_identity: String,
+    record: AuthorityTransferRecord,
+    new_stage: AuthorityTransferStage,
+    policy: AuthorityTransferStabilizationPolicy,
 }
 
 fn main() -> ExitCode {
@@ -315,6 +336,60 @@ fn main() -> ExitCode {
                 }
                 Err(e) => {
                     println!("ERROR: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        "check-transfer-transition" => {
+            let buf = match read_stdin() {
+                Ok(b) => b,
+                Err(code) => return code,
+            };
+            let request: CheckTransferTransitionRequest = match serde_json::from_str(&buf) {
+                Ok(v) => v,
+                Err(e) => return usage_error(&e.to_string()),
+            };
+            let result = match request.artifact_identity.as_str() {
+                "effect_census_transfer" => admit_check_effect_census_transfer_transition(&admitted_table(), request.current, request.new_stage),
+                other => {
+                    println!("REJECT: unknown artifact_identity {other:?}");
+                    return ExitCode::from(1);
+                }
+            };
+            match result {
+                Ok(()) => {
+                    println!("ACCEPT");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    println!("REJECT: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        "transition-transfer-record" => {
+            let buf = match read_stdin() {
+                Ok(b) => b,
+                Err(code) => return code,
+            };
+            let request: TransitionTransferRecordRequest = match serde_json::from_str(&buf) {
+                Ok(v) => v,
+                Err(e) => return usage_error(&e.to_string()),
+            };
+            let result = match request.artifact_identity.as_str() {
+                "effect_census_transfer" => admit_effect_census_transfer_transition(&admitted_table(), &request.record, request.new_stage, &request.policy),
+                other => {
+                    println!("REJECT: unknown artifact_identity {other:?}");
+                    return ExitCode::from(1);
+                }
+            };
+            match result {
+                Ok(new_record) => {
+                    println!("{}", serde_json::to_string(&new_record).expect("AuthorityTransferRecord serializes"));
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    println!("REJECT: {e}");
                     ExitCode::from(1)
                 }
             }
