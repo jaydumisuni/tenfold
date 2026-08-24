@@ -1251,6 +1251,44 @@ def build_g2_21_cross_runtime_invariant_pairings() -> tuple[CrossRuntimeInvarian
 
 
 # ============================================================================
+# G2-22 production State Model extension (G2-00 SS8, SS15-16; docs/08-
+# gen2-roadmap.md's G2-22 deliverables). Unlike G2-21's Identity/
+# Generation slice, Chronicle has been GEN2_RUST-held in this State
+# Model since G2-10 -- every `chronicle_*` field registered from G2-10
+# onward is already `AuthorityHolder.GEN2_RUST`, with no GEN1_PYTHON
+# counterpart field ever registered (Chronicle authority is Rust-owned
+# from inception per G2-00 SS4). There is therefore no cross-runtime
+# pairing to add or flip here: this milestone adds one new field for the
+# new Trust-Table-admitted `"chronicle_transfer"` artifact family
+# itself (distinct from `chronicle_writer_transfer_state`, G2-10, which
+# names the underlying lease-rebind mechanism `open_with_transfer`
+# already exercises -- this new field names the formal migration-
+# tracking `AuthorityTransferRecord`).
+# ============================================================================
+
+G2_22_REQUIRED_STATE_MODEL_FIELD_IDS: frozenset[str] = frozenset(
+    {
+        "chronicle_transfer_record_state",
+    }
+)
+
+
+def build_g2_22_state_model() -> StateModel:
+    """Extends the G2-21 State Model with G2-22's chronicle_transfer-
+    record field (G2-00 SS8, SS15-16; `tenfold.gen2.
+    chronicle_writer_transfer` + `rust/chronicle`)."""
+    return build_g2_21_state_model().extend(
+        (
+            StateModelField(
+                "chronicle_transfer_record_state", AuthorityHolder.GEN2_RUST,
+                "chronicle::AuthorityTransferRecord (via identity_generation reuse) / admit_chronicle_transfer_transition (Trust Table row \"chronicle_transfer\")",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-22",
+            ),
+        )
+    )
+
+
+# ============================================================================
 # Failure-space scenario generator base (G2-00 §14.1: "Failure-space
 # qualification reports 1-wise, pairwise, 3-wise high-risk, transition and
 # forbidden-state coverage according to frozen risk policy. No mathematical

@@ -62,6 +62,7 @@ pub enum ChronicleError {
     TrustTableRejection(String),
     LeaseNoLongerBound { current_writer_id: String, current_generation: u64 },
     AppendInProgress,
+    AuthorityTransfer(String),
 }
 
 impl fmt::Display for ChronicleError {
@@ -108,6 +109,7 @@ impl fmt::Display for ChronicleError {
             ChronicleError::AppendInProgress => {
                 write!(f, "another append is already in progress on this Chronicle log")
             }
+            ChronicleError::AuthorityTransfer(msg) => write!(f, "chronicle authority transfer error: {msg}"),
         }
     }
 }
@@ -527,6 +529,73 @@ pub fn trust_table_row() -> trust_table::TrustTableRow {
 }
 
 // ============================================================================
+// G2-22: Chronicle Writer Authority Migration (G2-00 SS8, SS15-16).
+//
+// Reuses `identity_generation`'s authority-transfer state machine
+// (`AuthorityTransferStage`/`AuthorityTransferStabilizationPolicy`/
+// `AuthorityTransferRecord`/`check_authority_transfer_transition`,
+// built at G2-09/G2-02) directly rather than re-deriving it a second
+// time -- this crate depends on `identity_generation` for exactly this
+// reuse, matching the campaign's established "depend on and reuse
+// earlier crates' real types" discipline (bootstrap_protocol, G2-19).
+// This crate's own contribution is a distinct Trust Table row for the
+// Chronicle-transfer artifact family (this milestone's own Trust Table
+// extension: "Chronicle transfer/stabilisation artifact families"),
+// separate from the pre-existing `"chronicle"` row above, whose own
+// `independently_checks` never covered transfer-stage legality or
+// evidence completeness.
+//
+// "ChronicleWriterCount = 1" / "no dual issuer" (G2-22's own acceptance,
+// verbatim) is the same generic single-active-owner constraint G2-21
+// named for Identity/Generation -- `identity_generation::check_valid_
+// authority_owner_count` is reused directly for it, not re-derived.
+// ============================================================================
+
+pub fn chronicle_transfer_trust_table_row() -> trust_table::TrustTableRow {
+    trust_table::TrustTableRow {
+        artifact_identity: "chronicle_transfer".into(),
+        independently_checks: vec![
+            "authority transfer stage transition legality".into(),
+            "stabilization policy generation binding".into(),
+            "stabilization evidence completeness for STABILIZATION_PROVEN (all 8 mandatory categories)".into(),
+        ],
+        trusts_only: "the genuineness of whatever evidence references a caller supplies per category".into(),
+        trust_bounded_reason: "transition legality and evidence-completeness are fully mechanical (reusing \
+            identity_generation's already-independent re-derivation of G2-00 SS15's state machine); whether a \
+            supplied evidence reference (a real Chronicle entry digest, a real recovered append-lock scenario, ...) \
+            itself corresponds to a genuine artifact is bounded by the crate/module that produced it, not \
+            re-derived a second time here"
+            .into(),
+        authority_generation: 1,
+        required_negative_fixture: "STABILIZATION_PROVEN claimed with incomplete evidence".into(),
+        failure_result: "reject".into(),
+        fixture_qualified: true,
+    }
+}
+
+/// Trust-Table-gated wrapper around `identity_generation::check_authority_transfer_transition`.
+pub fn admit_check_chronicle_transfer_transition(
+    table: &trust_table::TrustTable,
+    current: identity_generation::AuthorityTransferStage,
+    new_stage: identity_generation::AuthorityTransferStage,
+) -> Result<(), ChronicleError> {
+    table.admit("chronicle_transfer").map_err(|e| ChronicleError::TrustTableRejection(e.to_string()))?;
+    identity_generation::check_authority_transfer_transition(current, new_stage).map_err(|e| ChronicleError::AuthorityTransfer(e.to_string()))
+}
+
+/// Trust-Table-gated wrapper around `identity_generation::AuthorityTransferRecord::transition`.
+pub fn admit_chronicle_transfer_transition(
+    table: &trust_table::TrustTable,
+    record: &identity_generation::AuthorityTransferRecord,
+    new_stage: identity_generation::AuthorityTransferStage,
+    policy: &identity_generation::AuthorityTransferStabilizationPolicy,
+) -> Result<identity_generation::AuthorityTransferRecord, ChronicleError> {
+    table.admit("chronicle_transfer").map_err(|e| ChronicleError::TrustTableRejection(e.to_string()))?;
+    record.validate().map_err(|e| ChronicleError::AuthorityTransfer(e.to_string()))?;
+    record.transition(new_stage, policy).map_err(|e| ChronicleError::AuthorityTransfer(e.to_string()))
+}
+
+// ============================================================================
 // ChronicleEngine — the single-writer, durable, fenced append engine.
 // ============================================================================
 
@@ -907,6 +976,85 @@ mod tests {
         let mut table = trust_table::initial_trust_table();
         table.extend(trust_table_row()).expect("row should extend cleanly onto the initial table");
         assert!(table.admit("chronicle").is_ok());
+    }
+
+    // ---- G2-22: chronicle_transfer Trust Table admission ----
+
+    use identity_generation::{AuthorityTransferRecord, AuthorityTransferStabilizationPolicy, AuthorityTransferStage};
+    use std::collections::HashMap;
+
+    fn admitted_chronicle_transfer_table() -> trust_table::TrustTable {
+        let mut table = trust_table::initial_trust_table();
+        table.extend(trust_table_row()).unwrap();
+        table.extend(chronicle_transfer_trust_table_row()).unwrap();
+        table
+    }
+
+    fn full_transfer_policy() -> AuthorityTransferStabilizationPolicy {
+        AuthorityTransferStabilizationPolicy {
+            policy_generation: 1,
+            required_real_operations: vec!["op".into()],
+            required_chronicle_events: vec!["event".into()],
+            required_induced_failure_scenarios: vec!["failure".into()],
+            required_recovery_results: vec!["result".into()],
+            required_external_checkpoints: vec!["checkpoint".into()],
+            required_observer_predicates: vec!["predicate".into()],
+            abort_reinstatement_conditions: vec!["abort".into()],
+            irreversible_commit_conditions: vec!["commit".into()],
+        }
+    }
+
+    fn full_transfer_evidence() -> HashMap<String, Vec<String>> {
+        identity_generation::STABILIZATION_EVIDENCE_CATEGORIES.iter().map(|c| (c.to_string(), vec!["ref-1".to_string()])).collect()
+    }
+
+    fn stabilizing_transfer_record() -> AuthorityTransferRecord {
+        AuthorityTransferRecord {
+            transfer_id: "chronicle-transfer-X-1".into(),
+            from_authority_ref: "gen1-chronicle".into(),
+            to_authority_ref: "gen2-chronicle".into(),
+            stage: AuthorityTransferStage::STABILIZING,
+            stabilization_policy_generation: 1,
+            stabilization_evidence: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn chronicle_transfer_trust_table_row_is_well_formed() {
+        assert!(chronicle_transfer_trust_table_row().is_well_formed());
+    }
+
+    #[test]
+    fn admit_check_chronicle_transfer_transition_fails_closed_when_table_has_no_row() {
+        let table = trust_table::TrustTable::new();
+        assert!(admit_check_chronicle_transfer_transition(&table, AuthorityTransferStage::PREPARED, AuthorityTransferStage::STAGED).is_err());
+    }
+
+    #[test]
+    fn admit_check_chronicle_transfer_transition_succeeds_once_admitted() {
+        admit_check_chronicle_transfer_transition(&admitted_chronicle_transfer_table(), AuthorityTransferStage::PREPARED, AuthorityTransferStage::STAGED)
+            .expect("legal transition on an admitted table should succeed");
+    }
+
+    #[test]
+    fn admit_chronicle_transfer_transition_fails_closed_when_table_has_no_row() {
+        let table = trust_table::TrustTable::new();
+        let record = AuthorityTransferRecord { stabilization_evidence: full_transfer_evidence(), ..stabilizing_transfer_record() };
+        assert!(admit_chronicle_transfer_transition(&table, &record, AuthorityTransferStage::STABILIZATION_PROVEN, &full_transfer_policy()).is_err());
+    }
+
+    #[test]
+    fn admit_chronicle_transfer_transition_succeeds_once_admitted_with_full_evidence() {
+        let record = AuthorityTransferRecord { stabilization_evidence: full_transfer_evidence(), ..stabilizing_transfer_record() };
+        let result = admit_chronicle_transfer_transition(&admitted_chronicle_transfer_table(), &record, AuthorityTransferStage::STABILIZATION_PROVEN, &full_transfer_policy());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().stage, AuthorityTransferStage::STABILIZATION_PROVEN);
+    }
+
+    #[test]
+    fn admit_chronicle_transfer_transition_rejects_incomplete_evidence_even_when_admitted() {
+        let result = admit_chronicle_transfer_transition(&admitted_chronicle_transfer_table(), &stabilizing_transfer_record(), AuthorityTransferStage::STABILIZATION_PROVEN, &full_transfer_policy());
+        assert!(result.is_err());
     }
 
     #[test]
