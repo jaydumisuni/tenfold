@@ -516,6 +516,15 @@ impl AuthorityTransferRecord {
                 self.transfer_id, self.stage, new_stage
             ))
         })?;
+        // Round-2 review finding (G2-21): a policy with a matching
+        // policy_generation but an empty required-category list (itself
+        // malformed per AuthorityTransferStabilizationPolicy::validate())
+        // would otherwise authorize STABILIZATION_PROVEN merely because
+        // the record's own stabilization_evidence happened to carry all 8
+        // category keys -- the policy's own well-formedness was never
+        // checked. An unqualified policy must never be trusted to gate an
+        // irreversible authority transfer.
+        policy.validate()?;
         if policy.policy_generation != self.stabilization_policy_generation {
             return Err(IdentityGenerationError::Semantic(format!(
                 "AuthorityTransferRecord {}: policy binds a different stabilization_policy_generation",
@@ -1042,6 +1051,17 @@ mod tests {
         };
         let result = record.transition(AuthorityTransferStage::STABILIZATION_PROVEN, &full_policy());
         assert!(result.is_err(), "PREPARED->STABILIZATION_PROVEN skips the whole lifecycle and must be rejected");
+    }
+
+    #[test]
+    fn transition_rejects_an_unqualified_policy_even_with_full_evidence() {
+        // Round-2 review finding (G2-21): a policy with a matching
+        // generation but an empty required-category list must be
+        // rejected, even when the record's own evidence is fully bound.
+        let record = AuthorityTransferRecord { stabilization_evidence: full_evidence(), ..stabilizing_record() };
+        let empty_policy = AuthorityTransferStabilizationPolicy { required_chronicle_events: vec![], ..full_policy() };
+        let result = record.transition(AuthorityTransferStage::STABILIZATION_PROVEN, &empty_policy);
+        assert!(result.is_err(), "an unqualified (empty-category) policy must never authorize STABILIZATION_PROVEN");
     }
 
     #[test]

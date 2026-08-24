@@ -25,6 +25,7 @@ clause checks G2-09 did not yet need
 
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 
@@ -244,20 +245,33 @@ def test_g2_21_full_transfer_chronicle_events_are_genuine_chronicle_entries() ->
         assert entry["sequence"] >= 1
 
 
-def test_g2_21_full_transfer_external_checkpoint_is_a_real_chronicle_entry() -> None:
+def test_g2_21_full_transfer_external_checkpoint_is_genuinely_persisted_and_reread() -> None:
+    """Round-2 review finding: the external checkpoint must be persisted
+    to and read back from a source genuinely separate from the local
+    Chronicle log, and the local head must be independently re-derived
+    (a fresh chronicle re-open), not merely reused from the same
+    in-memory entry on both sides of the comparison."""
     with tempfile.TemporaryDirectory() as tmpdir:
         result = execute_identity_generation_transfer(work_dir=Path(tmpdir))
-    assert result.external_checkpoint_entry in result.chronicle_entries
+        assert result.external_checkpoint_file.exists()
+        persisted = json.loads(result.external_checkpoint_file.read_text(encoding="utf-8"))
+    assert persisted["sequence"] == result.external_checkpoint_entry["sequence"]
+    assert persisted["entry_digest"] == result.external_checkpoint_entry["entry_digest"]
+    # The local head was independently re-derived via a fresh chronicle
+    # re-open, and genuinely advanced past the checkpointed sequence.
+    assert result.reopened_last_sequence >= persisted["sequence"]
 
 
-def test_g2_21_full_transfer_induced_failure_recovery_genuinely_resumes_from_persisted_stage() -> None:
-    """Induced failure/recovery evidence: the record is serialized to a
-    plain dict (simulating a crash) and reloaded (simulating recovery);
-    the reloaded record must genuinely carry the persisted STABILIZING
-    stage forward, not silently reset to PREPARED or lose state."""
+def test_g2_21_full_transfer_induced_failure_recovery_crosses_a_real_process_boundary() -> None:
+    """Round-2 review finding: induced-failure/recovery evidence must
+    cross a genuine durable/process boundary, not merely round-trip
+    through an in-memory dict within the same process. The record is
+    durably written to disk and recovered by a genuinely separate Python
+    subprocess that reads the file itself; the recovered stage must
+    genuinely carry STABILIZING forward."""
     with tempfile.TemporaryDirectory() as tmpdir:
         result = execute_identity_generation_transfer(work_dir=Path(tmpdir))
-    assert result.reloaded_after_simulated_crash.stage == AuthorityTransferStage.STABILIZING
+    assert result.recovery_subprocess_stage == AuthorityTransferStage.STABILIZING.value
 
 
 def test_g2_21_transfer_and_rehearsal_use_genuinely_distinct_transfer_ids() -> None:
@@ -288,6 +302,33 @@ def test_g2_21_incomplete_evidence_rejected_at_admission_in_python_and_rust() ->
     record = AuthorityTransferRecord(**{**record_dict, "stage": AuthorityTransferStage.STABILIZING})
     with pytest.raises(ConstitutionalError):
         record.transition(AuthorityTransferStage.STABILIZATION_PROVEN, policy=policy)
+
+
+def test_g2_21_unqualified_policy_rejected_even_with_full_evidence_in_python_and_rust() -> None:
+    """Round-2 review finding: a policy with a matching generation but an
+    empty required-category list (itself malformed) must never authorize
+    STABILIZATION_PROVEN merely because the record's own evidence is
+    fully bound -- `AuthorityTransferRecord.transition()` (G2-02, both
+    languages) now genuinely validates the policy first."""
+    policy = build_identity_generation_transfer_policy()
+    from dataclasses import replace as _replace
+
+    unqualified_policy = _replace(policy, required_chronicle_events=())
+    full_evidence = {cat: ["ref-1"] for cat in STABILIZATION_EVIDENCE_CATEGORIES}
+    record_dict = {
+        "transfer_id": "test-unqualified-policy",
+        "from_authority_ref": GEN1_AUTHORITY_REF,
+        "to_authority_ref": GEN2_AUTHORITY_REF,
+        "stage": "STABILIZING",
+        "stabilization_policy_generation": policy.policy_generation,
+        "stabilization_evidence": full_evidence,
+    }
+    with pytest.raises(AuthorityTransferCliError):
+        rust_transition_record(record_dict, "STABILIZATION_PROVEN", _policy_dict(unqualified_policy))
+
+    record = AuthorityTransferRecord(**{**record_dict, "stage": AuthorityTransferStage.STABILIZING})
+    with pytest.raises(ConstitutionalError):
+        record.transition(AuthorityTransferStage.STABILIZATION_PROVEN, policy=unqualified_policy)
 
 
 def test_g2_21_full_evidence_admitted_in_python_and_rust() -> None:
@@ -322,27 +363,34 @@ def test_g2_21_authority_transfer_fixtures_are_genuinely_killed() -> None:
 
 
 # ============================================================================
-# Cross-runtime authoritative ownership -- G2-21's own Result, verbatim:
-# "Gen2 owns Identity/Generation authority."
+# Cross-runtime authoritative ownership. Round-2 review finding: an
+# earlier version of this milestone flipped the Identity/Generation
+# pairing to GEN2_RUST-authoritative, reasoning from the transfer
+# record's own IRREVERSIBLY_COMMITTED status alone -- the reviewer
+# correctly identified this as an overclaim, since nothing fences Gen1
+# or routes a live decision through Rust, and owner-count was only ever
+# checked against a hard-coded tuple, never runtime-derived state. The
+# pairing stays GEN1_PYTHON-authoritative (shadow-Rust), matching every
+# other G2-20 pairing, until a real live-authority switch exists.
 # ============================================================================
 
 
-def test_g2_21_identity_generation_pairing_is_now_genuinely_gen2_authoritative() -> None:
+def test_g2_21_identity_generation_pairing_stays_gen1_authoritative() -> None:
     model = build_g2_21_state_model()
     pairings = build_g2_21_cross_runtime_invariant_pairings()
     check_cross_runtime_authoritative_ownership(model, pairings)
     identity_pairing = next(p for p in pairings if p.invariant_identity == "identity_generation_authority")
-    assert identity_pairing.authoritative_holder is AuthorityHolder.GEN2_RUST
+    assert identity_pairing.authoritative_holder is AuthorityHolder.GEN1_PYTHON
+    assert identity_pairing.shadow_field_id == "identity_generation_rust_runtime"
 
 
-def test_g2_21_every_other_g2_20_pairing_remains_gen1_authoritative() -> None:
-    """The migration is per-slice: G2-21 flips exactly one pairing.
-    Every pairing that existed at G2-20 keeps its GEN1_PYTHON
-    authoritative holder unchanged."""
+def test_g2_21_every_pairing_remains_gen1_authoritative() -> None:
+    """G2-21 builds and proves the transfer MACHINERY, not a live
+    authority switch -- every pairing, including the new one, stays
+    GEN1_PYTHON-authoritative."""
     pairings = build_g2_21_cross_runtime_invariant_pairings()
-    pre_existing = [p for p in pairings if p.invariant_identity != "identity_generation_authority"]
-    assert len(pre_existing) == 8
-    assert all(p.authoritative_holder is AuthorityHolder.GEN1_PYTHON for p in pre_existing)
+    assert len(pairings) == 9
+    assert all(p.authoritative_holder is AuthorityHolder.GEN1_PYTHON for p in pairings)
 
 
 # ============================================================================

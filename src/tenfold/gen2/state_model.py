@@ -1221,24 +1221,32 @@ def build_g2_21_state_model() -> StateModel:
 
 # ============================================================================
 # G2-21 cross-runtime authoritative ownership update: extends G2-20's
-# roster with the Identity/Generation pairing, now genuinely migrated.
-# G2-21's own Result, verbatim: "Gen2 owns Identity/Generation
-# authority" -- reflected here by naming GEN2_RUST as the authoritative
-# holder for this one pairing, while every other G2-20 pairing's
-# authoritative holder remains unchanged (GEN1_PYTHON), matching the
-# roadmap's own phased, per-slice migration design (G2-00 §15: "No
-# invariant is split across Python/Rust. Identity/Generation transfers
-# first."). Disclosed scope: this reflects that the transfer MACHINERY
-# for this slice genuinely reached IRREVERSIBLY_COMMITTED on a real
-# constructed transfer -- see `authority_transfer.py`'s own module
-# docstring for the honest boundary between that and any live call site
-# actually consulting Rust at runtime.
+# roster with the Identity/Generation pairing.
+#
+# Round-2 review finding: an earlier version of this pairing named
+# GEN2_RUST authoritative, reasoning that the transfer record genuinely
+# reached IRREVERSIBLY_COMMITTED. The reviewer correctly identified this
+# as a real overclaim, not a disclosed narrowing: `authority_generation`
+# (the live Gen1 field) is still what every real call site reads; nothing
+# fences Gen1 or routes a live identity/generation decision through
+# Rust; and `check_valid_authority_owner_count` was only ever exercised
+# against a hard-coded single-element tuple, never a value derived from
+# actual runtime state. Declaring GEN2_RUST authoritative here would let
+# a reader of this model conclude single-owner migration was genuinely
+# achieved when the real Gen1 issuer remains the only one anything
+# actually consults. `identity_generation_rust_runtime` therefore stays
+# the SHADOW side -- matching every other G2-20 pairing -- until a real
+# live-authority switch exists and owner count is genuinely derived from
+# runtime state, which is out of this milestone's scope (see
+# `authority_transfer.py`'s own module docstring for the disclosed
+# boundary between "the transfer machinery genuinely proves out
+# end-to-end" and "live dispatch has switched").
 # ============================================================================
 
 
 def build_g2_21_cross_runtime_invariant_pairings() -> tuple[CrossRuntimeInvariantPairing, ...]:
     return build_g2_20_cross_runtime_invariant_pairings() + (
-        CrossRuntimeInvariantPairing("identity_generation_authority", "identity_generation_rust_runtime", "authority_generation", AuthorityHolder.GEN2_RUST),
+        CrossRuntimeInvariantPairing("identity_generation_authority", "authority_generation", "identity_generation_rust_runtime", AuthorityHolder.GEN1_PYTHON),
     )
 
 
