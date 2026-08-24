@@ -1,0 +1,21 @@
+[package]
+name = "tenfold-effect-census"
+version = "0.1.0"
+edition = "2021"
+description = "External effects, Effect Census, EFFECT_ISSUANCE_CLOSED barrier and terminal effect semantics (G2-00 SS8-9, G2-18) for Tenfold Gen 2.0."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+trust_table = { package = "tenfold-trust-table", path = "../trust_table" }
+capability_graph = { package = "tenfold-capability-graph", path = "../capability_graph" }
+chronicle = { package = "tenfold-chronicle", path = "../chronicle" }
+
+[lib]
+name = "effect_census"
+path = "src/lib.rs"
+
+[[bin]]
+name = "effect_census_cli"
+path = "src/bin/effect_census_cli.rs"

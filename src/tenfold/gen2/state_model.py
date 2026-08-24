@@ -664,6 +664,66 @@ def build_g2_17_state_model() -> StateModel:
 
 
 # ============================================================================
+# G2-18 production State Model extension (G2-00 SS8-9; docs/08-gen2-
+# roadmap.md's G2-18 deliverable set). Effect Census / EFFECT_ISSUANCE_
+# CLOSED barrier carries real Rust ownership (G2-00 SS4: "Chronicle
+# authority" and "effect authority" are both Rust-owned), built on
+# G2-16's capability_graph and G2-10's chronicle crates.
+# ============================================================================
+
+G2_18_REQUIRED_STATE_MODEL_FIELD_IDS: frozenset[str] = frozenset(
+    {
+        "effect_census_residue_state",
+        "effect_issuance_barrier_state",
+        "effect_census_rust_runtime",
+        "terminal_effect_signal_state",
+        "observation_cover_recheck_state",
+        "latency_bounds_state",
+    }
+)
+
+
+def build_g2_18_state_model() -> StateModel:
+    """Extends the G2-17 State Model with G2-18's Effect Census/
+    EFFECT_ISSUANCE_CLOSED/terminal-effect-semantics fields (G2-00 SS8-9;
+    `tenfold.gen2.effect_census` + `rust/effect_census`)."""
+    return build_g2_17_state_model().extend(
+        (
+            StateModelField(
+                "effect_census_residue_state", AuthorityHolder.GEN1_PYTHON,
+                "effect_census.classify_effect_census / EffectCensusEntry / EffectCensusResidueClass",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-18",
+            ),
+            StateModelField(
+                "effect_issuance_barrier_state", AuthorityHolder.GEN1_PYTHON,
+                "effect_census.close_effect_issuance / reopen_effect_issuance / EffectIssuanceBarrier",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-18",
+            ),
+            StateModelField(
+                "effect_census_rust_runtime", AuthorityHolder.GEN2_RUST,
+                "effect_census::classify_effect_census / check_effect_integrity / close_effect_issuance",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-18",
+            ),
+            StateModelField(
+                "terminal_effect_signal_state", AuthorityHolder.GEN1_PYTHON,
+                "effect_census.classify_terminal_signal / check_no_blind_replay / TerminalEffectSignal",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-18",
+            ),
+            StateModelField(
+                "observation_cover_recheck_state", AuthorityHolder.GEN1_PYTHON,
+                "effect_census.compute_observation_cover_state_digest / check_observation_cover_recheck",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-18",
+            ),
+            StateModelField(
+                "latency_bounds_state", AuthorityHolder.GEN1_PYTHON,
+                "effect_census.LatencyBounds / ObservedLatencies / check_latency_bounds",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-18",
+            ),
+        )
+    )
+
+
+# ============================================================================
 # Failure-space scenario generator base (G2-00 §14.1: "Failure-space
 # qualification reports 1-wise, pairwise, 3-wise high-risk, transition and
 # forbidden-state coverage according to frozen risk policy. No mathematical

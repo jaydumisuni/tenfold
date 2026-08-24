@@ -201,6 +201,35 @@ from .root_authority_bridge import (
     rust_check_created_principal_within_mintable_bound,
     rust_check_successor_bound_non_expansion,
 )
+from .effect_census import (
+    CensusBoundary,
+    EffectCensusError,
+    EffectCensusRecord,
+    EffectIssuanceBarrier,
+    EffectIssuanceState,
+    ExpectedEffect,
+    LatencyBounds,
+    ObservationCoverStateDigest,
+    ObservedEffect,
+    ObservedLatencies,
+    TerminalEffectSignal,
+    check_effect_integrity,
+    check_latency_bounds,
+    check_mandatory_census_boundaries_covered,
+    check_no_blind_replay,
+    check_no_new_intent_after_closure,
+    check_observation_cover_recheck,
+    classify_effect_census,
+)
+from .effect_census_bridge import (
+    EffectCensusCliError,
+    rust_check_effect_integrity,
+    rust_check_latency_bounds,
+    rust_check_mandatory_census_boundaries_covered,
+    rust_check_no_blind_replay,
+    rust_check_no_new_intent_after_closure,
+    rust_check_observation_cover_recheck,
+)
 from tenfold.contracts import NodeState
 from tenfold.facility import FacilityError
 from tenfold.ownership import LeaseConflict, LeaseRegistry, WriteLease
@@ -1533,6 +1562,174 @@ def _g2_17_successor_bound_expansion_without_amendment_kill_check() -> None:
     check_successor_bound_non_expansion(predecessor, successor, None)
 
 
+def _g2_18_unattributed_effect_kill_check() -> None:
+    # G2-18 acceptance, verbatim: "Unattributed ... green failures ...
+    # reject." An observed effect that is Chronicle-journaled somewhere
+    # but not attributable to this campaign's own expected set is
+    # unexplained residue, rejected by both the real compiled Rust
+    # effect_census kernel and the real Python re-derivation.
+    domain = ["r1"]
+    try:
+        rust_check_effect_integrity([], [{"effect_id": "e1", "target_resource_id": "r1", "has_evidence": True, "chronicle_journaled": True}], domain)
+    except EffectCensusCliError:
+        pass
+    else:
+        raise AssertionError("rust effect_census kernel incorrectly admitted an unattributed effect as clean")
+
+    census = classify_effect_census((), (ObservedEffect("e1", "r1", True, True),), frozenset({"r1"}))
+    check_effect_integrity(census)
+
+
+def _g2_18_unjournaled_effect_kill_check() -> None:
+    # G2-18 acceptance, verbatim: "... unjournaled ... reject." An
+    # observed effect with no Chronicle journal record at all is
+    # unexplained residue.
+    domain = ["r1"]
+    try:
+        rust_check_effect_integrity([], [{"effect_id": "e1", "target_resource_id": "r1", "has_evidence": True, "chronicle_journaled": False}], domain)
+    except EffectCensusCliError:
+        pass
+    else:
+        raise AssertionError("rust effect_census kernel incorrectly admitted an unjournaled effect as clean")
+
+    census = classify_effect_census((), (ObservedEffect("e1", "r1", True, False),), frozenset({"r1"}))
+    check_effect_integrity(census)
+
+
+def _g2_18_out_of_domain_effect_kill_check() -> None:
+    # G2-18 acceptance, verbatim: "... out-of-domain ... reject." An
+    # effect outside the authorized mutation domain is a containment
+    # breach even when fully expected and journaled.
+    domain = ["r-other"]
+    try:
+        rust_check_effect_integrity(
+            [{"effect_id": "e1", "target_resource_id": "r1"}],
+            [{"effect_id": "e1", "target_resource_id": "r1", "has_evidence": True, "chronicle_journaled": True}],
+            domain,
+        )
+    except EffectCensusCliError:
+        pass
+    else:
+        raise AssertionError("rust effect_census kernel incorrectly admitted an out-of-domain effect as clean")
+
+    census = classify_effect_census((ExpectedEffect("e1", "r1"),), (ObservedEffect("e1", "r1", True, True),), frozenset({"r-other"}))
+    check_effect_integrity(census)
+
+
+def _g2_18_census_record_dict(boundary: CensusBoundary) -> dict:
+    return {
+        "campaign_id": "c1",
+        "campaign_generation": 1,
+        "facility_id": "f1",
+        "facility_generation": 1,
+        "boundary": boundary.value,
+        "mutation_domain_digest": "d1",
+        "effect_reach_digest": "d2",
+        "observation_cover_state_digest": "d3",
+        "enumeration_state": "DOMAIN_SCOPED",
+        "census_window_start_ms": 0,
+        "census_window_end_ms": 100,
+        "settling_bounds_ms": 500,
+        "effect_set_digest": "d4",
+        "reconciliation_count": 0,
+    }
+
+
+def _g2_18_census_record(boundary: CensusBoundary) -> EffectCensusRecord:
+    return EffectCensusRecord(
+        campaign_id="c1",
+        campaign_generation=1,
+        facility_id="f1",
+        facility_generation=1,
+        boundary=boundary,
+        mutation_domain_digest="d1",
+        effect_reach_digest="d2",
+        observation_cover_state_digest="d3",
+        enumeration_state="DOMAIN_SCOPED",
+        census_window_start_ms=0,
+        census_window_end_ms=100,
+        settling_bounds_ms=500,
+        effect_set_digest="d4",
+        reconciliation_count=0,
+    )
+
+
+def _g2_18_missing_census_boundary_kill_check() -> None:
+    # G2-18 acceptance, verbatim: "... missing-census ... reject."
+    covered_boundaries = (CensusBoundary.BEFORE_PROVEN, CensusBoundary.FREEZE_TO_PROVE, CensusBoundary.CHRONICLE_TRANSFER, CensusBoundary.RECOVERY_TRANSFER)  # SELF_CONSTRUCTION_TRANSFER omitted
+    try:
+        rust_check_mandatory_census_boundaries_covered([_g2_18_census_record_dict(b) for b in covered_boundaries])
+    except EffectCensusCliError:
+        pass
+    else:
+        raise AssertionError("rust effect_census kernel incorrectly admitted an incomplete mandatory-census-boundary roster")
+
+    check_mandatory_census_boundaries_covered(tuple(_g2_18_census_record(b) for b in covered_boundaries))
+
+
+def _g2_18_post_census_state_change_kill_check() -> None:
+    # G2-18 acceptance, verbatim: "... post-census state-change ...
+    # reject." Observation Cover state diverging between census and
+    # verdict invalidates the census (G2-00 SS9.8: CENSUS_INVALIDATED).
+    census_time = {"digest": "digest-at-census"}
+    verdict_time = {"digest": "digest-at-verdict-after-a-state-change"}
+    try:
+        rust_check_observation_cover_recheck(census_time, verdict_time)
+    except EffectCensusCliError:
+        pass
+    else:
+        raise AssertionError("rust effect_census kernel incorrectly admitted a diverged Observation Cover state as still valid")
+
+    check_observation_cover_recheck(ObservationCoverStateDigest("digest-at-census"), ObservationCoverStateDigest("digest-at-verdict-after-a-state-change"))
+
+
+def _g2_18_async_cascade_latency_kill_check() -> None:
+    # G2-18 acceptance, verbatim: "... async-cascade ... reject." Induced
+    # cascade latency exceeding MAX_INDUCED_CASCADE_LATENCY after
+    # EFFECT_ISSUANCE_CLOSED is rejected.
+    barrier_dict = {"scope_id": "campaign-1", "generation": 1, "state": "CLOSED"}
+    bounds_dict = {"max_effect_commit_latency_ms": 1000, "max_census_visibility_latency_ms": 2000, "max_induced_cascade_latency_ms": 3000}
+    observed_dict = {"effect_commit_latency_ms": 1, "census_visibility_latency_ms": 1, "induced_cascade_latency_ms": 3001}
+    try:
+        rust_check_latency_bounds(barrier_dict, bounds_dict, observed_dict)
+    except EffectCensusCliError:
+        pass
+    else:
+        raise AssertionError("rust effect_census kernel incorrectly admitted an induced cascade latency exceeding its bound")
+
+    barrier = EffectIssuanceBarrier(scope_id="campaign-1", generation=1, state=EffectIssuanceState.CLOSED)
+    bounds = LatencyBounds(max_effect_commit_latency_ms=1000, max_census_visibility_latency_ms=2000, max_induced_cascade_latency_ms=3000)
+    observed = ObservedLatencies(effect_commit_latency_ms=1, census_visibility_latency_ms=1, induced_cascade_latency_ms=3001)
+    check_latency_bounds(barrier, bounds, observed)
+
+
+def _g2_18_blind_replay_under_uncertainty_kill_check() -> None:
+    # G2-18 acceptance, verbatim: "Blind replay under UNCERTAIN rejects."
+    try:
+        rust_check_no_blind_replay("UNCERTAIN", False)
+    except EffectCensusCliError:
+        pass
+    else:
+        raise AssertionError("rust effect_census kernel incorrectly admitted a blind replay under UNCERTAIN")
+
+    check_no_blind_replay(TerminalEffectSignal.UNCERTAIN, False)
+
+
+def _g2_18_new_intent_after_issuance_closed_kill_check() -> None:
+    # G2-18 acceptance, verbatim: "New intent after EFFECT_ISSUANCE_CLOSED
+    # rejects or forces scope reopen/invalidation."
+    barrier_dict = {"scope_id": "campaign-1", "generation": 1, "state": "CLOSED"}
+    try:
+        rust_check_no_new_intent_after_closure(barrier_dict, "campaign-1", 1)
+    except EffectCensusCliError:
+        pass
+    else:
+        raise AssertionError("rust effect_census kernel incorrectly admitted new intent into a closed EFFECT_ISSUANCE scope")
+
+    barrier = EffectIssuanceBarrier(scope_id="campaign-1", generation=1, state=EffectIssuanceState.CLOSED)
+    check_no_new_intent_after_closure(barrier, "campaign-1", 1)
+
+
 def build_initial_mutation_suite() -> MutationSuite:
     suite = MutationSuite()
 
@@ -2455,6 +2652,110 @@ def build_initial_mutation_suite() -> MutationSuite:
             "facility_declaration",
             _g2_14_critical_gate_bypass_kill_check,
             Gen2FacilityError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G18-UNATTRIBUTED-001",
+            MutationCategory.EFFECT_CONTAINMENT,
+            "An observed effect that is Chronicle-journaled somewhere but not attributable to the "
+            "campaign's own expected set is unexplained residue, rejected by both the real compiled "
+            "Rust effect_census kernel and the real Python re-derivation (G2-18).",
+            "G2-00 SS9.8; G2-18",
+            "effect_census",
+            _g2_18_unattributed_effect_kill_check,
+            EffectCensusError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G18-UNJOURNALED-001",
+            MutationCategory.EFFECT_CONTAINMENT,
+            "An observed effect with no Chronicle journal record at all is unexplained residue, "
+            "rejected by both the real compiled Rust effect_census kernel and the real Python "
+            "re-derivation (G2-18).",
+            "G2-00 SS9.8; G2-18",
+            "effect_census",
+            _g2_18_unjournaled_effect_kill_check,
+            EffectCensusError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G18-OUTOFDOMAIN-001",
+            MutationCategory.EFFECT_CONTAINMENT,
+            "An effect outside the authorized mutation domain is a containment breach even when "
+            "fully expected and journaled, rejected by both the real compiled Rust effect_census "
+            "kernel and the real Python re-derivation (G2-18).",
+            "G2-00 SS9.8; G2-18",
+            "effect_census",
+            _g2_18_out_of_domain_effect_kill_check,
+            EffectCensusError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G18-MISSINGCENSUS-001",
+            MutationCategory.EFFECT_CONTAINMENT,
+            "An incomplete mandatory-census-boundary roster (missing SELF_CONSTRUCTION_TRANSFER) "
+            "is rejected by both the real compiled Rust effect_census kernel and the real Python "
+            "re-derivation, checked against this module's own frozen roster (G2-18).",
+            "G2-00 SS9.8; G2-18",
+            "effect_census",
+            _g2_18_missing_census_boundary_kill_check,
+            EffectCensusError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G18-COVERRECHECK-001",
+            MutationCategory.EFFECT_CONTAINMENT,
+            "Observation Cover state diverging between census and verdict (a post-census state "
+            "change) invalidates the census, rejected by both the real compiled Rust effect_census "
+            "kernel and the real Python re-derivation (G2-18).",
+            "G2-00 SS9.8; G2-18",
+            "effect_census",
+            _g2_18_post_census_state_change_kill_check,
+            EffectCensusError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G18-CASCADELATENCY-001",
+            MutationCategory.EFFECT_CONTAINMENT,
+            "Induced cascade latency exceeding MAX_INDUCED_CASCADE_LATENCY after "
+            "EFFECT_ISSUANCE_CLOSED is rejected by both the real compiled Rust effect_census kernel "
+            "and the real Python re-derivation (G2-18).",
+            "G2-00 SS9.7; G2-18",
+            "effect_census",
+            _g2_18_async_cascade_latency_kill_check,
+            EffectCensusError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G18-BLINDREPLAY-001",
+            MutationCategory.UNCERTAINTY_TERMINAL_EFFECT_VIOLATION,
+            "A blind replay of an effect under UNCERTAIN with no genuine reconciliation is rejected "
+            "by both the real compiled Rust effect_census kernel and the real Python re-derivation "
+            "(G2-18).",
+            "G2-00 SS8.6; G2-18",
+            "effect_census",
+            _g2_18_blind_replay_under_uncertainty_kill_check,
+            EffectCensusError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G18-ISSUANCECLOSED-001",
+            MutationCategory.EFFECT_CONTAINMENT,
+            "New external mutation intent for the exact scope/generation governed by an "
+            "EFFECT_ISSUANCE_CLOSED barrier is rejected by both the real compiled Rust effect_census "
+            "kernel and the real Python re-derivation (G2-18).",
+            "G2-00 SS9.7; G2-18",
+            "effect_census",
+            _g2_18_new_intent_after_issuance_closed_kill_check,
+            EffectCensusError,
         )
     )
 
