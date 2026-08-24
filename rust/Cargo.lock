@@ -196,6 +196,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tenfold-identity-generation",
  "tenfold-trust-table",
 ]
 

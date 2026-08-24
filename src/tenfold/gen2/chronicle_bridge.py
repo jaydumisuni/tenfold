@@ -118,3 +118,27 @@ def check_tail_loss(recovered_last_sequence: int, externally_evidenced_sequence:
 
 def dump_as_chronicle_events(log_path: Path, event_id_prefix: str, campaign_id: str) -> list[dict]:
     return json.loads(_run("dump-as-chronicle-events", str(log_path), event_id_prefix, campaign_id))
+
+
+def _run_stdin(*args: str, input_text: str) -> str:
+    binary = ensure_built()
+    result = subprocess.run([str(binary), *args], input=input_text, capture_output=True, text=True, timeout=30)
+    output = result.stdout.strip()
+    if result.returncode == 0:
+        return output
+    if result.returncode == 1:
+        raise ChronicleCliError(output)
+    raise ChronicleCliBuildError(f"chronicle_cli usage/process error (exit {result.returncode}): {output or result.stderr}")
+
+
+def rust_check_chronicle_transfer_transition(current: str, new_stage: str) -> None:
+    """G2-22: differential-tests against the real Rust `chronicle_
+    transfer` Trust-Table-gated admission, reusing `identity_generation`'s
+    authority-transfer state machine directly (see `rust/chronicle`'s own
+    module docstring for that reuse)."""
+    _run_stdin("check-transfer-transition", input_text=json.dumps({"current": current, "new_stage": new_stage}))
+
+
+def rust_transition_chronicle_transfer_record(record: dict, new_stage: str, policy: dict) -> dict:
+    output = _run_stdin("transition-transfer-record", input_text=json.dumps({"record": record, "new_stage": new_stage, "policy": policy}))
+    return json.loads(output)

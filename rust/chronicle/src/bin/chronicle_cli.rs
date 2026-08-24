@@ -23,8 +23,21 @@
 //! - `check-checkpoint <checkpoint_sequence> <checkpoint_generation> <checkpoint_head_digest> <local_head_generation> <local_head_sequence> <local_head_digest_or_dash>`
 //! - `check-tail-loss <recovered_last_sequence> <externally_evidenced_sequence>`
 //! - `dump-as-chronicle-events <log_path> <event_id_prefix> <campaign_id>`
+//!
+//! G2-22 additions (reads one JSON object from stdin; prints ACCEPT/JSON
+//! on success (exit 0) or "REJECT: <message>" (exit 1); a parse error
+//! exits 2):
+//!
+//! - `check-transfer-transition` -- `{"current": AuthorityTransferStage, "new_stage": AuthorityTransferStage}`
+//! - `transition-transfer-record` -- `{"record": AuthorityTransferRecord, "new_stage": AuthorityTransferStage, "policy": AuthorityTransferStabilizationPolicy}`
 
-use chronicle::{check_tail_loss, recover_entries, verify_checkpoint_precondition, ChronicleEngine, ExternalHeadCheckpoint};
+use chronicle::{
+    admit_check_chronicle_transfer_transition, admit_chronicle_transfer_transition, check_tail_loss, chronicle_transfer_trust_table_row, recover_entries, verify_checkpoint_precondition,
+    ChronicleEngine, ExternalHeadCheckpoint,
+};
+use identity_generation::{AuthorityTransferRecord, AuthorityTransferStabilizationPolicy, AuthorityTransferStage};
+use serde::Deserialize;
+use std::io::Read;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -34,6 +47,30 @@ fn admitted_table() -> trust_table::TrustTable {
         .extend(chronicle::trust_table_row())
         .expect("chronicle's own trust_table_row() is well-formed and not a duplicate of the initial table");
     table
+        .extend(chronicle_transfer_trust_table_row())
+        .expect("chronicle_transfer_trust_table_row() is well-formed and not a duplicate of the initial table");
+    table
+}
+
+fn read_stdin() -> Result<String, ExitCode> {
+    let mut buf = String::new();
+    std::io::stdin().read_to_string(&mut buf).map_err(|_| usage_error("could not read stdin"))?;
+    Ok(buf)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CheckTransferTransitionRequest {
+    current: AuthorityTransferStage,
+    new_stage: AuthorityTransferStage,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TransitionTransferRecordRequest {
+    record: AuthorityTransferRecord,
+    new_stage: AuthorityTransferStage,
+    policy: AuthorityTransferStabilizationPolicy,
 }
 
 fn usage_error(msg: &str) -> ExitCode {
@@ -217,6 +254,46 @@ fn main() -> ExitCode {
                 }
                 Err(e) => {
                     println!("ERROR: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        "check-transfer-transition" => {
+            let buf = match read_stdin() {
+                Ok(b) => b,
+                Err(code) => return code,
+            };
+            let request: CheckTransferTransitionRequest = match serde_json::from_str(&buf) {
+                Ok(v) => v,
+                Err(e) => return usage_error(&e.to_string()),
+            };
+            match admit_check_chronicle_transfer_transition(&admitted_table(), request.current, request.new_stage) {
+                Ok(()) => {
+                    println!("ACCEPT");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    println!("REJECT: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        "transition-transfer-record" => {
+            let buf = match read_stdin() {
+                Ok(b) => b,
+                Err(code) => return code,
+            };
+            let request: TransitionTransferRecordRequest = match serde_json::from_str(&buf) {
+                Ok(v) => v,
+                Err(e) => return usage_error(&e.to_string()),
+            };
+            match admit_chronicle_transfer_transition(&admitted_table(), &request.record, request.new_stage, &request.policy) {
+                Ok(new_record) => {
+                    println!("{}", serde_json::to_string(&new_record).expect("AuthorityTransferRecord serializes"));
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    println!("REJECT: {e}");
                     ExitCode::from(1)
                 }
             }
