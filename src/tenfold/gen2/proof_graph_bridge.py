@@ -80,3 +80,16 @@ def rust_derive_mandatory_assurance(present_obligation_classes: list[str], routi
 
 def rust_verify_fresh_hermetic_proof(record: dict, live: dict) -> None:
     _run("hermetic-check", input_text=json.dumps({"record": record, "live": live}))
+
+
+def rust_check_transfer_transition(artifact_identity: str, current: str, new_stage: str) -> None:
+    """G2-23: differential-tests against the real Rust admission for
+    "proof_graph_transfer", reusing `identity_generation`'s generic,
+    artifact-identity-parameterized wrapper directly (see
+    `rust/proof_graph`'s own module for that reuse)."""
+    _run("check-transfer-transition", input_text=json.dumps({"artifact_identity": artifact_identity, "current": current, "new_stage": new_stage}))
+
+
+def rust_transition_transfer_record(artifact_identity: str, record: dict, new_stage: str, policy: dict) -> dict:
+    output = _run("transition-transfer-record", input_text=json.dumps({"artifact_identity": artifact_identity, "record": record, "new_stage": new_stage, "policy": policy}))
+    return json.loads(output)

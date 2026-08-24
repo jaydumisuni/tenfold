@@ -17,11 +17,15 @@
 //! - `admit-evidence` — reads `{"node": ProofGraphNode, "new_state": ProofState, "evidence_refs": [str]}` from stdin, prints the transitioned node JSON or ERROR.
 //! - `mandatory-assurance` — reads `{"present_obligation_classes": [ObligationClass], "routing": {ObligationClass: [str]}}` from stdin, prints the required assurance array or ERROR if a present class has no routing row.
 //! - `hermetic-check` — reads `{"record": HermeticProofRecord, "live": HermeticProofRecord}` from stdin, prints ACCEPT/ERROR.
+//! - `check-transfer-transition` (G2-23) — reads `{"artifact_identity": "proof_graph_transfer", "current": AuthorityTransferStage, "new_stage": AuthorityTransferStage}` from stdin, prints ACCEPT/REJECT.
+//! - `transition-transfer-record` (G2-23) — reads `{"artifact_identity": "proof_graph_transfer", "record": AuthorityTransferRecord, "new_stage": AuthorityTransferStage, "policy": AuthorityTransferStabilizationPolicy}` from stdin, prints the new record JSON on success.
 
+use identity_generation::{AuthorityTransferRecord, AuthorityTransferStabilizationPolicy, AuthorityTransferStage};
 use obligation_ir::ObligationClass;
 use proof_graph::{
-    admit_check_falsification_topology_baseline, admit_compute_proof_verdict, admit_derive_mandatory_assurance, admit_evidence,
-    admit_verify_fresh_hermetic_proof, AssuranceBindingClaim, HermeticProofRecord, ProofGraph, ProofGraphNode, ProofState,
+    admit_check_falsification_topology_baseline, admit_check_proof_graph_transfer_transition, admit_compute_proof_verdict, admit_derive_mandatory_assurance,
+    admit_evidence, admit_proof_graph_transfer_transition, admit_verify_fresh_hermetic_proof, proof_graph_transfer_trust_table_row, AssuranceBindingClaim,
+    HermeticProofRecord, ProofGraph, ProofGraphNode, ProofState,
 };
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -33,6 +37,9 @@ fn admitted_table() -> trust_table::TrustTable {
     table
         .extend(proof_graph::trust_table_row())
         .expect("proof_graph's own trust_table_row() is well-formed and not a duplicate of the initial table");
+    table
+        .extend(proof_graph_transfer_trust_table_row())
+        .expect("proof_graph_transfer_trust_table_row() is well-formed and not a duplicate of the initial table");
     table
 }
 
@@ -77,6 +84,23 @@ struct MandatoryAssuranceInput {
 struct HermeticCheckInput {
     record: HermeticProofRecord,
     live: HermeticProofRecord,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CheckTransferTransitionRequest {
+    artifact_identity: String,
+    current: AuthorityTransferStage,
+    new_stage: AuthorityTransferStage,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TransitionTransferRecordRequest {
+    artifact_identity: String,
+    record: AuthorityTransferRecord,
+    new_stage: AuthorityTransferStage,
+    policy: AuthorityTransferStabilizationPolicy,
 }
 
 fn main() -> ExitCode {
@@ -219,6 +243,60 @@ fn main() -> ExitCode {
                 }
                 Err(e) => {
                     println!("ERROR: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        "check-transfer-transition" => {
+            let buf = match read_stdin() {
+                Ok(b) => b,
+                Err(code) => return code,
+            };
+            let request: CheckTransferTransitionRequest = match serde_json::from_str(&buf) {
+                Ok(v) => v,
+                Err(e) => return usage_error(&e.to_string()),
+            };
+            let result = match request.artifact_identity.as_str() {
+                "proof_graph_transfer" => admit_check_proof_graph_transfer_transition(&admitted_table(), request.current, request.new_stage),
+                other => {
+                    println!("REJECT: unknown artifact_identity {other:?}");
+                    return ExitCode::from(1);
+                }
+            };
+            match result {
+                Ok(()) => {
+                    println!("ACCEPT");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    println!("REJECT: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        "transition-transfer-record" => {
+            let buf = match read_stdin() {
+                Ok(b) => b,
+                Err(code) => return code,
+            };
+            let request: TransitionTransferRecordRequest = match serde_json::from_str(&buf) {
+                Ok(v) => v,
+                Err(e) => return usage_error(&e.to_string()),
+            };
+            let result = match request.artifact_identity.as_str() {
+                "proof_graph_transfer" => admit_proof_graph_transfer_transition(&admitted_table(), &request.record, request.new_stage, &request.policy),
+                other => {
+                    println!("REJECT: unknown artifact_identity {other:?}");
+                    return ExitCode::from(1);
+                }
+            };
+            match result {
+                Ok(new_record) => {
+                    println!("{}", serde_json::to_string(&new_record).expect("AuthorityTransferRecord serializes"));
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    println!("REJECT: {e}");
                     ExitCode::from(1)
                 }
             }

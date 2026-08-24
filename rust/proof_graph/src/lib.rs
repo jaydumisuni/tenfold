@@ -557,6 +557,67 @@ pub fn admit_verify_fresh_hermetic_proof(
     verify_fresh_hermetic_proof(record, live)
 }
 
+// ============================================================================
+// G2-23: Proof/Evidence-admission/Assurance-routing authority-slice
+// migration (G2-00 SS15-16). Reuses `identity_generation`'s generic,
+// artifact-identity-parameterized admission wrappers exactly as
+// `rust/dispatch_lease` and `rust/effect_census` do for their own slices
+// -- `admit_transition_for`'s expected_from_ref/expected_to_ref binding
+// (the Finding 1 fix, G2-23 part 1's round-2 review) means the named
+// wrappers below reject any record not genuinely bound to this slice's
+// own refs.
+// ============================================================================
+
+pub const PROOF_GRAPH_TRANSFER_FROM_REF: &str = "gen1-proof-graph";
+pub const PROOF_GRAPH_TRANSFER_TO_REF: &str = "gen2-proof-graph";
+
+pub fn proof_graph_transfer_trust_table_row() -> trust_table::TrustTableRow {
+    trust_table::TrustTableRow {
+        artifact_identity: "proof_graph_transfer".into(),
+        independently_checks: vec![
+            "authority transfer stage transition legality".into(),
+            "stabilization policy generation binding".into(),
+            "stabilization evidence completeness for STABILIZATION_PROVEN (all 8 mandatory categories)".into(),
+        ],
+        trusts_only: "the genuineness of whatever evidence references a caller supplies per category".into(),
+        trust_bounded_reason: "transition legality and evidence-completeness are fully mechanical (reusing \
+            identity_generation's already-independent re-derivation of G2-00 SS15's state machine); whether a \
+            supplied evidence reference itself corresponds to a genuine artifact is bounded by the crate/module \
+            that produced it, not re-derived a second time here"
+            .into(),
+        authority_generation: 1,
+        required_negative_fixture: "STABILIZATION_PROVEN claimed with incomplete evidence".into(),
+        failure_result: "reject".into(),
+        fixture_qualified: true,
+    }
+}
+
+pub fn admit_check_proof_graph_transfer_transition(
+    table: &trust_table::TrustTable,
+    current: identity_generation::AuthorityTransferStage,
+    new_stage: identity_generation::AuthorityTransferStage,
+) -> Result<(), ProofGraphError> {
+    identity_generation::admit_check_authority_transfer_transition_for(table, "proof_graph_transfer", current, new_stage).map_err(|e| err(e.to_string()))
+}
+
+pub fn admit_proof_graph_transfer_transition(
+    table: &trust_table::TrustTable,
+    record: &identity_generation::AuthorityTransferRecord,
+    new_stage: identity_generation::AuthorityTransferStage,
+    policy: &identity_generation::AuthorityTransferStabilizationPolicy,
+) -> Result<identity_generation::AuthorityTransferRecord, ProofGraphError> {
+    identity_generation::admit_transition_for(
+        table,
+        "proof_graph_transfer",
+        PROOF_GRAPH_TRANSFER_FROM_REF,
+        PROOF_GRAPH_TRANSFER_TO_REF,
+        record,
+        new_stage,
+        policy,
+    )
+    .map_err(|e| err(e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1044,5 +1105,89 @@ mod tests {
         let mut changed = sample_record();
         changed.obligation_ir_digest = "different".repeat(4);
         assert_ne!(base, changed.record_digest());
+    }
+
+    // ---- G2-23: Proof authority-slice migration ----
+
+    fn admitted_proof_transfer_table() -> trust_table::TrustTable {
+        let mut table = trust_table::initial_trust_table();
+        table.extend(trust_table_row()).unwrap();
+        table.extend(proof_graph_transfer_trust_table_row()).unwrap();
+        table
+    }
+
+    fn full_transfer_policy() -> identity_generation::AuthorityTransferStabilizationPolicy {
+        identity_generation::AuthorityTransferStabilizationPolicy {
+            policy_generation: 1,
+            required_real_operations: vec!["op".into()],
+            required_chronicle_events: vec!["evt".into()],
+            required_induced_failure_scenarios: vec!["fail".into()],
+            required_recovery_results: vec!["recover".into()],
+            required_external_checkpoints: vec!["checkpoint".into()],
+            required_observer_predicates: vec!["observe".into()],
+            abort_reinstatement_conditions: vec!["abort".into()],
+            irreversible_commit_conditions: vec!["commit".into()],
+        }
+    }
+
+    fn full_transfer_evidence() -> HashMap<String, Vec<String>> {
+        identity_generation::STABILIZATION_EVIDENCE_CATEGORIES.iter().map(|c| (c.to_string(), vec!["ref-1".to_string()])).collect()
+    }
+
+    fn stabilizing_proof_transfer_record() -> identity_generation::AuthorityTransferRecord {
+        identity_generation::AuthorityTransferRecord {
+            transfer_id: "proof-graph-transfer-X-1".into(),
+            from_authority_ref: PROOF_GRAPH_TRANSFER_FROM_REF.into(),
+            to_authority_ref: PROOF_GRAPH_TRANSFER_TO_REF.into(),
+            stage: identity_generation::AuthorityTransferStage::STABILIZING,
+            stabilization_policy_generation: 1,
+            stabilization_evidence: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn proof_graph_transfer_row_is_well_formed() {
+        assert!(proof_graph_transfer_trust_table_row().is_well_formed());
+    }
+
+    #[test]
+    fn admit_check_proof_graph_transfer_transition_fails_closed_when_table_has_no_row() {
+        let table = trust_table::TrustTable::new();
+        assert!(admit_check_proof_graph_transfer_transition(&table, identity_generation::AuthorityTransferStage::PREPARED, identity_generation::AuthorityTransferStage::STAGED).is_err());
+    }
+
+    #[test]
+    fn admit_check_proof_graph_transfer_transition_succeeds_once_admitted() {
+        admit_check_proof_graph_transfer_transition(&admitted_proof_transfer_table(), identity_generation::AuthorityTransferStage::PREPARED, identity_generation::AuthorityTransferStage::STAGED)
+            .expect("legal transition on an admitted table should succeed");
+    }
+
+    #[test]
+    fn admit_proof_graph_transfer_transition_succeeds_once_admitted_with_full_evidence() {
+        let record = identity_generation::AuthorityTransferRecord { stabilization_evidence: full_transfer_evidence(), ..stabilizing_proof_transfer_record() };
+        let result = admit_proof_graph_transfer_transition(&admitted_proof_transfer_table(), &record, identity_generation::AuthorityTransferStage::STABILIZATION_PROVEN, &full_transfer_policy());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().stage, identity_generation::AuthorityTransferStage::STABILIZATION_PROVEN);
+    }
+
+    #[test]
+    fn admit_proof_graph_transfer_transition_rejects_incomplete_evidence_even_when_admitted() {
+        let result = admit_proof_graph_transfer_transition(&admitted_proof_transfer_table(), &stabilizing_proof_transfer_record(), identity_generation::AuthorityTransferStage::STABILIZATION_PROVEN, &full_transfer_policy());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn admit_proof_graph_transfer_transition_rejects_a_record_bound_to_a_foreign_slice() {
+        // Round-2 G2-23 part 1 review lesson, applied proactively here: a
+        // record with the wrong from/to refs must never be admittable
+        // through this slice's wrapper, even with full evidence.
+        let record = identity_generation::AuthorityTransferRecord {
+            stabilization_evidence: full_transfer_evidence(),
+            from_authority_ref: "gen1-dispatch-state".into(),
+            to_authority_ref: "gen2-dispatch-state".into(),
+            ..stabilizing_proof_transfer_record()
+        };
+        let result = admit_proof_graph_transfer_transition(&admitted_proof_transfer_table(), &record, identity_generation::AuthorityTransferStage::STABILIZATION_PROVEN, &full_transfer_policy());
+        assert!(result.is_err());
     }
 }
