@@ -317,6 +317,14 @@ def derive_effect_reach_drift_signal() -> DriftSignal:
 #:   existence is not evidence of exploitable device passthrough the
 #:   way a live daemon control socket is, since actually reading it
 #:   requires privilege this unprivileged CI job does not have.
+#: - `~/.docker/config.json`: the Docker CLI creates this file as part
+#:   of its standard installation on the `ubuntu-latest` image, same
+#:   root cause as the sockets above. `.github/workflows/ci.yml` never
+#:   runs `docker login` or sets `DOCKER_AUTH_CONFIG` (verified: no such
+#:   step exists), so this file holds no real registry credential this
+#:   workflow ever provisioned -- its HELD-axis "credential store"
+#:   classification describes the file's *purpose*, not its *actual
+#:   content* on this specific runner.
 #:
 #: Admitting exactly this fixed, disclosed set via G2-15's own
 #: `admitted_indicators` mechanism (built exactly for genuinely-
@@ -330,12 +338,14 @@ def derive_effect_reach_drift_signal() -> DriftSignal:
 #: -- disclosed here rather than left to be silently discovered, and
 #: unrelated to whether a production Gen2 execution image (a different,
 #: as-yet-unbuilt environment, not this CI runner) would pass. The
-#: HELD and LOCAL axes remain genuinely restrictive: no ambient
-#: credential env var/file was ever admitted, and every OTHER local
-#: indicator (Podman/CRI-O sockets, mounted Kubernetes service-account
-#: tokens, the `/.dockerenv` marker -- none of which GitHub's own
-#: published runner-image software manifest lists) is still genuinely
-#: flagged.
+#: HELD and LOCAL axes remain otherwise genuinely restrictive: no
+#: ambient credential ENVIRONMENT VARIABLE is ever admitted (AWS/GCP/
+#: Azure/npm/SSH-agent indicators all still genuinely flag), no other
+#: HOME-relative credential file (AWS/GCP/Azure/git/kube/netrc) is
+#: admitted, and every OTHER local positional indicator (Podman/CRI-O
+#: sockets, mounted Kubernetes service-account tokens, the
+#: `/.dockerenv` marker -- none of which GitHub's own published
+#: runner-image software manifest lists) is still genuinely flagged.
 _ADMITTED_AMBIENT_AUTHORITY_INDICATORS = frozenset(
     {
         "1.1.1.1:443",
@@ -345,6 +355,7 @@ _ADMITTED_AMBIENT_AUTHORITY_INDICATORS = frozenset(
         "/run/docker.sock",
         "/run/containerd/containerd.sock",
         "/dev/kmsg",
+        "~/.docker/config.json",
     }
 )
 
