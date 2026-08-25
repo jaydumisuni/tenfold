@@ -301,15 +301,21 @@ def test_g2_13_observer_observe_returns_pure_findings_and_never_mutates_its_inpu
 
 
 def test_g2_13_observer_coverage_roster_is_fully_accounted_for() -> None:
-    """Round-2 review finding: every one of G2-00 SS13's 13 required
-    coverage domains is either genuinely implemented or explicitly,
-    individually deferred with a reason -- a structural, testable
-    disclosure rather than a silent gap."""
+    """Round-2 review finding (G2-13): every one of G2-00 SS13's 13
+    required coverage domains is either genuinely implemented or
+    explicitly, individually deferred with a reason -- a structural,
+    testable disclosure rather than a silent gap. G2-26 (Hybrid
+    Full-System Qualification) closed every domain this G2-13 test
+    originally deferred, once each deferral's own named prerequisite
+    (Facility, Effect Census, EFFECT_REACH*, Execution Context,
+    Root/Issuing Authority planes, recovery_qualification/
+    recovery_takeover) genuinely existed -- see
+    tenfold.gen2.full_system_qualification for the real per-domain
+    DriftSignal derivations."""
     check_observer_coverage_roster_is_fully_accounted_for()
-    assert IMPLEMENTED_OBSERVER_COVERAGE_DOMAINS == frozenset({ObserverCoverageDomain.ACCEPTED_UNCERTAINTY_HAZARDS})
+    assert IMPLEMENTED_OBSERVER_COVERAGE_DOMAINS == frozenset(ObserverCoverageDomain)
+    assert DEFERRED_OBSERVER_COVERAGE_DOMAINS == {}
     assert set(DEFERRED_OBSERVER_COVERAGE_DOMAINS) | IMPLEMENTED_OBSERVER_COVERAGE_DOMAINS == set(ObserverCoverageDomain)
-    for reason in DEFERRED_OBSERVER_COVERAGE_DOMAINS.values():
-        assert reason.strip()
 
 
 def test_g2_13_observer_finding_freshness_boundary_is_inclusive() -> None:

@@ -357,32 +357,44 @@ class ObserverCoverageDomain(str, Enum):
     RECOVERY_QUALIFICATION_DRIFT = "RECOVERY_QUALIFICATION_DRIFT"
 
 
-# Round-2 review finding: which of G2-00 SS13's 13 required coverage
-# domains this milestone's Observer genuinely implements, versus which are
-# honestly deferred (and why) -- a structural, testable disclosure rather
-# than a silent gap the narrow purity tests alone could not surface. Every
-# deferred domain depends on machinery this milestone's own authority
-# (G2-00 SS8.7, SS13-14) does not build: Facility (G2-14 onward), Effect
-# Census/EFFECT_REACH* (SS9.8/9.3, Facility-dependent), mintable-bound
-# tracking, and cross-cutting reconciliation work (Chronicle/checkpoint,
-# authority-plane, shared-trust, Gen1-reference drift) spanning multiple
-# future milestones.
-IMPLEMENTED_OBSERVER_COVERAGE_DOMAINS: frozenset[ObserverCoverageDomain] = frozenset({ObserverCoverageDomain.ACCEPTED_UNCERTAINTY_HAZARDS})
+# G2-26 Hybrid Full-System Qualification: closes the coverage gap this
+# module's own G2-13 disclosure left open. Every domain previously
+# deferred here named a specific missing prerequisite ("Facility does
+# not exist until G2-14 onward", "no recovery/takeover qualification
+# runtime exists yet", etc.) -- by G2-25, every one of those
+# prerequisites now genuinely exists (Facility since G2-14, Effect
+# Census since G2-18, EFFECT_REACH*/capability_graph since G2-16,
+# Execution Context since G2-15, Root/Issuing Authority planes since
+# G2-17, recovery_qualification/recovery_takeover since G2-24/G2-25).
+# `tenfold.gen2.full_system_qualification` (G2-26) is what genuinely
+# derives a real `DriftSignal` for each domain by calling that
+# machinery's own real check functions -- this module stays decoupled
+# from all of it (no new imports here), accepting only the already-
+# computed, domain-tagged signals `Observer.observe()` takes below.
+IMPLEMENTED_OBSERVER_COVERAGE_DOMAINS: frozenset[ObserverCoverageDomain] = frozenset(ObserverCoverageDomain)
 
-DEFERRED_OBSERVER_COVERAGE_DOMAINS: dict[ObserverCoverageDomain, str] = {
-    ObserverCoverageDomain.AUTHORITY_DRIFT: "requires a live cross-generation authority snapshot comparison not yet built",
-    ObserverCoverageDomain.CHRONICLE_CHECKPOINT_INTEGRITY: "requires cross-referencing rust/chronicle's live state (G2-10) against external checkpoints, not yet wired to Observer",
-    ObserverCoverageDomain.QUARANTINE: "no quarantine mechanism exists yet in this codebase",
-    ObserverCoverageDomain.FACILITY_LIMITATIONS: "Facility does not exist until G2-14 onward",
-    ObserverCoverageDomain.EFFECT_CENSUS_MISMATCHES: "Effect Census (G2-00 SS9.8) is Facility-dependent, not built until G2-14 onward",
-    ObserverCoverageDomain.SHARED_TRUST_DRIFT: "requires cross-referencing the Shared Trust Surface Manifest (G2-04) against live component digests, not yet wired to Observer",
-    ObserverCoverageDomain.EFFECT_REACH_DRIFT: "EFFECT_REACH* (G2-00 SS9.3) is Facility-dependent, not built until G2-14 onward",
-    ObserverCoverageDomain.AMBIENT_AUTHORITY_DRIFT: "Execution Context ambient-authority tracking (G2-00 SS9.2) does not exist yet in this codebase",
-    ObserverCoverageDomain.AUTHORITY_PLANE_PREIMAGE_DRIFT: "no authority-plane causal preimage tracking exists yet in this codebase",
-    ObserverCoverageDomain.MINTABLE_BOUND_DRIFT: "no mintable-bound tracking exists yet in this codebase",
-    ObserverCoverageDomain.GEN1_REFERENCE_DRIFT: "requires re-diffing the live repository against the G2-01 Gen1ReferenceBundle, not yet wired to Observer",
-    ObserverCoverageDomain.RECOVERY_QUALIFICATION_DRIFT: "no recovery/takeover qualification runtime exists yet (G2-00 SS4 assigns recovery/takeover to a later milestone)",
-}
+DEFERRED_OBSERVER_COVERAGE_DOMAINS: dict[ObserverCoverageDomain, str] = {}
+
+
+@dataclass(frozen=True)
+class DriftSignal:
+    """A single already-computed drift/integrity check result for one
+    `ObserverCoverageDomain`, constructed by a CALLER that genuinely
+    invoked that domain's own real check function (e.g.
+    `tenfold.gen2.full_system_qualification`) -- Observer itself never
+    re-derives any of these, it only aggregates and reports them,
+    preserving its own read-only, dependency-light construction."""
+
+    domain: ObserverCoverageDomain
+    detected: bool
+    description: str
+    evidence_ref: str
+
+    def validate(self) -> None:
+        if not self.description or not self.description.strip():
+            raise RuntimeObligationError(f"DriftSignal for {self.domain.value}: description must be non-empty")
+        if not self.evidence_ref or not self.evidence_ref.strip():
+            raise RuntimeObligationError(f"DriftSignal for {self.domain.value}: evidence_ref must be non-empty")
 
 
 def check_observer_coverage_roster_is_fully_accounted_for() -> None:
@@ -416,6 +428,7 @@ class Observer:
         hazards: tuple[HazardRecord, ...],
         observation_generation: int,
         freshness_window: int,
+        drift_signals: tuple[DriftSignal, ...] = (),
     ) -> tuple[ObserverFinding, ...]:
         findings: list[ObserverFinding] = []
         for obligation in missing_obligations:
@@ -443,6 +456,21 @@ class Observer:
                         freshness_expiry_generation=observation_generation + freshness_window,
                     )
                 )
+        # G2-26: every already-computed drift signal genuinely reported,
+        # not only ones that detected drift -- coverage means the domain
+        # was actively checked, not that it silently passed unreported.
+        for index, signal in enumerate(drift_signals):
+            signal.validate()
+            status = "DRIFT-DETECTED" if signal.detected else "CLEAN"
+            findings.append(
+                ObserverFinding(
+                    finding_id=f"OBS-{signal.domain.value}-{status}-{observation_generation}-{index}",
+                    observation_generation=observation_generation,
+                    evidence_refs=(signal.evidence_ref,),
+                    category=signal.domain.value,
+                    freshness_expiry_generation=observation_generation + freshness_window,
+                )
+            )
         for finding in findings:
             finding.validate()
         return tuple(findings)

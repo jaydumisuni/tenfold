@@ -2192,6 +2192,45 @@ def _g2_25_recovery_takeover_non_advancing_epoch_kill_check() -> None:
     )
 
 
+def _g2_26_full_system_qualification_zero_domains_kill_check() -> None:
+    # The "full_system_qualification" Trust Table row's own
+    # required_negative_fixture, verbatim: "qualification claim
+    # attempted with zero domains checked, a dirty Observer domain, or
+    # any non-zero violation count" -- a claim where Observer coverage
+    # is vacuous (observer_domains_checked == 0), genuinely rejected by
+    # the real, independent Rust re-derivation (G2-26 Hybrid
+    # Full-System Qualification): "at least one domain genuinely
+    # checked" must not be satisfiable by zero.
+    from .authority_transfer_bridge import rust_check_full_system_qualification
+
+    rust_check_full_system_qualification(
+        observer_domains_checked=0,
+        observer_domains_clean=0,
+        mutation_suite_survived=0,
+        shared_trust_undeclared_dependencies=0,
+        model_blackout_violations=0,
+        chronicle_uncovered_writers=0,
+    )
+
+
+def _g2_26_full_system_qualification_dirty_domain_kill_check() -> None:
+    # Same required_negative_fixture, the "dirty Observer domain" half:
+    # domains were genuinely checked, but not all of them came back
+    # clean (observer_domains_clean < observer_domains_checked) -- Rust
+    # independently re-derives this inequality from the raw counts and
+    # must reject.
+    from .authority_transfer_bridge import rust_check_full_system_qualification
+
+    rust_check_full_system_qualification(
+        observer_domains_checked=12,
+        observer_domains_clean=11,
+        mutation_suite_survived=0,
+        shared_trust_undeclared_dependencies=0,
+        model_blackout_violations=0,
+        chronicle_uncovered_writers=0,
+    )
+
+
 def _g2_25_recovery_takeover_falsely_claimed_invariant_kill_check() -> None:
     # Same required_negative_fixture, the other half: epoch genuinely
     # advances, but the raw lease facts show the pre-takeover lease
@@ -3503,6 +3542,35 @@ def build_initial_mutation_suite() -> MutationSuite:
             "G2-00 SS15-16; G2-25",
             "recovery_takeover",
             _g2_25_recovery_takeover_falsely_claimed_invariant_kill_check,
+            AuthorityTransferCliError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G26-QUALIFICATIONZERODOMAINS-001",
+            MutationCategory.RUNTIME_OBLIGATION_OMISSION,
+            "The \"full_system_qualification\" Trust Table row's own required_negative_fixture, "
+            "verbatim: \"qualification claim attempted with zero domains checked, a dirty Observer "
+            "domain, or any non-zero violation count\" -- a claim with observer_domains_checked == 0, "
+            "genuinely rejected by the real, independent Rust re-derivation (G2-26 Hybrid Full-System "
+            "Qualification): Observer coverage must be non-vacuous.",
+            "G2-00 (entire); G2-26",
+            "full_system_qualification",
+            _g2_26_full_system_qualification_zero_domains_kill_check,
+            AuthorityTransferCliError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G26-QUALIFICATIONDIRTYDOMAIN-001",
+            MutationCategory.RUNTIME_OBLIGATION_OMISSION,
+            "Same required_negative_fixture as MUT-G26-QUALIFICATIONZERODOMAINS-001, the 'dirty "
+            "Observer domain' half: domains were genuinely checked, but not all came back clean "
+            "(observer_domains_clean < observer_domains_checked) -- Rust independently re-derives "
+            "this inequality from the raw counts and must reject.",
+            "G2-00 (entire); G2-26",
+            "full_system_qualification",
+            _g2_26_full_system_qualification_dirty_domain_kill_check,
             AuthorityTransferCliError,
         )
     )

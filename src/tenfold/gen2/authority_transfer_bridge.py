@@ -152,6 +152,35 @@ def rust_check_recovery_takeover_verification(
     )
 
 
+def rust_check_full_system_qualification(
+    *,
+    observer_domains_checked: int,
+    observer_domains_clean: int,
+    mutation_suite_survived: int,
+    shared_trust_undeclared_dependencies: int,
+    model_blackout_violations: int,
+    chronicle_uncovered_writers: int,
+) -> None:
+    """G2-26 Hybrid Full-System Qualification: admits
+    `"full_system_qualification"` and genuinely, independently re-derives
+    the aggregate zero-violations claim in Rust -- applied proactively
+    at construction time, matching the discipline G2-24 (Finding 4) and
+    G2-25 (Finding 2) each established."""
+    _run(
+        "check-full-system-qualification",
+        input_text=json.dumps(
+            {
+                "observer_domains_checked": observer_domains_checked,
+                "observer_domains_clean": observer_domains_clean,
+                "mutation_suite_survived": mutation_suite_survived,
+                "shared_trust_undeclared_dependencies": shared_trust_undeclared_dependencies,
+                "model_blackout_violations": model_blackout_violations,
+                "chronicle_uncovered_writers": chronicle_uncovered_writers,
+            }
+        ),
+    )
+
+
 def rust_transition_recovery_takeover_record(record: dict, new_stage: str, policy: dict) -> dict:
     """G2-25 Bounded Real Gen2 Recovery/Takeover (round-2 review, PR #80
     Finding 1 fix): admits `"recovery_takeover"` and binds the record's

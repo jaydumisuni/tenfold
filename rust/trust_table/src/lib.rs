@@ -420,6 +420,37 @@ pub fn initial_trust_table() -> TrustTable {
             failure_result: "reject".into(),
             fixture_qualified: true,
         },
+        TrustTableRow {
+            artifact_identity: "full_system_qualification".into(),
+            // G2-26 Hybrid Full-System Qualification
+            // (`tenfold.gen2.full_system_qualification`): a full-system
+            // aggregation sweep re-invoking every already-proven G2-02
+            // through G2-25 mechanism's real check functions against
+            // current live state (Constitutional Mutation Suite,
+            // Observer health across all 13 required coverage domains,
+            // Shared Trust Surface Manifest, model blackout, Chronicle
+            // head coverage, NON_WEAKENABLE challenge, Gen1 differential),
+            // applied proactively at construction time -- the discipline
+            // G2-24 (Finding 4) and G2-25 (Finding 2) each established.
+            // Rust cannot re-run the whole Python-side sweep itself
+            // (that would duplicate every already-qualified sub-mechanism
+            // a second time); what it independently re-derives instead
+            // is the aggregate logical claim: every swept sub-check must
+            // have genuinely reported zero violations, and Observer
+            // coverage must be non-vacuous (at least one domain
+            // genuinely checked) and fully clean.
+            independently_checks: vec![
+                "Observer coverage is non-vacuous: at least one domain genuinely checked".into(),
+                "every domain checked is genuinely clean (observer_domains_clean == observer_domains_checked)".into(),
+                "zero surviving required mutants, zero undeclared shared-trust dependencies, zero model-blackout violations, zero uncovered Chronicle writers".into(),
+            ],
+            trusts_only: "that the caller-supplied per-sub-check counts genuinely reflect real invocations of each already-proven G2-02 through G2-25 mechanism (Observer's real DriftSignal derivations, the real Mutation Suite, the real populated Shared Trust Surface Manifest, the real model-blackout AST scan, the real Chronicle head-coverage sweep) -- Rust re-derives the aggregate claim's own logical consistency, but cannot itself re-run 24 milestones' worth of Python-side qualification machinery".into(),
+            trust_bounded_reason: "each individual sub-mechanism already has its own dedicated Trust Table row and independent re-derivation from its own originating milestone (council_pin, recovery_qualification_matrix, recovery_takeover, mutation fixtures' own Rust re-derivations, etc.); this row's own independent value is the aggregate zero-violations claim across all of them, not a duplicate re-derivation of any one".into(),
+            authority_generation: 1,
+            required_negative_fixture: "qualification claim attempted with zero domains checked, a dirty Observer domain, or any non-zero violation count".into(),
+            failure_result: "reject".into(),
+            fixture_qualified: true,
+        },
     ];
     for row in rows {
         table.extend(row).expect("initial_trust_table rows are well-formed and non-duplicate by construction");
@@ -432,9 +463,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn initial_table_has_all_fourteen_minimum_families() {
+    fn initial_table_has_all_fifteen_minimum_families() {
         let table = initial_trust_table();
-        assert_eq!(table.len(), 14);
+        assert_eq!(table.len(), 15);
     }
 
     #[test]
@@ -461,6 +492,7 @@ mod tests {
             "council_pin",
             "recovery_qualification_matrix",
             "recovery_takeover",
+            "full_system_qualification",
         ] {
             assert!(table.admit(identity).is_ok(), "expected {identity} to be admitted");
         }
@@ -599,7 +631,7 @@ mod tests {
             fixture_qualified: true,
         };
         assert!(table.extend(row).is_ok());
-        assert_eq!(table.len(), 15);
+        assert_eq!(table.len(), 16);
         assert!(table.admit("chronicle_event").is_ok());
     }
 
