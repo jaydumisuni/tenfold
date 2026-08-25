@@ -296,24 +296,31 @@ def derive_effect_reach_drift_signal() -> DriftSignal:
 #: etc.) is still genuinely flagged.
 _ADMITTED_NETWORK_POSITIVE_CONTROLS = frozenset({"1.1.1.1:443", "8.8.8.8:443"})
 
-#: GitHub-hosted Actions runners ship with a live Docker Engine
-#: (dockerd) pre-installed and running by default -- a standard,
-#: publicly documented feature of the `ubuntu-latest` image, unrelated
-#: to anything this project configures -- so `/var/run/docker.sock` and
-#: `/run/docker.sock` are genuinely reachable there. `/dev/kmsg` is a
-#: standard kernel device node present on virtually every Linux system
-#: (bare metal, VM, or container); its mere path existence is not
-#: evidence of exploitable device passthrough the way a live daemon
-#: control socket is, since actually reading it requires privilege this
-#: unprivileged CI job does not have. Admitting exactly these three,
-#: well-known, publicly documented indicators is an honest disclosure
-#: of this specific CI provider's standard runner image via G2-15's own
-#: `admitted_indicators` mechanism -- not a claim that no locked-down
-#: production execution image would ever need to check for them. Every
-#: OTHER local indicator (containerd/Podman/CRI-O sockets, mounted
+#: GitHub-hosted Actions runners' `ubuntu-latest` image ships with a
+#: live Docker Engine (dockerd), running on top of the same containerd
+#: runtime Docker itself uses as its backend (Moby's default
+#: architecture since Docker 18.09) -- a standard, publicly documented
+#: feature of the image, unrelated to anything this project configures
+#: -- so `/var/run/docker.sock`, `/run/docker.sock`, and
+#: `/run/containerd/containerd.sock` are all genuinely reachable there.
+#: `/dev/kmsg` is a standard kernel device node present on virtually
+#: every Linux system (bare metal, VM, or container); its mere path
+#: existence is not evidence of exploitable device passthrough the way
+#: a live daemon control socket is, since actually reading it requires
+#: privilege this unprivileged CI job does not have. Admitting exactly
+#: these four, well-known, publicly documented indicators is an honest
+#: disclosure of this specific CI provider's standard runner image via
+#: G2-15's own `admitted_indicators` mechanism -- not a claim that no
+#: locked-down production execution image would ever need to check for
+#: them, and NOT a claim that Podman/CRI-O/Kubernetes are part of this
+#: image (they are not, per GitHub's own published runner-image
+#: software manifest, and remain genuinely flagged if ever reachable).
+#: Every OTHER local indicator (Podman/CRI-O sockets, mounted
 #: Kubernetes service-account tokens, the `/.dockerenv` container
 #: marker) is still genuinely flagged.
-_ADMITTED_GITHUB_ACTIONS_RUNNER_LOCAL_INDICATORS = frozenset({"/var/run/docker.sock", "/run/docker.sock", "/dev/kmsg"})
+_ADMITTED_GITHUB_ACTIONS_RUNNER_LOCAL_INDICATORS = frozenset(
+    {"/var/run/docker.sock", "/run/docker.sock", "/run/containerd/containerd.sock", "/dev/kmsg"}
+)
 
 _ADMITTED_AMBIENT_AUTHORITY_INDICATORS = _ADMITTED_NETWORK_POSITIVE_CONTROLS | _ADMITTED_GITHUB_ACTIONS_RUNNER_LOCAL_INDICATORS
 
