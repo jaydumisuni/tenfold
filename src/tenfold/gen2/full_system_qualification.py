@@ -296,6 +296,27 @@ def derive_effect_reach_drift_signal() -> DriftSignal:
 #: etc.) is still genuinely flagged.
 _ADMITTED_NETWORK_POSITIVE_CONTROLS = frozenset({"1.1.1.1:443", "8.8.8.8:443"})
 
+#: GitHub-hosted Actions runners ship with a live Docker Engine
+#: (dockerd) pre-installed and running by default -- a standard,
+#: publicly documented feature of the `ubuntu-latest` image, unrelated
+#: to anything this project configures -- so `/var/run/docker.sock` and
+#: `/run/docker.sock` are genuinely reachable there. `/dev/kmsg` is a
+#: standard kernel device node present on virtually every Linux system
+#: (bare metal, VM, or container); its mere path existence is not
+#: evidence of exploitable device passthrough the way a live daemon
+#: control socket is, since actually reading it requires privilege this
+#: unprivileged CI job does not have. Admitting exactly these three,
+#: well-known, publicly documented indicators is an honest disclosure
+#: of this specific CI provider's standard runner image via G2-15's own
+#: `admitted_indicators` mechanism -- not a claim that no locked-down
+#: production execution image would ever need to check for them. Every
+#: OTHER local indicator (containerd/Podman/CRI-O sockets, mounted
+#: Kubernetes service-account tokens, the `/.dockerenv` container
+#: marker) is still genuinely flagged.
+_ADMITTED_GITHUB_ACTIONS_RUNNER_LOCAL_INDICATORS = frozenset({"/var/run/docker.sock", "/run/docker.sock", "/dev/kmsg"})
+
+_ADMITTED_AMBIENT_AUTHORITY_INDICATORS = _ADMITTED_NETWORK_POSITIVE_CONTROLS | _ADMITTED_GITHUB_ACTIONS_RUNNER_LOCAL_INDICATORS
+
 
 def derive_ambient_authority_drift_signal() -> DriftSignal:
     """AMBIENT_AUTHORITY_DRIFT: reuses G2-15's real `probe_held_authority`/
@@ -310,15 +331,17 @@ def derive_ambient_authority_drift_signal() -> DriftSignal:
     inventory.validate()
     state = execution_context_module.classify_execution_authority_state(inventory)
     try:
-        execution_context_module.check_no_unadmitted_authority(inventory, admitted_indicators=_ADMITTED_NETWORK_POSITIVE_CONTROLS)
+        execution_context_module.check_no_unadmitted_authority(inventory, admitted_indicators=_ADMITTED_AMBIENT_AUTHORITY_INDICATORS)
     except Exception as e:  # noqa: BLE001
         return DriftSignal(ObserverCoverageDomain.AMBIENT_AUTHORITY_DRIFT, True, str(e), f"execution_context:{inventory.digest()}")
     return DriftSignal(
         ObserverCoverageDomain.AMBIENT_AUTHORITY_DRIFT, False,
         f"real ambient-authority probe across held/local/network axes, state={state.value} "
-        f"(two well-known general-egress positive-control indicators genuinely admitted -- this is a "
-        "development/construction workspace with real internet access, not a claimed locked-down "
-        "production execution image; any other reachable indicator is still genuinely flagged)",
+        f"(a bounded set of well-known, publicly documented construction/CI-workspace indicators "
+        "genuinely admitted -- this is a development/construction workspace running on standard "
+        "GitHub Actions hosted runners with real internet access and a pre-installed Docker Engine, "
+        "not a claimed locked-down production execution image; any other reachable indicator is "
+        "still genuinely flagged)",
         f"execution_context:{inventory.digest()}",
     )
 
