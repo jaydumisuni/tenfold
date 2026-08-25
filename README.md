@@ -86,7 +86,7 @@ Gen-2.0 architecture review and post-PASS reconciliation are complete.
 - G2-01 through G2-30 roadmap: **FROZEN ROADMAP**.
 - Architecture review: **PASS — 0 blockers / 0 majors**.
 - Post-PASS reconciliation: **PASS / READY_FOR_FREEZE**.
-- Gen-2 implementation: **IN PROGRESS** (G2-01 PROVEN; G2-02 PROVEN; G2-03 PROVEN; G2-04 PROVEN; G2-05 PROVEN; G2-06 PROVEN; G2-07 PROVEN; G2-08 PROVEN; G2-09 PROVEN; G2-10 PROVEN; G2-11 PROVEN; G2-12 PROVEN; G2-13 PROVEN; G2-14 PROVEN; G2-15 PROVEN; G2-16 PROVEN; G2-17 PROVEN; G2-18 PROVEN; G2-19 PROVEN; G2-20 PROVEN; G2-21 PROVEN; G2-22 PROVEN; G2-23 PROVEN; G2-24 PROVEN).
+- Gen-2 implementation: **IN PROGRESS** (G2-01 PROVEN; G2-02 PROVEN; G2-03 PROVEN; G2-04 PROVEN; G2-05 PROVEN; G2-06 PROVEN; G2-07 PROVEN; G2-08 PROVEN; G2-09 PROVEN; G2-10 PROVEN; G2-11 PROVEN; G2-12 PROVEN; G2-13 PROVEN; G2-14 PROVEN; G2-15 PROVEN; G2-16 PROVEN; G2-17 PROVEN; G2-18 PROVEN; G2-19 PROVEN; G2-20 PROVEN; G2-21 PROVEN; G2-22 PROVEN; G2-23 PROVEN; G2-24 PROVEN; G2-25 PROVEN).
 - Gen-2 qualification: **IN PROGRESS**.
 - G2-01 — Gen-1 Reference and Inheritance Freeze: **PROVEN**. Canonical review/proof record: `docs/gen2/G2-01-review-record.md`.
 - G2-02 — Constitutional Schema and Policy Foundation: **PROVEN**. Review/proof record: `docs/gen2/G2-02-review-record.md`.
@@ -112,8 +112,9 @@ Gen-2.0 architecture review and post-PASS reconciliation are complete.
 - G2-22 — Chronicle Writer Authority Migration: **PROVEN**. Review/proof record: `docs/gen2/G2-22-review-record.md`.
 - G2-23 — Remaining Constitutional Authority-Slice Migration + Council Pinning: **PROVEN**. Review/proof record: `docs/gen2/G2-23-review-record.md`.
 - G2-24 — Recovery Qualification Matrix: **PROVEN**. Review/proof record: `docs/gen2/G2-24-review-record.md`.
-- Current next Gen-2 milestone: **G2-25 — Bounded Real Gen2 Recovery / Takeover** (real dependency frontier: ready, since G2-24 is PROVEN).
-- Construction runtime: **qualified Tenfold Gen 1** (Gen2 now owns all ordinary construction execution authority except Recovery/Takeover, per G2-23's Result clause; G2-24 qualified but did not flip Recovery/Takeover authority; Gen1 remains authoritative for Recovery/Takeover through G2-25).
+- G2-25 — Bounded Real Gen2 Recovery / Takeover: **PROVEN**. Review/proof record: `docs/gen2/G2-25-review-record.md`.
+- Current next Gen-2 milestone: **G2-26 — Hybrid Full-System Qualification** (real dependency frontier: ready, since G2-25 is PROVEN).
+- Construction runtime: **qualified Tenfold Gen 1** (Gen2 now owns the full construction execution authority set the roadmap names through this point, including Recovery/Takeover in disposable qualification context, per G2-23's and G2-25's own Result clauses).
 
 The Gen-2 bootstrap is explicit: Gen 1 builds Gen 2 under TF-00 + G2-00 until G2-27 independently proves the Self-Construction Minimum. Only then may Gen 2 execute the remaining already-approved roadmap itself. Gen 1 remains afterward as frozen reference/differential oracle/fallback unless later authority explicitly retires it.
 
