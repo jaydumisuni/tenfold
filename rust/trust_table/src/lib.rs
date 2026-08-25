@@ -343,6 +343,34 @@ pub fn initial_trust_table() -> TrustTable {
             failure_result: "reject".into(),
             fixture_qualified: true,
         },
+        TrustTableRow {
+            artifact_identity: "recovery_qualification_matrix".into(),
+            // G2-24 Recovery Qualification Matrix: a state-model-derived
+            // coverage matrix (1-wise/pairwise/3-wise high-risk/
+            // transition crash-point/forbidden-state cells, partitioned
+            // WITHIN_GEN1_SURFACE/GEN2_ONLY_SURFACE) plus its four proof
+            // harnesses (`tenfold.gen2.recovery_qualification`). Unlike
+            // `council_pin`, there is no static source-file digest for
+            // Rust to independently re-hash here -- the artifact IS the
+            // coverage computation and its genuine execution results
+            // (Gen1/Gen2 differential agreement counts, metamorphic
+            // convergence, invariant/verifier evidence), which are
+            // Python-runtime outcomes, not files on disk. Admission is
+            // therefore the generic identity-only gate (the same
+            // mechanism `council_pin` also used before its own dedicated
+            // digest re-derivation was added) -- Rust does not
+            // independently recompute combinatorial coverage or
+            // re-execute `tenfold.foreman` transitions.
+            independently_checks: vec![
+                "structural well-formedness only: the artifact identity is a registered, fixture-qualified Trust Table row".into(),
+            ],
+            trusts_only: "that check_coverage's own exact-set-membership plus high-risk repeated-volume enforcement (tenfold.gen2.recovery_qualification.RecoveryQualificationMatrix.check_coverage) genuinely ran against genuinely exercised cells -- a Rust process has no independent combinatorial-coverage or Foreman-transition re-derivation of its own for this artifact family".into(),
+            trust_bounded_reason: "the matrix's cells and their exercise are entirely Python-runtime computation (real Foreman transitions, a real Gen1/Rust frontier differential, a real subprocess-crossed metamorphic comparison, real invariant reconstruction) -- there is no static artifact file for Rust to re-hash the way council_pin's four source files allow; strengthening this to a genuine Rust re-derivation is future work, honestly disclosed here rather than fabricated".into(),
+            authority_generation: 1,
+            required_negative_fixture: "matrix coverage check attempted against a corpus with a missing or under-volume high-risk cell".into(),
+            failure_result: "reject".into(),
+            fixture_qualified: true,
+        },
     ];
     for row in rows {
         table.extend(row).expect("initial_trust_table rows are well-formed and non-duplicate by construction");
@@ -355,9 +383,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn initial_table_has_all_twelve_minimum_families() {
+    fn initial_table_has_all_thirteen_minimum_families() {
         let table = initial_trust_table();
-        assert_eq!(table.len(), 12);
+        assert_eq!(table.len(), 13);
     }
 
     #[test]
@@ -382,6 +410,7 @@ mod tests {
             "runtime_obligation",
             "facility_declaration",
             "council_pin",
+            "recovery_qualification_matrix",
         ] {
             assert!(table.admit(identity).is_ok(), "expected {identity} to be admitted");
         }
@@ -520,7 +549,7 @@ mod tests {
             fixture_qualified: true,
         };
         assert!(table.extend(row).is_ok());
-        assert_eq!(table.len(), 13);
+        assert_eq!(table.len(), 14);
         assert!(table.admit("chronicle_event").is_ok());
     }
 

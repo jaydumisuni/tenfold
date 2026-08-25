@@ -823,6 +823,67 @@ pub fn admit_check_council_pin(table: &trust_table::TrustTable, record: &Council
     record.verify_artifact_digests()
 }
 
+// ============================================================================
+// G2-24 Recovery Qualification Matrix: round-2 review finding (PR #79,
+// Finding 4) -- the "recovery_qualification_matrix" Trust Table row was
+// marked `fixture_qualified: true` while `TrustTable::admit()` never
+// received or checked any matrix/coverage-count evidence, so any caller
+// could obtain admission for an invalid or entirely absent qualification
+// result. `check_recovery_qualification_coverage` is a genuine, second,
+// independent Rust re-derivation of `tenfold.gen2.recovery_qualification.
+// RecoveryQualificationMatrix.check_coverage`'s own exact-set-membership
+// plus high-risk repeated-volume logic -- not a re-implementation trusted
+// to agree by construction, but one Python's production path must
+// actually pass through (`recovery_qualification_bridge.
+// rust_check_recovery_qualification_coverage`) before the qualification
+// result is accepted as complete.
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecoveryQualificationCoverageClaim {
+    pub required_cell_ids: Vec<String>,
+    pub high_risk_cell_ids: Vec<String>,
+    pub exercised_cell_counts: HashMap<String, u64>,
+    pub high_risk_min_volume: u64,
+}
+
+pub fn check_recovery_qualification_coverage(claim: &RecoveryQualificationCoverageClaim) -> Result<(), IdentityGenerationError> {
+    let exercised: HashSet<&String> = claim.exercised_cell_counts.iter().filter(|(_, &count)| count > 0).map(|(cell_id, _)| cell_id).collect();
+    let required: HashSet<&String> = claim.required_cell_ids.iter().collect();
+    let mut missing: Vec<&&String> = required.difference(&exercised).collect();
+    if !missing.is_empty() {
+        missing.sort();
+        return Err(IdentityGenerationError::Semantic(format!(
+            "RecoveryQualificationMatrix DRIFT (independently re-derived by Rust): {} required cell(s) never exercised: {:?}",
+            missing.len(),
+            missing
+        )));
+    }
+    let mut under_volume: Vec<&String> = claim
+        .high_risk_cell_ids
+        .iter()
+        .filter(|cell_id| claim.exercised_cell_counts.get(*cell_id).copied().unwrap_or(0) < claim.high_risk_min_volume)
+        .collect();
+    if !under_volume.is_empty() {
+        under_volume.sort();
+        return Err(IdentityGenerationError::Semantic(format!(
+            "RecoveryQualificationMatrix DRIFT (independently re-derived by Rust): {} high-risk cell(s) exercised fewer than {} clean times: {:?}",
+            under_volume.len(),
+            claim.high_risk_min_volume,
+            under_volume
+        )));
+    }
+    Ok(())
+}
+
+pub fn admit_check_recovery_qualification_coverage(
+    table: &trust_table::TrustTable,
+    claim: &RecoveryQualificationCoverageClaim,
+) -> Result<(), IdentityGenerationError> {
+    table.admit("recovery_qualification_matrix").map_err(|e| IdentityGenerationError::Semantic(e.to_string()))?;
+    check_recovery_qualification_coverage(claim)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1430,5 +1491,72 @@ mod tests {
     #[test]
     fn council_pin_row_is_well_formed() {
         assert!(trust_table::initial_trust_table().rows().find(|r| r.artifact_identity == "council_pin").expect("council_pin row should exist").is_well_formed());
+    }
+
+    // ---- G2-24 Recovery Qualification Matrix ----
+
+    fn genuine_recovery_claim() -> RecoveryQualificationCoverageClaim {
+        let mut exercised_cell_counts = HashMap::new();
+        exercised_cell_counts.insert("easy-1".to_string(), 1);
+        exercised_cell_counts.insert("risky-1".to_string(), 3);
+        RecoveryQualificationCoverageClaim {
+            required_cell_ids: vec!["easy-1".to_string(), "risky-1".to_string()],
+            high_risk_cell_ids: vec!["risky-1".to_string()],
+            exercised_cell_counts,
+            high_risk_min_volume: 3,
+        }
+    }
+
+    #[test]
+    fn admit_check_recovery_qualification_coverage_fails_closed_when_table_has_no_row() {
+        let table = trust_table::TrustTable::new();
+        assert!(admit_check_recovery_qualification_coverage(&table, &genuine_recovery_claim()).is_err());
+    }
+
+    #[test]
+    fn admit_check_recovery_qualification_coverage_succeeds_on_a_genuinely_covered_claim() {
+        let table = trust_table::initial_trust_table();
+        admit_check_recovery_qualification_coverage(&table, &genuine_recovery_claim()).expect("a fully covered claim should be admitted");
+    }
+
+    #[test]
+    fn check_recovery_qualification_coverage_rejects_a_missing_required_cell() {
+        let mut claim = genuine_recovery_claim();
+        claim.exercised_cell_counts.remove("easy-1");
+        let result = check_recovery_qualification_coverage(&claim);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("never exercised"), "error should name the never-exercised cell: {err}");
+        assert!(err.contains("independently re-derived by Rust"), "error should disclose this was independently re-derived: {err}");
+    }
+
+    #[test]
+    fn check_recovery_qualification_coverage_rejects_easy_cells_masking_a_missing_high_risk_cell() {
+        // G2-24 Acceptance, verbatim: "easy repeated cells cannot mask
+        // missing high-risk cells." A large exercise count on the easy
+        // cell, but the high-risk cell entirely absent.
+        let mut claim = genuine_recovery_claim();
+        claim.exercised_cell_counts.insert("easy-1".to_string(), 100_000);
+        claim.exercised_cell_counts.remove("risky-1");
+        assert!(check_recovery_qualification_coverage(&claim).is_err());
+    }
+
+    #[test]
+    fn check_recovery_qualification_coverage_rejects_a_high_risk_cell_under_repeated_volume() {
+        let mut claim = genuine_recovery_claim();
+        claim.exercised_cell_counts.insert("risky-1".to_string(), 1);
+        let result = check_recovery_qualification_coverage(&claim);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("fewer than"), "error should name the under-volume cell: {err}");
+    }
+
+    #[test]
+    fn recovery_qualification_matrix_row_is_well_formed() {
+        assert!(trust_table::initial_trust_table()
+            .rows()
+            .find(|r| r.artifact_identity == "recovery_qualification_matrix")
+            .expect("recovery_qualification_matrix row should exist")
+            .is_well_formed());
     }
 }

@@ -29,10 +29,18 @@
 //!   `tenfold.contracts`/`tenfold.assurance` source files from disk,
 //!   comparing against the record's declared digests; prints
 //!   ACCEPT/REJECT.
+//! - `check-recovery-coverage` (G2-24 Recovery Qualification Matrix,
+//!   round-2 review finding, PR #79 Finding 4) -- reads a
+//!   `RecoveryQualificationCoverageClaim` JSON from stdin, admits
+//!   `"recovery_qualification_matrix"`, and independently re-derives
+//!   `RecoveryQualificationMatrix.check_coverage`'s own exact-set-
+//!   membership plus high-risk repeated-volume logic; prints
+//!   ACCEPT/REJECT.
 
 use identity_generation::{
-    admit_check_authority_transfer_transition, admit_check_council_pin, admit_transition, authority_transfer_trust_table_row, check_valid_authority_owner_count, trust_table_row,
-    AuthorityTransferRecord, AuthorityTransferStabilizationPolicy, AuthorityTransferStage, CouncilPinRecord,
+    admit_check_authority_transfer_transition, admit_check_council_pin, admit_check_recovery_qualification_coverage, admit_transition, authority_transfer_trust_table_row,
+    check_valid_authority_owner_count, trust_table_row, AuthorityTransferRecord, AuthorityTransferStabilizationPolicy, AuthorityTransferStage, CouncilPinRecord,
+    RecoveryQualificationCoverageClaim,
 };
 use serde::Deserialize;
 use std::io::Read;
@@ -169,6 +177,26 @@ fn main() -> ExitCode {
                 Err(e) => return usage_error(&e.to_string()),
             };
             match admit_check_council_pin(&admitted_table(), &record) {
+                Ok(()) => {
+                    println!("ACCEPT");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    println!("REJECT: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        "check-recovery-coverage" => {
+            let buf = match read_stdin() {
+                Ok(b) => b,
+                Err(code) => return code,
+            };
+            let claim: RecoveryQualificationCoverageClaim = match serde_json::from_str(&buf) {
+                Ok(v) => v,
+                Err(e) => return usage_error(&e.to_string()),
+            };
+            match admit_check_recovery_qualification_coverage(&admitted_table(), &claim) {
                 Ok(()) => {
                     println!("ACCEPT");
                     ExitCode::SUCCESS
