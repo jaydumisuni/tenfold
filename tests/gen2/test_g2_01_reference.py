@@ -230,6 +230,40 @@ def _git_init_and_commit(tmp_path: Path) -> None:
     run("git", "commit", "-q", "-m", "test fixture")
 
 
+def _ensure_frozen_commit_fetched() -> None:
+    """The regular pytest suite's own checkout may be shallow (CI:
+    `fetch-depth: 1`) and not carry the frozen migration reference
+    commit's objects locally -- fetch just that one commit on demand,
+    mirroring what the real G2-01 production proof workflow's own
+    dedicated `actions/checkout(ref: 05aa384a...)` step does under the
+    hood. A no-op when the commit is already present (e.g. a full local
+    clone)."""
+    probe = subprocess.run(["git", "cat-file", "-e", f"{MAIN}^{{commit}}"], cwd=ROOT, capture_output=True)
+    if probe.returncode != 0:
+        subprocess.run(["git", "fetch", "--depth", "1", "origin", MAIN], cwd=ROOT, check=True, capture_output=True)
+
+
+@pytest.fixture
+def frozen_reference_root(tmp_path: Path) -> Path:
+    """A genuine, git-backed checkout of the FROZEN migration reference
+    commit (`MAIN`), materialized via `git worktree add` -- mirroring
+    the real G2-01 production proof workflow's own dedicated checkout at
+    `ref: 05aa384a...` in a separate directory. Round-2 review finding:
+    tests that need "the frozen reference tree" must never substitute
+    the live, evolving `ROOT` (main branch HEAD) for it -- ROOT legitimately
+    changes over the life of the campaign (e.g. G2-23's own authorized,
+    disclosed edit to `src/tenfold/__init__.py`), which would make these
+    tests fragile against any such future authorized change, exactly the
+    failure a round-2 CI run caught here."""
+    _ensure_frozen_commit_fetched()
+    dest = tmp_path / "frozen-reference"
+    subprocess.run(["git", "worktree", "add", "--force", "--detach", str(dest), MAIN], cwd=ROOT, check=True, capture_output=True)
+    try:
+        yield dest
+    finally:
+        subprocess.run(["git", "worktree", "remove", "--force", str(dest)], cwd=ROOT, capture_output=True)
+
+
 def _bind_pass_bundle(
     tmp_path: Path, *, content_digest_override: str | None = "__compute__", **proof_overrides: str
 ) -> Gen1ReferenceBundle:
@@ -546,19 +580,30 @@ def test_g2_01_proof_candidate_content_digest_not_matching_bundle_fails_closed(t
         bundle.validate_cold_boot_proof_content(tmp_path)
 
 
-def test_g2_01_thinned_manifest_missing_frozen_files_fails_closed(tmp_path: Path) -> None:
+def test_g2_01_thinned_manifest_missing_frozen_files_fails_closed(tmp_path: Path, frozen_reference_root: Path) -> None:
     # A manifest can be internally consistent (every listed entry correct)
     # while omitting most of the frozen reference tree; validate_reference_
     # tree must independently enumerate the reference's actual tracked
     # files and reject an incomplete manifest, not just check what is
-    # listed.
+    # listed. Uses a genuinely materialized frozen-commit checkout as the
+    # reference tree, not the live, evolving ROOT (round-2 review finding:
+    # ROOT legitimately changes over the campaign's life -- e.g. G2-23's
+    # own authorized edit to src/tenfold/__init__.py -- which would make
+    # this test fragile against any such future authorized change).
     bundle = load_bundle()
     _copy_bound_manifests(tmp_path)
     destination = tmp_path / "docs/gen2"
-    # Reduce the semantic_corpus manifest to a single genuine entry.
+    # The manifest file itself is a G2-01 CONSTRUCTION artifact (added to
+    # the repo as part of freezing the reference, not present in the
+    # frozen Gen1 commit itself), so it is genuinely read from ROOT --
+    # only the individual SOURCE FILES it lists must come from the frozen
+    # commit (validate_reference_tree's reference_root, below).
     full_manifest = (ROOT / "docs/gen2/g2-01-semantic-corpus.sha256").read_text(encoding="utf-8")
     first_line = full_manifest.splitlines()[0] + "\n"
-    (destination / "g2-01-semantic-corpus.sha256").write_text(first_line, encoding="utf-8")
+    # newline="" prevents Windows' implicit \n -> \r\n translation, which
+    # would otherwise make the written file's actual bytes disagree with
+    # the sha256 computed over `first_line` above (round-2 review finding).
+    (destination / "g2-01-semantic-corpus.sha256").write_text(first_line, encoding="utf-8", newline="")
     thinned = replace(
         bundle,
         semantic_corpus=ArtifactBinding(
@@ -567,7 +612,7 @@ def test_g2_01_thinned_manifest_missing_frozen_files_fails_closed(tmp_path: Path
         ),
     )
     with pytest.raises(ReferenceError, match="manifest omits required frozen reference file"):
-        thinned.validate_reference_tree(tmp_path, ROOT)
+        thinned.validate_reference_tree(tmp_path, frozen_reference_root)
 
 
 def test_g2_01_empty_reference_coverage_fails_closed() -> None:
@@ -604,35 +649,43 @@ def test_g2_01_interim_root_wrong_authority_class_fails_closed() -> None:
         broken.validate(ROOT, require_proven=False)
 
 
-def test_g2_01_manifest_with_out_of_scope_entry_fails_closed(tmp_path: Path) -> None:
+def test_g2_01_manifest_with_out_of_scope_entry_fails_closed(tmp_path: Path, frozen_reference_root: Path) -> None:
     # The exact broadening named by review: a manifest that covers every
     # required file AND an unrelated extra file must still fail, not just
     # a thinned/incomplete one. Uses a purpose-built synthetic reference
-    # tree containing exactly the semantic_corpus's own declared file set
-    # (not the live ROOT, whose src/tenfold/gen2/* this very milestone adds
-    # would otherwise make "expected" and "current working tree" diverge).
+    # tree sourced from the genuinely materialized frozen-commit checkout,
+    # not the live, evolving ROOT (round-2 review finding: ROOT
+    # legitimately changes over the campaign's life -- e.g. G2-23's own
+    # authorized edit to src/tenfold/__init__.py -- and this milestone's
+    # own src/tenfold/gen2/* additions would also make "expected" and
+    # "current working tree" diverge either way).
     reference_root = tmp_path / "reference"
     reference_root.mkdir()
+    # The manifest file itself is a G2-01 CONSTRUCTION artifact (added to
+    # the repo as part of freezing the reference, not present in the
+    # frozen Gen1 commit itself), so it is genuinely read from ROOT --
+    # only the individual SOURCE FILES it lists come from the frozen
+    # commit checkout, below.
     manifest_lines = (ROOT / "docs/gen2/g2-01-semantic-corpus.sha256").read_text(encoding="utf-8").splitlines()
     for line in manifest_lines:
         digest, rel = line.split("  ", 1)
         dest = reference_root / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(ROOT / rel, dest)
+        shutil.copyfile(frozen_reference_root / rel, dest)
     # Also present in the reference tree (just outside this corpus's src/
     # scope) so the per-line existence/digest check passes and the
     # out-of-scope rejection - not a spurious "missing" error - is what
     # actually fires.
     extra_dest = reference_root / "docs/00-founding-authority.md"
     extra_dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(ROOT / "docs/00-founding-authority.md", extra_dest)
+    shutil.copyfile(frozen_reference_root / "docs/00-founding-authority.md", extra_dest)
     _git_init_and_commit(reference_root)
 
     candidate_root = tmp_path / "candidate"
     candidate_root.mkdir()
     manifest_dest = candidate_root / "docs/gen2/g2-01-semantic-corpus.sha256"
     manifest_dest.parent.mkdir(parents=True, exist_ok=True)
-    extra_file_digest = sha256((ROOT / "docs/00-founding-authority.md").read_bytes()).hexdigest()
+    extra_file_digest = sha256((frozen_reference_root / "docs/00-founding-authority.md").read_bytes()).hexdigest()
     extra_line = f"{extra_file_digest}  docs/00-founding-authority.md\n"
     manifest_dest.write_text("\n".join(manifest_lines) + "\n" + extra_line, encoding="utf-8")
 

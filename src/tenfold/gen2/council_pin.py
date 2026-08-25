@@ -133,8 +133,18 @@ def _check_generation_not_stale(claimed: int, live: int) -> None:
 def _artifact_sha256(module) -> str:
     """Genuine SHA-256 over the real installed source file's bytes, not
     a hand-maintained constant -- any change to the file's content
-    changes this digest."""
-    return hashlib.sha256(Path(inspect.getfile(module)).read_bytes()).hexdigest()
+    changes this digest. Normalizes CRLF to LF before hashing: this
+    repo's canonical git-tracked content for these Gen1 source files is
+    LF-only, but a local checkout's line-ending config (e.g. Windows
+    `core.autocrlf`) can silently convert them to CRLF on disk -- without
+    normalization the digest would depend on the checking-out machine's
+    own git config rather than the canonical committed content, breaking
+    reproducibility across machines (the exact bug a round-2 CI run
+    caught: this digest differed between a Windows dev checkout and
+    CI's Linux checkout of the identical commit)."""
+    raw = Path(inspect.getfile(module)).read_bytes()
+    normalized = raw.replace(b"\r\n", b"\n")
+    return hashlib.sha256(normalized).hexdigest()
 
 
 def _interface_signature_digest() -> str:

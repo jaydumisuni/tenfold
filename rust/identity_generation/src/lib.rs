@@ -743,12 +743,31 @@ fn repo_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
+/// Genuine SHA-256 over the real installed source file's bytes, with
+/// CRLF normalized to LF before hashing: this repo's canonical
+/// git-tracked content for these Gen1 source files is LF-only, but a
+/// local checkout's line-ending config (e.g. Windows `core.autocrlf`)
+/// can silently convert them to CRLF on disk -- without normalization
+/// the digest would depend on the checking-out machine's own git
+/// config rather than the canonical committed content, breaking
+/// reproducibility across machines.
 fn hash_file_at(relative_path: &str) -> Result<String, IdentityGenerationError> {
     use sha2::{Digest, Sha256};
     let path = repo_root().join(relative_path);
     let bytes = std::fs::read(&path).map_err(|e| IdentityGenerationError::Semantic(format!("council_pin: could not read {}: {}", path.display(), e)))?;
+    let mut normalized = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\r' && i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+            normalized.push(b'\n');
+            i += 2;
+        } else {
+            normalized.push(bytes[i]);
+            i += 1;
+        }
+    }
     let mut hasher = Sha256::new();
-    hasher.update(&bytes);
+    hasher.update(&normalized);
     Ok(format!("{:x}", hasher.finalize()))
 }
 
