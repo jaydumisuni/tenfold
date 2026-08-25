@@ -4,6 +4,7 @@ from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -237,7 +238,13 @@ def _ensure_frozen_commit_fetched() -> None:
     mirroring what the real G2-01 production proof workflow's own
     dedicated `actions/checkout(ref: 05aa384a...)` step does under the
     hood. A no-op when the commit is already present (e.g. a full local
-    clone)."""
+    clone). Only ever called by tests gated with `TENFOLD_REPOSITORY_
+    ONLY_PROOF` skipif markers (see `frozen_reference_root` below) --
+    TF-31's clean-clone qualification builds a brand-new, no-`origin`,
+    single-commit repo (`git init` + one `git fetch` from a local
+    filesystem path, never a named remote) specifically to prove Tenfold
+    needs no external repository/network access, so a `git fetch origin`
+    call must never run there."""
     probe = subprocess.run(["git", "cat-file", "-e", f"{MAIN}^{{commit}}"], cwd=ROOT, capture_output=True)
     if probe.returncode != 0:
         subprocess.run(["git", "fetch", "--depth", "1", "origin", MAIN], cwd=ROOT, check=True, capture_output=True)
@@ -254,7 +261,15 @@ def frozen_reference_root(tmp_path: Path) -> Path:
     changes over the life of the campaign (e.g. G2-23's own authorized,
     disclosed edit to `src/tenfold/__init__.py`), which would make these
     tests fragile against any such future authorized change, exactly the
-    failure a round-2 CI run caught here."""
+    failure a round-2 CI run caught here.
+
+    Every test using this fixture must carry the `TENFOLD_REPOSITORY_
+    ONLY_PROOF` skipif marker: TF-31's clean-clone qualification runs
+    the whole suite inside a repo with only the single candidate commit
+    and no remote, where materializing an unrelated historical commit is
+    architecturally impossible without violating that qualification's
+    entire point (round-2 review finding -- a second CI failure this
+    fix surfaced, caught by TF-31 itself)."""
     _ensure_frozen_commit_fetched()
     dest = tmp_path / "frozen-reference"
     subprocess.run(["git", "worktree", "add", "--force", "--detach", str(dest), MAIN], cwd=ROOT, check=True, capture_output=True)
@@ -580,6 +595,10 @@ def test_g2_01_proof_candidate_content_digest_not_matching_bundle_fails_closed(t
         bundle.validate_cold_boot_proof_content(tmp_path)
 
 
+@pytest.mark.skipif(
+    os.environ.get("TENFOLD_REPOSITORY_ONLY_PROOF") == "1",
+    reason="materializing the frozen migration reference tree needs git history/network beyond TF-31's single-commit, no-remote clean clone",
+)
 def test_g2_01_thinned_manifest_missing_frozen_files_fails_closed(tmp_path: Path, frozen_reference_root: Path) -> None:
     # A manifest can be internally consistent (every listed entry correct)
     # while omitting most of the frozen reference tree; validate_reference_
@@ -649,6 +668,10 @@ def test_g2_01_interim_root_wrong_authority_class_fails_closed() -> None:
         broken.validate(ROOT, require_proven=False)
 
 
+@pytest.mark.skipif(
+    os.environ.get("TENFOLD_REPOSITORY_ONLY_PROOF") == "1",
+    reason="materializing the frozen migration reference tree needs git history/network beyond TF-31's single-commit, no-remote clean clone",
+)
 def test_g2_01_manifest_with_out_of_scope_entry_fails_closed(tmp_path: Path, frozen_reference_root: Path) -> None:
     # The exact broadening named by review: a manifest that covers every
     # required file AND an unrelated extra file must still fail, not just
