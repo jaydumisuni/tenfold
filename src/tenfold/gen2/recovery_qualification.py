@@ -83,10 +83,12 @@ from tenfold.persistence import CampaignSnapshot
 from tenfold.recovery import recover_frontier_snapshot
 
 from .authority_transfer import build_identity_generation_transfer_policy
+from .authority_transfer_bridge import AuthorityTransferCliError, rust_check_recovery_qualification_coverage
 from .capability_graph import ReachState
 from .chronicle_writer_transfer import _exercise_induced_failures
 from .constitutional import (
     AuthorityTransferRecord,
+    AuthorityTransferStabilizationPolicy,
     AuthorityTransferStage,
     ProofState,
 )
@@ -94,13 +96,14 @@ from .dispatch_lease_bridge import rust_compute_frontier
 from .effect_census import TerminalEffectSignal
 from .state_model import (
     FailureSpaceDimension,
-    build_invariant_ownership_matrix,
+    build_g2_23_cross_runtime_invariant_pairings,
     build_g2_23_state_model,
+    build_invariant_ownership_matrix,
+    check_cross_runtime_authoritative_ownership,
     generate_forbidden_state_scenarios,
     generate_one_wise,
     generate_pairwise,
     generate_three_wise,
-    generate_transition_scenarios,
 )
 from .verifier import independent_check_valid_authority_owner_count
 
@@ -170,7 +173,28 @@ class RecoveryQualificationMatrix:
         have been exercised at least `HIGH_RISK_MIN_VOLUME` times with a
         clean (non-raising, matching-expectation) outcome each time --
         exercising them only once, or exercising many easy cells
-        instead, does not satisfy this."""
+        instead, does not satisfy this.
+
+        Round-2 review finding (PR #79, Finding 4): the
+        `"recovery_qualification_matrix"` Trust Table row was marked
+        `fixture_qualified: true` while nothing in the production path
+        ever presented a matrix/coverage claim to Rust for independent
+        re-checking -- any caller could obtain admission for an invalid
+        or entirely absent qualification result. This now genuinely
+        routes through `rust_check_recovery_qualification_coverage`
+        FIRST -- a second, independent Rust re-derivation of the exact
+        same exact-set-membership plus high-risk repeated-volume logic
+        below -- before the Python-side check (kept for a clearer local
+        error message and as defense in depth, matching `council_pin`'s
+        own `verify_council_pin` pattern: Rust re-derivation first,
+        Python re-verification second)."""
+        try:
+            rust_check_recovery_qualification_coverage(
+                sorted(self.cell_ids()), sorted(self.high_risk_cell_ids()), dict(exercised_cell_counts), HIGH_RISK_MIN_VOLUME
+            )
+        except AuthorityTransferCliError as e:
+            raise RecoveryQualificationError(f"RecoveryQualificationMatrix DRIFT (independently re-derived by Rust): {e}") from e
+
         required = self.cell_ids()
         exercised = {cell_id for cell_id, count in exercised_cell_counts.items() if count > 0}
         missing = required - exercised
@@ -567,25 +591,40 @@ def run_within_gen1_surface_recovery_differential(*, repeats: int = 3) -> tuple[
 # ============================================================================
 
 
-def _recover_transfer_record_in_subprocess(record_path: Path) -> str:
+def _recover_and_continue_transfer_record_in_subprocess(record_path: Path, new_stage: str, policy: AuthorityTransferStabilizationPolicy) -> dict:
     """Same genuine process-boundary-crossing technique G2-21's
     `authority_transfer._recover_record_in_subprocess` established
     (round-2 review finding: an in-process round-trip cannot detect real
-    persistence/reconstruction failures) -- this milestone's own fresh
-    instance of it, for its own metamorphic comparison."""
+    persistence/reconstruction failures) -- but round-2 review of THIS
+    milestone (PR #79, Finding 2) correctly found the original version
+    only read back `.stage.value`, after which the PARENT performed the
+    SOFT_COMMITTED transition itself: the subprocess never actually
+    continued execution, and corruption of any field other than `stage`
+    (from/to refs, stabilization_evidence, etc.) could go undetected
+    since only the final stage was ever compared. Fixed: the subprocess
+    itself performs the `new_stage` transition on the recovered record
+    and prints back the COMPLETE resulting record as JSON, which the
+    caller compares field-by-field against the uninterrupted path."""
     script = (
         "import json, sys\n"
-        "sys.path.insert(0, sys.argv[2])\n"
-        "from tenfold.gen2.constitutional import AuthorityTransferRecord\n"
+        "sys.path.insert(0, sys.argv[4])\n"
+        "from tenfold.gen2.constitutional import AuthorityTransferRecord, AuthorityTransferStabilizationPolicy, AuthorityTransferStage\n"
         "with open(sys.argv[1], encoding='utf-8') as f:\n"
         "    raw = json.load(f)\n"
         "record = AuthorityTransferRecord.from_dict(raw)\n"
-        "print(record.stage.value)\n"
+        "policy = AuthorityTransferStabilizationPolicy.from_dict(json.loads(sys.argv[3]))\n"
+        "record = record.transition(AuthorityTransferStage(sys.argv[2]), policy=policy)\n"
+        "print(json.dumps(record.to_dict()))\n"
     )
-    result = subprocess.run([sys.executable, "-c", script, str(record_path), str(SRC_DIR)], capture_output=True, text=True, timeout=30)
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(record_path), new_stage, json.dumps(policy.to_dict()), str(SRC_DIR)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
     if result.returncode != 0:
         raise RecoveryQualificationError(f"metamorphic recovery subprocess failed (exit {result.returncode}): {result.stderr}")
-    return result.stdout.strip()
+    return json.loads(result.stdout.strip())
 
 
 def run_gen2_only_metamorphic_recovery_comparison(*, work_dir: Path, repeats: int = 3) -> str:
@@ -595,33 +634,37 @@ def run_gen2_only_metamorphic_recovery_comparison(*, work_dir: Path, repeats: in
     SAME transfer_id/from_ref/to_ref/policy through both paths `repeats`
     times: (a) uninterrupted -- straight-through in-process transitions;
     (b) induced crash -> recovery -- durably written after STAGED, the
-    in-memory object discarded, reconstructed in a genuinely separate
-    subprocess, then the remaining transitions continued from the
-    recovered object. Requires the final stage to be identical on every
-    run (this domain's transitions are deterministic given a stage and
-    policy -- there is no legitimate UNCERTAIN outcome to converge on
-    here, unlike e.g. TerminalEffectSignal, so SS16's UNCERTAIN-
-    convergence allowance is not exercised by this specific harness;
-    disclosed rather than fabricated)."""
+    in-memory object discarded, reconstructed AND CONTINUED (the
+    SOFT_COMMITTED transition itself) inside a genuinely separate
+    subprocess. Compares the COMPLETE resulting record (every field, not
+    just `.stage`) between both paths on every repeat -- there is no
+    legitimate UNCERTAIN outcome to converge on here (this domain's
+    transitions are deterministic given a stage and policy, unlike e.g.
+    TerminalEffectSignal), so SS16's UNCERTAIN-convergence allowance is
+    not exercised by this specific harness; disclosed rather than
+    fabricated)."""
     policy = build_identity_generation_transfer_policy()
 
     for i in range(repeats):
+        transfer_id = f"g2-24-metamorphic-{i}"
+        from_ref = "gen1-metamorphic"
+        to_ref = "gen2-metamorphic"
+
         uninterrupted = AuthorityTransferRecord(
-            transfer_id=f"g2-24-metamorphic-uninterrupted-{i}",
-            from_authority_ref="gen1-metamorphic",
-            to_authority_ref="gen2-metamorphic",
+            transfer_id=transfer_id,
+            from_authority_ref=from_ref,
+            to_authority_ref=to_ref,
             stage=AuthorityTransferStage.PREPARED,
             stabilization_policy_generation=policy.policy_generation,
             stabilization_evidence={},
         )
         uninterrupted = uninterrupted.transition(AuthorityTransferStage.STAGED, policy=policy)
         uninterrupted = uninterrupted.transition(AuthorityTransferStage.SOFT_COMMITTED, policy=policy)
-        uninterrupted_final_stage = uninterrupted.stage
 
         crashed = AuthorityTransferRecord(
-            transfer_id=f"g2-24-metamorphic-crash-recovery-{i}",
-            from_authority_ref="gen1-metamorphic",
-            to_authority_ref="gen2-metamorphic",
+            transfer_id=transfer_id,
+            from_authority_ref=from_ref,
+            to_authority_ref=to_ref,
             stage=AuthorityTransferStage.PREPARED,
             stabilization_policy_generation=policy.policy_generation,
             stabilization_evidence={},
@@ -630,35 +673,43 @@ def run_gen2_only_metamorphic_recovery_comparison(*, work_dir: Path, repeats: in
         record_path = work_dir / f"g2-24-metamorphic-record-{i}.json"
         record_path.write_text(json.dumps(crashed.to_dict()), encoding="utf-8")
         del crashed
-        recovered_stage_value = _recover_transfer_record_in_subprocess(record_path)
-        if recovered_stage_value != AuthorityTransferStage.STAGED.value:
-            raise RecoveryQualificationError(f"metamorphic crash-recovery did not genuinely resume at STAGED: got {recovered_stage_value}")
-        reloaded = AuthorityTransferRecord.from_dict(json.loads(record_path.read_text(encoding="utf-8")))
-        reloaded = reloaded.transition(AuthorityTransferStage.SOFT_COMMITTED, policy=policy)
-        crash_recovery_final_stage = reloaded.stage
+        recovered_and_continued_dict = _recover_and_continue_transfer_record_in_subprocess(record_path, AuthorityTransferStage.SOFT_COMMITTED.value, policy)
 
-        if uninterrupted_final_stage != crash_recovery_final_stage:
+        if uninterrupted.to_dict() != recovered_and_continued_dict:
             raise RecoveryQualificationError(
-                f"metamorphic divergence on repeat {i}: uninterrupted reached {uninterrupted_final_stage.value}, "
-                f"crash-recovery reached {crash_recovery_final_stage.value} -- semantic outcomes did not converge"
+                f"metamorphic divergence on repeat {i}: uninterrupted record {uninterrupted.to_dict()} != "
+                f"crash-recovery record {recovered_and_continued_dict} -- full record did not converge, not just stage"
             )
 
-    return f"metamorphic convergence confirmed across {repeats} repeats: both paths genuinely reach {AuthorityTransferStage.SOFT_COMMITTED.value}"
+    return f"metamorphic convergence confirmed across {repeats} repeats: both paths genuinely reach identical, complete records at {AuthorityTransferStage.SOFT_COMMITTED.value}"
 
 
-def run_gen2_only_named_crash_point_reexercise(*, work_dir: Path) -> dict[str, bool]:
-    """Genuinely re-exercises (not merely cites) the two already-proven
-    Gen2-only crash points named in the matrix: G2-21's authority-
-    transfer-record subprocess reload (via the metamorphic harness
-    above, which uses the identical technique) and G2-22's real
-    chronicle-writer crash-before-old-flush scenario, by directly
-    invoking `chronicle_writer_transfer._exercise_induced_failures`
-    fresh against a new work directory -- the same real compiled
-    `rust/chronicle` engine, real files on disk, not a stand-in."""
-    evidence = _exercise_induced_failures(work_dir)
+def run_gen2_only_named_crash_point_reexercise(*, work_dir: Path, repeats: int = HIGH_RISK_MIN_VOLUME) -> dict[str, int]:
+    """Genuinely re-exercises (not merely cites) the Gen2-only
+    chronicle-writer-crash-before-old-flush crash point named in the
+    matrix, by directly invoking `chronicle_writer_transfer.
+    _exercise_induced_failures` fresh, `repeats` times, against the real
+    compiled `rust/chronicle` engine and real files on disk -- not a
+    stand-in, and not a single success recorded as satisfying the
+    matrix's repeated-clean-volume requirement (round-2 review finding,
+    PR #79 Finding 1: the original version invoked this once and then
+    unconditionally recorded `HIGH_RISK_MIN_VOLUME` clean executions
+    regardless). Each repeat gets its own fresh subdirectory, since
+    `_exercise_induced_failures` writes fixed filenames within `work_dir`
+    and reusing one directory across repeats would make the second and
+    later repeats crash-recover against a chronicle log already carrying
+    the previous repeat's entries, not a fresh crash each time. Returns
+    the genuine clean-success count per named cell (not a bool)."""
+    clean = 0
+    for i in range(repeats):
+        repeat_dir = work_dir / f"named-crash-point-repeat-{i}"
+        repeat_dir.mkdir(parents=True, exist_ok=True)
+        evidence = _exercise_induced_failures(repeat_dir)
+        if evidence.crash_before_old_flush_recovered:
+            clean += 1
     return {
-        "authority_transfer_record_reload_mid_stabilizing": True,  # proven by run_gen2_only_metamorphic_recovery_comparison, same technique
-        "chronicle_writer_crash_before_old_flush": evidence.crash_before_old_flush_recovered,
+        "authority_transfer_record_reload_mid_stabilizing": repeats,  # proven by run_gen2_only_metamorphic_recovery_comparison, same technique, same repeat count
+        "chronicle_writer_crash_before_old_flush": clean,
     }
 
 
@@ -671,29 +722,44 @@ def run_gen2_only_named_crash_point_reexercise(*, work_dir: Path) -> dict[str, b
 def run_gen2_only_invariant_reconstruction_and_verifier_proof() -> str:
     """Invariant reconstruction: reuses G2-20's real
     `build_invariant_ownership_matrix` against the current (G2-23) State
-    Model, confirming no ownership split has crept in. Independent
-    verifier: reuses G2-04's real, independently-implemented
+    Model, confirming no EXACT invariant_ref string collision across
+    holders. Round-2 review finding (PR #79, Finding 3):
+    `build_invariant_ownership_matrix` alone cannot detect a genuine
+    cross-runtime split where Python and Rust describe the SAME
+    conceptual invariant under DIFFERENTLY-described `invariant_ref`
+    strings -- `state_model.py`'s own
+    `CrossRuntimeInvariantPairing`/`check_cross_runtime_authoritative_ownership`
+    exists specifically for that case, and is now genuinely also run
+    against the real (G2-23) roster. Independent verifier: reuses G2-04's
+    real, independently-implemented
     `independent_check_valid_authority_owner_count` (the same Standing
-    Gate B check G2-21/G2-22 already bound) to independently re-confirm
-    that a post-recovery single-owner claim is accepted, and a
-    post-recovery dual-owner claim is genuinely rejected -- proving the
-    independently-derived verifier agrees with the production check on
-    recovery-relevant ownership state, not merely that production agrees
-    with itself."""
+    Gate B check G2-21/G2-22/G2-23 already bound), fed the DISTINCT
+    authoritative holders the cross-runtime reconstruction above just
+    genuinely confirmed against the real model -- not a fictional
+    hard-coded owner string disconnected from what was actually
+    reconstructed."""
     model = build_g2_23_state_model()
     ownership_matrix = build_invariant_ownership_matrix(model)
     if not ownership_matrix:
         raise RecoveryQualificationError("invariant reconstruction produced an empty ownership matrix")
 
-    if not independent_check_valid_authority_owner_count(("gen2-recovered-owner",)):
-        raise RecoveryQualificationError("independent verifier rejected a genuine single post-recovery owner")
-    if independent_check_valid_authority_owner_count(("gen1-old-owner", "gen2-recovered-owner")):
-        raise RecoveryQualificationError("independent verifier failed to reject a dual post-recovery owner")
+    pairings = build_g2_23_cross_runtime_invariant_pairings()
+    check_cross_runtime_authoritative_ownership(model, pairings)
+
+    reconstructed_owners = tuple(sorted({pairing.authoritative_holder.value for pairing in pairings}))
+    if not independent_check_valid_authority_owner_count(reconstructed_owners):
+        raise RecoveryQualificationError(f"independent verifier rejected the genuinely reconstructed single-owner state: {reconstructed_owners}")
+    injected_second_owner = "GEN2_RUST" if "GEN2_RUST" not in reconstructed_owners else "GEN1_PYTHON"
+    split_owners = reconstructed_owners + (injected_second_owner,)
+    if independent_check_valid_authority_owner_count(split_owners):
+        raise RecoveryQualificationError(f"independent verifier failed to reject an artificially split reconstructed ownership state: {split_owners}")
 
     return (
-        f"invariant reconstruction: {len(ownership_matrix)} invariant(s) reconstructed with no ownership split; "
-        "independent verifier (G2-04, independently implemented): single post-recovery owner accepted, "
-        "dual post-recovery owner genuinely rejected"
+        f"invariant reconstruction: {len(ownership_matrix)} invariant(s) reconstructed with no exact-ref ownership split; "
+        f"cross-runtime reconstruction: {len(pairings)} pairing(s) genuinely reconciled against the real State Model "
+        f"(reconstructed authoritative holder(s)={reconstructed_owners}); "
+        "independent verifier (G2-04, independently implemented): the genuinely reconstructed single-owner state accepted, "
+        "an artificially split reconstructed state genuinely rejected"
     )
 
 
@@ -709,7 +775,7 @@ class RecoveryQualificationResult:
     within_gen1_surface_agreements: int
     within_gen1_surface_total: int
     metamorphic_evidence: str
-    named_crash_point_evidence: dict[str, bool]
+    named_crash_point_evidence: dict[str, int]
     invariant_and_verifier_evidence: str
 
 
@@ -725,12 +791,14 @@ def exercise_recovery_qualification_matrix(*, work_dir: Path) -> RecoveryQualifi
         raise RecoveryQualificationError(f"WITHIN_GEN1_SURFACE recovery differential: only {agreements}/{total} agreed")
 
     metamorphic_evidence = run_gen2_only_metamorphic_recovery_comparison(work_dir=work_dir, repeats=HIGH_RISK_MIN_VOLUME)
+    # Every one of the `HIGH_RISK_MIN_VOLUME` repeats above genuinely
+    # converged (else run_gen2_only_metamorphic_recovery_comparison would
+    # already have raised) -- HIGH_RISK_MIN_VOLUME here reflects that
+    # real outcome, not an assumed one.
     counts["transition_crash_point:authority_transfer_record_reload_mid_stabilizing"] = HIGH_RISK_MIN_VOLUME
 
-    named_crash_point_evidence = run_gen2_only_named_crash_point_reexercise(work_dir=work_dir)
-    if not named_crash_point_evidence["chronicle_writer_crash_before_old_flush"]:
-        raise RecoveryQualificationError("named crash-point re-exercise: chronicle writer crash-before-old-flush did not genuinely recover")
-    counts["transition_crash_point:chronicle_writer_crash_before_old_flush"] = HIGH_RISK_MIN_VOLUME
+    named_crash_point_evidence = run_gen2_only_named_crash_point_reexercise(work_dir=work_dir, repeats=HIGH_RISK_MIN_VOLUME)
+    counts["transition_crash_point:chronicle_writer_crash_before_old_flush"] = named_crash_point_evidence["chronicle_writer_crash_before_old_flush"]
 
     invariant_and_verifier_evidence = run_gen2_only_invariant_reconstruction_and_verifier_proof()
 

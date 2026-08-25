@@ -94,3 +94,27 @@ def rust_check_council_pin(record: dict) -> None:
     Rust re-derivation, never a caller-supplied claim trusted at face
     value."""
     _run("check-council-pin", input_text=json.dumps(record))
+
+
+def rust_check_recovery_qualification_coverage(
+    required_cell_ids: list[str], high_risk_cell_ids: list[str], exercised_cell_counts: dict[str, int], high_risk_min_volume: int
+) -> None:
+    """G2-24 Recovery Qualification Matrix (round-2 review, PR #79
+    Finding 4 fix): admits `"recovery_qualification_matrix"` and
+    genuinely, independently re-derives
+    `RecoveryQualificationMatrix.check_coverage`'s own exact-set-
+    membership plus high-risk repeated-volume logic in Rust -- the
+    production path must actually pass through this before a
+    qualification result is accepted as complete, not merely have a row
+    present in the Trust Table."""
+    _run(
+        "check-recovery-coverage",
+        input_text=json.dumps(
+            {
+                "required_cell_ids": required_cell_ids,
+                "high_risk_cell_ids": high_risk_cell_ids,
+                "exercised_cell_counts": exercised_cell_counts,
+                "high_risk_min_volume": high_risk_min_volume,
+            }
+        ),
+    )

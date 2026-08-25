@@ -135,6 +135,20 @@ def test_g2_24_check_coverage_high_volume_on_easy_cells_does_not_substitute_for_
         matrix.check_coverage({"easy-1": 999, "easy-2": 999, "risky-1": 1})
 
 
+def test_g2_24_check_coverage_genuinely_routes_through_the_independent_rust_re_derivation() -> None:
+    """Round-2 review finding (PR #79, Finding 4): the
+    'recovery_qualification_matrix' Trust Table row was marked
+    fixture_qualified=true while nothing in the production path ever
+    presented a coverage claim to Rust for independent re-checking.
+    check_coverage now genuinely calls rust_check_recovery_qualification_coverage
+    first -- confirmed here by the error message's own disclosure text,
+    which only a real Rust round-trip (not the local Python check alone)
+    would produce."""
+    matrix = _tiny_matrix()
+    with pytest.raises(RecoveryQualificationError, match="independently re-derived by Rust"):
+        matrix.check_coverage({"easy-1": 1000, "easy-2": 1000})
+
+
 # ============================================================================
 # Proof 1 (WITHIN_GEN1_SURFACE): genuine Gen1-vs-Gen2-shadow recovery
 # differential.
@@ -173,9 +187,25 @@ def test_g2_24_metamorphic_recovery_comparison_converges(tmp_path) -> None:
 
 
 def test_g2_24_named_crash_point_reexercise_confirms_both_named_cells(tmp_path) -> None:
-    evidence = run_gen2_only_named_crash_point_reexercise(work_dir=tmp_path)
-    assert evidence["authority_transfer_record_reload_mid_stabilizing"] is True
-    assert evidence["chronicle_writer_crash_before_old_flush"] is True
+    evidence = run_gen2_only_named_crash_point_reexercise(work_dir=tmp_path, repeats=2)
+    assert evidence["authority_transfer_record_reload_mid_stabilizing"] == 2
+    assert evidence["chronicle_writer_crash_before_old_flush"] == 2
+
+
+def test_g2_24_named_crash_point_reexercise_genuinely_repeats_not_just_records_a_single_success(tmp_path) -> None:
+    """Round-2 review finding (PR #79, Finding 1): the original version
+    invoked the crash scenario once and then unconditionally recorded
+    HIGH_RISK_MIN_VOLUME clean executions regardless. Each repeat must
+    use its own fresh subdirectory (a shared one would make the second
+    repeat crash-recover against an already-populated chronicle log, not
+    a fresh crash) -- confirmed here by checking each repeat's own
+    subdirectory was genuinely created and populated."""
+    evidence = run_gen2_only_named_crash_point_reexercise(work_dir=tmp_path, repeats=3)
+    assert evidence["chronicle_writer_crash_before_old_flush"] == 3
+    repeat_dirs = sorted(p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith("named-crash-point-repeat-"))
+    assert len(repeat_dirs) == 3
+    for repeat_dir in repeat_dirs:
+        assert any(repeat_dir.iterdir())
 
 
 # ============================================================================
