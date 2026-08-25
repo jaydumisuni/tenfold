@@ -14,8 +14,8 @@ chromium_executable=/ms-playwright/chromium-1200/chrome-linux64/chrome
 chromium_sha256=2e61bc3fd990bd4d7b419ef6b6303c67aaed683e5b83b3b25e416f015f343209
 chromium_version=Google Chrome for Testing 143.0.7499.4 
 sergeant_sha=4a277cc5950aa08a98157b950c96fb88f2178c79
-candidate_sha=8cfba2e2dd2724dc2a11e9618d72d1637d8d5a76
-candidate_content_digest=a621f40770ed7b106a20a33b641cdeea4637bf10984912099da255faf278e08c
+candidate_sha=b77d4985e70e3a5e160e52c42be7fec3b369127b
+candidate_content_digest=78d4570c2c828c322963f4c054c858bc71870703a954cbb8cdb1281fe03869c3
 61ae355d36ca5cd311c99ceb09504ac93954240e3b8ff9ccccbf3b8e8a252b73  candidate/docs/gen2/g2-01-pip-freeze.txt
 e3d4192b8a3c2ec5dadfd69baff473fb740df45d9f43e1a796d730449cf5ba04  candidate/docs/gen2/g2-01-reference-corpus.sha256
 fb3338f1453d3c1b4797fdfeed7ecef4e7c4a6cd385d434bffac0b4ecadc0bc3  candidate/docs/gen2/g2-01-semantic-corpus.sha256
@@ -23,4 +23,4 @@ fb3338f1453d3c1b4797fdfeed7ecef4e7c4a6cd385d434bffac0b4ecadc0bc3  candidate/docs
 ........................................................................ [ 45%]
 ........................................................................ [ 91%]
 ..............                                                           [100%]
-158 passed in 4.91s
+158 passed in 5.24s
