@@ -1,0 +1,13 @@
+{
+  "assurance_artifact_sha256": "be2fa7e4edd60797bda1ab8bdfa8dc4ebb00cadabaae86ffe6c007f75e09a96d",
+  "contracts_artifact_sha256": "fc77efed919b13c19a039f1ead40c06cebbc06bba12ce40bbc60b18ea9052537",
+  "council_artifact_sha256": "acc68bc102684a13919be9cb89164b72efaa4f8eabb33ca79bb6a435bd818562",
+  "interface_signature_digest": "cf521780885eaf6a208e870c0a699b70a209a7ff2f07b65d24ea2438591d7db1",
+  "officers_artifact_sha256": "dd299b9906243af1ae486e7501b9cda1baeccdcda21a9ac49f925d55580929f5",
+  "pin_generation": 1,
+  "platform_string": "Windows-10-10.0.26200-SP0",
+  "policy_digest": "70899befe966894f58c633b4f1a341e695ef0f4fdd7b27ea07357dd8e50721e4",
+  "python_build": "tags/v3.10.11:7d4cc5a Apr  5 2023 00:38:17",
+  "python_implementation": "CPython",
+  "python_version": "3.10.11"
+}

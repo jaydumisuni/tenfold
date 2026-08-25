@@ -240,7 +240,7 @@ from .effect_census_bridge import (
 )
 from .effect_transfer import build_effect_census_transfer_policy
 from .proof_transfer import build_proof_graph_transfer_policy
-from .council_pin import CouncilPinError, build_council_pin_record, invoke_pinned_council
+from .council_pin import CouncilPinError, build_council_pin_record, invoke_pinned_council, load_frozen_council_pin
 from .bootstrap_protocol import (
     BootstrapProtocolError,
     EvidencePacketV1,
@@ -2134,12 +2134,14 @@ def _g2_23_council_pin_drift_kill_check() -> None:
     # verbatim: "invocation attempted against a drifted/stale pinned
     # record" -- a tampered record (source digest no longer matching the
     # real installed council.py) must be genuinely rejected before
-    # Council is ever invoked.
+    # Council is ever invoked. Compares against the genuine,
+    # independently-retained frozen pin (docs/gen2/g2-23-council-pin.json),
+    # not a freshly self-minted one (round-2 review, PR #78 Finding 3).
     import dataclasses
 
-    pin = build_council_pin_record()
+    pin = load_frozen_council_pin()
     drifted = dataclasses.replace(pin, council_artifact_sha256="deadbeef" * 8)
-    invoke_pinned_council(drifted, "mut-g23-council-drift", [], authority_generation=1)
+    invoke_pinned_council(drifted, "mut-g23-council-drift", [], authority_generation=drifted.pin_generation)
 
 
 def build_initial_mutation_suite() -> MutationSuite:

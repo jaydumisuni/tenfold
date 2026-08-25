@@ -22,10 +22,17 @@
 //!   family with no dedicated Rust re-derivation crate of its own (e.g.
 //!   `"council_pin"`) can still be genuinely, mechanically admitted
 //!   rather than trusted on the Python side alone.
+//! - `check-council-pin` (G2-23 Council-pinning deliverable) -- reads a
+//!   `CouncilPinRecord` JSON from stdin, admits `"council_pin"`,
+//!   validates structural well-formedness, and genuinely re-reads/
+//!   re-hashes the real installed `tenfold.council`/`tenfold.officers`/
+//!   `tenfold.contracts`/`tenfold.assurance` source files from disk,
+//!   comparing against the record's declared digests; prints
+//!   ACCEPT/REJECT.
 
 use identity_generation::{
-    admit_check_authority_transfer_transition, admit_transition, authority_transfer_trust_table_row, check_valid_authority_owner_count, trust_table_row, AuthorityTransferRecord,
-    AuthorityTransferStabilizationPolicy, AuthorityTransferStage,
+    admit_check_authority_transfer_transition, admit_check_council_pin, admit_transition, authority_transfer_trust_table_row, check_valid_authority_owner_count, trust_table_row,
+    AuthorityTransferRecord, AuthorityTransferStabilizationPolicy, AuthorityTransferStage, CouncilPinRecord,
 };
 use serde::Deserialize;
 use std::io::Read;
@@ -143,6 +150,26 @@ fn main() -> ExitCode {
             };
             match admitted_table().admit(artifact_identity) {
                 Ok(_) => {
+                    println!("ACCEPT");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    println!("REJECT: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        "check-council-pin" => {
+            let buf = match read_stdin() {
+                Ok(b) => b,
+                Err(code) => return code,
+            };
+            let record: CouncilPinRecord = match serde_json::from_str(&buf) {
+                Ok(v) => v,
+                Err(e) => return usage_error(&e.to_string()),
+            };
+            match admit_check_council_pin(&admitted_table(), &record) {
+                Ok(()) => {
                     println!("ACCEPT");
                     ExitCode::SUCCESS
                 }

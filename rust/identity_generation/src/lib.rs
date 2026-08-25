@@ -709,6 +709,101 @@ pub fn admit_transition_for(
     record.transition(new_stage, policy)
 }
 
+// ============================================================================
+// G2-23 Council-pinning deliverable: "exact Council artifact SHA/digest".
+// Round-2 review finding (PR #78, Finding 2): the original CLI admitted
+// "council_pin" solely by artifact_identity string, never receiving or
+// checking the record's own declared fields -- every substantive check
+// lived in the Python producer, contradicting the Trust Table row's own
+// `independently_checks` claims. `verify_artifact_digests` genuinely
+// re-reads and re-hashes the real installed Python source files from
+// disk (relative to this crate's own `CARGO_MANIFEST_DIR`, hence the
+// repo root -- reliable because this workspace always builds and runs
+// on the same checkout) and compares against the caller's declared
+// digests -- a real, independent Rust re-derivation, never a
+// caller-supplied claim trusted at face value.
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CouncilPinRecord {
+    pub pin_generation: u64,
+    pub council_artifact_sha256: String,
+    pub officers_artifact_sha256: String,
+    pub contracts_artifact_sha256: String,
+    pub assurance_artifact_sha256: String,
+    pub python_implementation: String,
+    pub python_version: String,
+    pub python_build: String,
+    pub platform_string: String,
+    pub interface_signature_digest: String,
+    pub policy_digest: String,
+}
+
+fn repo_root() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+fn hash_file_at(relative_path: &str) -> Result<String, IdentityGenerationError> {
+    use sha2::{Digest, Sha256};
+    let path = repo_root().join(relative_path);
+    let bytes = std::fs::read(&path).map_err(|e| IdentityGenerationError::Semantic(format!("council_pin: could not read {}: {}", path.display(), e)))?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+impl CouncilPinRecord {
+    /// Structural well-formedness only -- does not touch live state.
+    pub fn validate(&self) -> Result<(), IdentityGenerationError> {
+        if self.pin_generation == 0 {
+            return Err(IdentityGenerationError::Semantic("CouncilPinRecord: pin_generation must be a positive integer".into()));
+        }
+        for (label, value) in [
+            ("council_artifact_sha256", &self.council_artifact_sha256),
+            ("officers_artifact_sha256", &self.officers_artifact_sha256),
+            ("contracts_artifact_sha256", &self.contracts_artifact_sha256),
+            ("assurance_artifact_sha256", &self.assurance_artifact_sha256),
+        ] {
+            if value.len() != 64 || !value.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(IdentityGenerationError::Semantic(format!("CouncilPinRecord: {label} must be a 64-character hex SHA-256 digest")));
+            }
+        }
+        if self.python_implementation.trim().is_empty() || self.python_version.trim().is_empty() {
+            return Err(IdentityGenerationError::Semantic("CouncilPinRecord: python_implementation/python_version must be non-empty".into()));
+        }
+        if self.interface_signature_digest.trim().is_empty() || self.policy_digest.trim().is_empty() {
+            return Err(IdentityGenerationError::Semantic("CouncilPinRecord: interface_signature_digest/policy_digest must be non-empty".into()));
+        }
+        Ok(())
+    }
+
+    /// Genuinely re-reads and re-hashes the real installed source files
+    /// from disk and compares against the declared digests.
+    pub fn verify_artifact_digests(&self) -> Result<(), IdentityGenerationError> {
+        let checks: [(&str, &str, &str); 4] = [
+            ("src/tenfold/council.py", &self.council_artifact_sha256, "council_artifact_sha256"),
+            ("src/tenfold/officers.py", &self.officers_artifact_sha256, "officers_artifact_sha256"),
+            ("src/tenfold/contracts.py", &self.contracts_artifact_sha256, "contracts_artifact_sha256"),
+            ("src/tenfold/assurance.py", &self.assurance_artifact_sha256, "assurance_artifact_sha256"),
+        ];
+        for (relative_path, declared, label) in checks {
+            let live = hash_file_at(relative_path)?;
+            if live != declared {
+                return Err(IdentityGenerationError::Semantic(format!(
+                    "CouncilPinRecord DRIFT (independently re-derived by Rust): {label} declared {declared} but the real file at {relative_path} hashes to {live}"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+pub fn admit_check_council_pin(table: &trust_table::TrustTable, record: &CouncilPinRecord) -> Result<(), IdentityGenerationError> {
+    table.admit("council_pin").map_err(|e| IdentityGenerationError::Semantic(e.to_string()))?;
+    record.validate()?;
+    record.verify_artifact_digests()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1257,5 +1352,64 @@ mod tests {
         let record = AuthorityTransferRecord { stabilization_evidence: full_evidence(), ..stabilizing_record() };
         let result = admit_transition_for(&table, "authority_transfer", "some-other-from", "some-other-to", &record, AuthorityTransferStage::STABILIZATION_PROVEN, &full_policy());
         assert!(result.is_err());
+    }
+
+    // ---- G2-23 Council-pinning deliverable ----
+
+    fn genuine_council_pin_record() -> CouncilPinRecord {
+        CouncilPinRecord {
+            pin_generation: 1,
+            council_artifact_sha256: hash_file_at("src/tenfold/council.py").unwrap(),
+            officers_artifact_sha256: hash_file_at("src/tenfold/officers.py").unwrap(),
+            contracts_artifact_sha256: hash_file_at("src/tenfold/contracts.py").unwrap(),
+            assurance_artifact_sha256: hash_file_at("src/tenfold/assurance.py").unwrap(),
+            python_implementation: "CPython".into(),
+            python_version: "3.10.11".into(),
+            python_build: "main".into(),
+            platform_string: "test-platform".into(),
+            interface_signature_digest: "d".repeat(64),
+            policy_digest: "e".repeat(64),
+        }
+    }
+
+    #[test]
+    fn admit_check_council_pin_fails_closed_when_table_has_no_row() {
+        let table = trust_table::TrustTable::new();
+        assert!(admit_check_council_pin(&table, &genuine_council_pin_record()).is_err());
+    }
+
+    #[test]
+    fn admit_check_council_pin_succeeds_against_the_real_installed_source_files() {
+        let table = trust_table::initial_trust_table();
+        admit_check_council_pin(&table, &genuine_council_pin_record()).expect("the real installed source files should genuinely match their own freshly-computed digests");
+    }
+
+    #[test]
+    fn admit_check_council_pin_rejects_a_declared_digest_that_does_not_match_the_real_file() {
+        let table = trust_table::initial_trust_table();
+        let record = CouncilPinRecord { council_artifact_sha256: "f".repeat(64), ..genuine_council_pin_record() };
+        let result = admit_check_council_pin(&table, &record);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("independently re-derived by Rust"), "error should disclose this was independently re-derived: {err}");
+    }
+
+    #[test]
+    fn admit_check_council_pin_rejects_a_zero_pin_generation() {
+        let table = trust_table::initial_trust_table();
+        let record = CouncilPinRecord { pin_generation: 0, ..genuine_council_pin_record() };
+        assert!(admit_check_council_pin(&table, &record).is_err());
+    }
+
+    #[test]
+    fn admit_check_council_pin_rejects_a_malformed_digest() {
+        let table = trust_table::initial_trust_table();
+        let record = CouncilPinRecord { council_artifact_sha256: "not-a-real-digest".into(), ..genuine_council_pin_record() };
+        assert!(admit_check_council_pin(&table, &record).is_err());
+    }
+
+    #[test]
+    fn council_pin_row_is_well_formed() {
+        assert!(trust_table::initial_trust_table().rows().find(|r| r.artifact_identity == "council_pin").expect("council_pin row should exist").is_well_formed());
     }
 }
