@@ -39,14 +39,27 @@
 //! - `check-recovery-takeover` (G2-25 Bounded Real Gen2 Recovery/
 //!   Takeover) -- reads a `RecoveryTakeoverVerificationClaim` JSON from
 //!   stdin, admits `"recovery_takeover"`, and independently re-derives
-//!   epoch monotonicity plus the three post-takeover invariants
-//!   (old leases fenced, stale dispatch rejected, exactly one
-//!   post-takeover owner); prints ACCEPT/REJECT.
+//!   epoch monotonicity plus the three post-takeover invariants from
+//!   raw lease facts (old leases fenced, exactly one post-takeover
+//!   owner) plus the caller-observed stale-dispatch-rejection fact;
+//!   prints ACCEPT/REJECT.
+//! - `transition-recovery-takeover-record` (G2-25 Bounded Real Gen2
+//!   Recovery/Takeover, round-2 review finding, PR #80 Finding 1) --
+//!   reads `{"record": AuthorityTransferRecord, "new_stage":
+//!   AuthorityTransferStage, "policy": AuthorityTransferStabilizationPolicy}`
+//!   from stdin; admits `"recovery_takeover"` and binds the record's
+//!   own `from_authority_ref`/`to_authority_ref` to the hardcoded
+//!   `"gen1-recovery"`/`"gen2-recovery"` slice refs via
+//!   `admit_transition_for` (never a caller-suppliable value) before
+//!   transitioning; prints the new record JSON on success. Every
+//!   production stage transition of G2-25's own recovery-takeover
+//!   authority-transfer record routes through this, not the bare Python
+//!   dataclass `.transition()` method.
 
 use identity_generation::{
     admit_check_authority_transfer_transition, admit_check_council_pin, admit_check_recovery_qualification_coverage, admit_check_recovery_takeover_verification, admit_transition,
-    authority_transfer_trust_table_row, check_valid_authority_owner_count, trust_table_row, AuthorityTransferRecord, AuthorityTransferStabilizationPolicy, AuthorityTransferStage,
-    CouncilPinRecord, RecoveryQualificationCoverageClaim, RecoveryTakeoverVerificationClaim,
+    admit_transition_for, authority_transfer_trust_table_row, check_valid_authority_owner_count, trust_table_row, AuthorityTransferRecord, AuthorityTransferStabilizationPolicy,
+    AuthorityTransferStage, CouncilPinRecord, RecoveryQualificationCoverageClaim, RecoveryTakeoverVerificationClaim,
 };
 use serde::Deserialize;
 use std::io::Read;
@@ -225,6 +238,26 @@ fn main() -> ExitCode {
             match admit_check_recovery_takeover_verification(&admitted_table(), &claim) {
                 Ok(()) => {
                     println!("ACCEPT");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    println!("REJECT: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        "transition-recovery-takeover-record" => {
+            let buf = match read_stdin() {
+                Ok(b) => b,
+                Err(code) => return code,
+            };
+            let request: TransitionRecordRequest = match serde_json::from_str(&buf) {
+                Ok(v) => v,
+                Err(e) => return usage_error(&e.to_string()),
+            };
+            match admit_transition_for(&admitted_table(), "recovery_takeover", "gen1-recovery", "gen2-recovery", &request.record, request.new_stage, &request.policy) {
+                Ok(new_record) => {
+                    println!("{}", serde_json::to_string(&new_record).expect("AuthorityTransferRecord serializes"));
                     ExitCode::SUCCESS
                 }
                 Err(e) => {

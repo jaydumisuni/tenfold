@@ -1377,6 +1377,45 @@ def build_g2_25_state_model() -> StateModel:
 
 
 # ============================================================================
+# G2-25 failure-space dimensions for recovery_takeover_verification_state
+# (round-2 review finding, PR #80 Finding 5: the original extension
+# registered only the field/owner, with no invariant-ownership mapping,
+# failure-space dimensions, or interaction-coverage run). Real runtime
+# outcome dimensions -- each value genuinely exercised, both by
+# rust/identity_generation's own unit tests (check_recovery_takeover_
+# verification_rejects_a_non_advancing_epoch, ..._independently_
+# recomputes_fencing_and_rejects_a_still_active_pre_lease, ...
+# _independently_recomputes_owner_count_and_rejects_a_dual_owner, ...
+# _rejects_a_falsely_claimed_stale_dispatch_rejection) AND by a genuine
+# Python-side one-wise interaction-coverage run
+# (tests/gen2/test_g2_25_recovery_takeover.py) that calls the real
+# rust_check_recovery_takeover_verification bridge directly for each
+# generated scenario, not merely asserted.
+# ============================================================================
+
+
+def g2_25_recovery_takeover_failure_dimensions() -> tuple[FailureSpaceDimension, ...]:
+    return (
+        FailureSpaceDimension("epoch_relationship", ("ADVANCING", "NON_ADVANCING")),
+        FailureSpaceDimension("lease_fencing_outcome", ("ALL_FENCED", "NOT_ALL_FENCED")),
+        FailureSpaceDimension("post_takeover_owner_count", ("EXACTLY_ONE", "NOT_ONE")),
+        FailureSpaceDimension("stale_dispatch_outcome", ("REJECTED", "NOT_REJECTED")),
+    )
+
+
+def check_g2_25_recovery_takeover_interaction_coverage(exercised_one_wise_values: frozenset[tuple[str, str]]) -> None:
+    """Every value of every dimension above must be genuinely exercised
+    -- G2-00 SS14.1's Incremental State Model / Failure-Space Gate,
+    applied to this milestone's own new state, matching the 1-wise
+    coverage class every prior milestone from G2-09 onward has used."""
+    dims = g2_25_recovery_takeover_failure_dimensions()
+    required = {(dim.dimension_id, value) for dim in dims for value in dim.values}
+    missing = required - exercised_one_wise_values
+    if missing:
+        raise StateModelError(f"G2-25 recovery-takeover interaction coverage failure: missing value(s) {sorted(missing)}")
+
+
+# ============================================================================
 # G2-23 cross-runtime authoritative ownership update: closes a genuine,
 # pre-existing coverage gap G2-20's own roster left disclosed --
 # `dispatch_mutation_admission` (Python) and `dispatch_rust_mutation_

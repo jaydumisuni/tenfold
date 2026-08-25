@@ -121,23 +121,44 @@ def rust_check_recovery_qualification_coverage(
 
 
 def rust_check_recovery_takeover_verification(
-    *, old_epoch: int, new_epoch: int, old_leases_all_fenced: bool, stale_dispatch_rejected: bool, new_owner_count_exactly_one: bool
+    *,
+    old_epoch: int,
+    new_epoch: int,
+    pre_takeover_lease_ids: list[str],
+    post_takeover_leases: list[dict],
+    stale_dispatch_rejected: bool,
 ) -> None:
-    """G2-25 Bounded Real Gen2 Recovery/Takeover: admits
-    `"recovery_takeover"` and genuinely, independently re-derives epoch
-    monotonicity plus the three post-takeover invariants in Rust --
-    applied proactively at construction time, matching the discipline
-    G2-24's own round-2 review established (Finding 4) for the sibling
-    `recovery_qualification_matrix` artifact."""
+    """G2-25 Bounded Real Gen2 Recovery/Takeover (round-2 review, PR #80
+    Finding 2 fix): admits `"recovery_takeover"` and genuinely,
+    independently re-derives epoch monotonicity plus lease-fencing and
+    post-takeover ownership-count in Rust FROM RAW LEASE FACTS
+    (`post_takeover_leases`: `[{"lease_id", "owner_lane", "active"}, ...]`)
+    -- not from Python-precomputed booleans Rust would merely check were
+    `true`. `stale_dispatch_rejected` remains a caller-observed fact
+    (Gen1's `AuthorizedReplayLedger` replay semantics have no
+    independent Rust re-derivation), honestly disclosed on the Trust
+    Table row rather than fabricated."""
     _run(
         "check-recovery-takeover",
         input_text=json.dumps(
             {
                 "old_epoch": old_epoch,
                 "new_epoch": new_epoch,
-                "old_leases_all_fenced": old_leases_all_fenced,
+                "pre_takeover_lease_ids": pre_takeover_lease_ids,
+                "post_takeover_leases": post_takeover_leases,
                 "stale_dispatch_rejected": stale_dispatch_rejected,
-                "new_owner_count_exactly_one": new_owner_count_exactly_one,
             }
         ),
     )
+
+
+def rust_transition_recovery_takeover_record(record: dict, new_stage: str, policy: dict) -> dict:
+    """G2-25 Bounded Real Gen2 Recovery/Takeover (round-2 review, PR #80
+    Finding 1 fix): admits `"recovery_takeover"` and binds the record's
+    own `from_authority_ref`/`to_authority_ref` to the hardcoded
+    `"gen1-recovery"`/`"gen2-recovery"` slice refs before transitioning
+    -- every production stage transition of G2-25's own recovery-
+    takeover authority-transfer record routes through this, not the
+    bare Python dataclass `.transition()` method."""
+    output = _run("transition-recovery-takeover-record", input_text=json.dumps({"record": record, "new_stage": new_stage, "policy": policy}))
+    return json.loads(output)

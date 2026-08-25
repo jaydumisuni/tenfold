@@ -382,31 +382,41 @@ pub fn initial_trust_table() -> TrustTable {
             // G2-25 Bounded Real Gen2 Recovery/Takeover
             // (`tenfold.gen2.recovery_takeover`): a real, disposable,
             // isolated `DurableCampaignStore`-backed campaign is
-            // dispatched, crashed (induced-failure soak), and genuinely
-            // taken over via Gen1's own already-qualified (TF-00)
-            // SQL-backed atomic fenced epoch-advance
-            // (`tenfold.recovery.takeover`, reused not re-derived, per
-            // G2-00 SS15's "no invariant split across Python/Rust").
-            // Rust cannot re-run that SQLite-backed fencing itself
-            // without duplicating Gen1's own qualified implementation --
-            // what it independently re-derives instead is the logical
-            // post-takeover verification claim itself
+            // dispatched, crashed (subprocess-crossed induced-failure
+            // soak), and genuinely taken over via Gen1's own
+            // already-qualified (TF-00) SQL-backed atomic fenced
+            // epoch-advance (`tenfold.recovery.takeover`, reused not
+            // re-derived, per G2-00 SS15's "no invariant split across
+            // Python/Rust"), inside a real staged
+            // `AuthorityTransferRecord` lifecycle (PREPARED -> STAGED ->
+            // SOFT_COMMITTED -> STABILIZING -> STABILIZATION_PROVEN ->
+            // IRREVERSIBLY_COMMITTED, the from_authority_ref/
+            // to_authority_ref hardcoded to "gen1-recovery"/
+            // "gen2-recovery" and bound by `admit_transition_for` --
+            // round-2 review finding, PR #80 Finding 1: the original
+            // version called `takeover()` directly with no staged
+            // lifecycle at all). Rust cannot re-run the SQLite-backed
+            // fencing itself without duplicating Gen1's own qualified
+            // implementation; what it independently re-derives instead
+            // is (a) every production stage transition of the record
+            // itself, and (b) the post-takeover verification claim
             // (`check_recovery_takeover_verification`/
-            // `admit_check_recovery_takeover_verification`,
-            // `rust/identity_generation`): a genuine takeover must
-            // strictly advance the epoch, and every one of the three
-            // independently-observed invariants (old leases fenced,
-            // stale dispatch rejected, exactly one post-takeover owner)
-            // must be true, applied proactively at construction time
-            // rather than waiting for a review finding to add it.
+            // `admit_check_recovery_takeover_verification`) -- round-2
+            // review finding, PR #80 Finding 2: the original claim
+            // carried Python-precomputed booleans Rust merely checked
+            // were `true`; it now receives the RAW pre/post lease facts
+            // and genuinely recomputes lease-fencing and post-takeover
+            // owner-count itself from that raw data.
             independently_checks: vec![
+                "every production AuthorityTransferRecord stage transition, via admit_transition_for bound to the hardcoded gen1-recovery/gen2-recovery slice refs".into(),
                 "epoch monotonicity: new_epoch strictly greater than old_epoch".into(),
-                "all three claimed post-takeover invariants (old_leases_all_fenced, stale_dispatch_rejected, new_owner_count_exactly_one) are genuinely true, not merely present".into(),
+                "lease fencing: every pre-takeover lease id is genuinely inactive post-takeover, recomputed from raw lease facts, not a caller-supplied boolean".into(),
+                "post-takeover ownership: exactly one distinct active owner lane, recomputed from raw lease facts".into(),
             ],
-            trusts_only: "that the caller-supplied verification claim genuinely reflects the real, independently-observed post-takeover durable state (fresh store reads, real replay-ledger rejection, real re-acquired lease ownership) -- Rust re-derives the claim's own logical consistency, but cannot itself re-read Gen1's SQLite-backed durable store".into(),
-            trust_bounded_reason: "the underlying atomic fenced epoch-advance is Gen1's own already-qualified (TF-00) SQL implementation, reused per G2-00 SS15's 'no invariant split across Python/Rust' rather than re-derived a second time in Rust; Rust's independent value here is the logical claim re-derivation, not a second fencing implementation".into(),
+            trusts_only: "that the caller-supplied raw lease facts and stale_dispatch_rejected observation genuinely reflect the real post-takeover durable state (fresh store reads, real replay-ledger rejection) -- Rust re-derives fencing and ownership-count directly from the raw facts, but cannot itself re-read Gen1's SQLite-backed durable store or re-derive replay-ledger semantics".into(),
+            trust_bounded_reason: "the underlying atomic fenced epoch-advance is Gen1's own already-qualified (TF-00) SQL implementation, reused per G2-00 SS15's 'no invariant split across Python/Rust' rather than re-derived a second time in Rust; Gen1's AuthorizedReplayLedger/ReplayConflict semantics have no independent Rust re-derivation either, honestly disclosed rather than duplicated".into(),
             authority_generation: 1,
-            required_negative_fixture: "verification claim attempted with a non-advancing epoch or a falsely-claimed-true post-takeover invariant".into(),
+            required_negative_fixture: "verification claim attempted with a non-advancing epoch, a still-active or missing pre-takeover lease, a dual post-takeover owner, or a falsely-claimed-true stale-dispatch-rejection".into(),
             failure_result: "reject".into(),
             fixture_qualified: true,
         },
