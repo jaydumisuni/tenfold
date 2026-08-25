@@ -241,6 +241,7 @@ from .effect_census_bridge import (
 from .effect_transfer import build_effect_census_transfer_policy
 from .proof_transfer import build_proof_graph_transfer_policy
 from .council_pin import CouncilPinError, build_council_pin_record, invoke_pinned_council, load_frozen_council_pin
+from .recovery_qualification import RecoveryQualificationError, build_g2_24_recovery_qualification_matrix
 from .bootstrap_protocol import (
     BootstrapProtocolError,
     EvidencePacketV1,
@@ -2144,6 +2145,34 @@ def _g2_23_council_pin_drift_kill_check() -> None:
     invoke_pinned_council(drifted, "mut-g23-council-drift", [], authority_generation=drifted.pin_generation)
 
 
+def _g2_24_recovery_matrix_missing_high_risk_cell_kill_check() -> None:
+    # The "recovery_qualification_matrix" Trust Table row's own
+    # required_negative_fixture, verbatim: "matrix coverage check
+    # attempted against a corpus with a missing or under-volume
+    # high-risk cell" -- G2-24's own Acceptance clause, verbatim: "easy
+    # repeated cells cannot mask missing high-risk cells." Exercises
+    # every easy (non-high-risk) cell heavily, but leaves every high-risk
+    # cell completely unexercised; check_coverage must still reject.
+    matrix = build_g2_24_recovery_qualification_matrix()
+    counts = {cid: 1000 for cid in matrix.cell_ids() if cid not in matrix.high_risk_cell_ids()}
+    matrix.check_coverage(counts)
+
+
+def _g2_24_recovery_matrix_under_volume_high_risk_cell_kill_check() -> None:
+    # Same required_negative_fixture as above, the "under-volume" half:
+    # every cell (including every high-risk one) is present at least
+    # once, but high-risk cells are exercised only once each -- fewer
+    # than HIGH_RISK_MIN_VOLUME clean repeats -- so "repeated clean
+    # volume" is genuinely missing even though nothing is technically
+    # unexercised.
+    from .recovery_qualification import HIGH_RISK_MIN_VOLUME
+
+    matrix = build_g2_24_recovery_qualification_matrix()
+    counts = {cid: 1 for cid in matrix.cell_ids()}
+    assert HIGH_RISK_MIN_VOLUME > 1
+    matrix.check_coverage(counts)
+
+
 def build_initial_mutation_suite() -> MutationSuite:
     suite = MutationSuite()
 
@@ -3380,6 +3409,36 @@ def build_initial_mutation_suite() -> MutationSuite:
             "council_pin",
             _g2_23_council_pin_drift_kill_check,
             CouncilPinError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G24-RECOVERYMATRIXMISSINGHIGHRISK-001",
+            MutationCategory.RUNTIME_OBLIGATION_OMISSION,
+            "The \"recovery_qualification_matrix\" Trust Table row's own required_negative_fixture, "
+            "verbatim: \"matrix coverage check attempted against a corpus with a missing or "
+            "under-volume high-risk cell\" -- G2-24's own Acceptance, verbatim: \"easy repeated "
+            "cells cannot mask missing high-risk cells.\" Every easy cell exercised 1000 times; "
+            "every high-risk cell never exercised at all; check_coverage must still reject.",
+            "G2-00 SS14.1; G2-24",
+            "recovery_qualification_matrix",
+            _g2_24_recovery_matrix_missing_high_risk_cell_kill_check,
+            RecoveryQualificationError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G24-RECOVERYMATRIXUNDERVOLUME-001",
+            MutationCategory.RUNTIME_OBLIGATION_OMISSION,
+            "Same required_negative_fixture as MUT-G24-RECOVERYMATRIXMISSINGHIGHRISK-001, the "
+            "'under-volume' half: every cell present at least once, but every high-risk cell "
+            "exercised only once -- fewer than HIGH_RISK_MIN_VOLUME clean repeats -- so "
+            "'repeated clean volume' is genuinely missing even though nothing is technically "
+            "unexercised.",
+            "G2-00 SS14.1; G2-24",
+            "recovery_qualification_matrix",
+            _g2_24_recovery_matrix_under_volume_high_risk_cell_kill_check,
+            RecoveryQualificationError,
         )
     )
 
