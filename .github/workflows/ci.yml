@@ -64,6 +64,16 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e '.[dev,browser]'
 
+      - name: Install pinned Sergeant external assurance authority
+        # G2-25 (Bounded Real Gen2 Recovery/Takeover) genuinely invokes
+        # the real `sergeant` CLI for external assurance -- not a
+        # simulated/self-reported verdict. Same pinned commit TF-24/TF-31
+        # already use (git+https://github.com/jaydumisuni/Sergeant.git@4a277cc5950aa08a98157b950c96fb88f2178c79),
+        # installed here into the main test venv so the main pytest run
+        # can genuinely exercise it, distinct from the separate TF-31
+        # repository-only clean-clone venv below.
+        run: python -m pip install "git+https://github.com/jaydumisuni/Sergeant.git@4a277cc5950aa08a98157b950c96fb88f2178c79"
+
       - name: Compile source
         run: python -m compileall -q src
 

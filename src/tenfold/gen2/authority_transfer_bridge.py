@@ -118,3 +118,26 @@ def rust_check_recovery_qualification_coverage(
             }
         ),
     )
+
+
+def rust_check_recovery_takeover_verification(
+    *, old_epoch: int, new_epoch: int, old_leases_all_fenced: bool, stale_dispatch_rejected: bool, new_owner_count_exactly_one: bool
+) -> None:
+    """G2-25 Bounded Real Gen2 Recovery/Takeover: admits
+    `"recovery_takeover"` and genuinely, independently re-derives epoch
+    monotonicity plus the three post-takeover invariants in Rust --
+    applied proactively at construction time, matching the discipline
+    G2-24's own round-2 review established (Finding 4) for the sibling
+    `recovery_qualification_matrix` artifact."""
+    _run(
+        "check-recovery-takeover",
+        input_text=json.dumps(
+            {
+                "old_epoch": old_epoch,
+                "new_epoch": new_epoch,
+                "old_leases_all_fenced": old_leases_all_fenced,
+                "stale_dispatch_rejected": stale_dispatch_rejected,
+                "new_owner_count_exactly_one": new_owner_count_exactly_one,
+            }
+        ),
+    )

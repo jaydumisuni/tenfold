@@ -352,22 +352,61 @@ pub fn initial_trust_table() -> TrustTable {
             // harnesses (`tenfold.gen2.recovery_qualification`). Unlike
             // `council_pin`, there is no static source-file digest for
             // Rust to independently re-hash here -- the artifact IS the
-            // coverage computation and its genuine execution results
-            // (Gen1/Gen2 differential agreement counts, metamorphic
-            // convergence, invariant/verifier evidence), which are
-            // Python-runtime outcomes, not files on disk. Admission is
-            // therefore the generic identity-only gate (the same
-            // mechanism `council_pin` also used before its own dedicated
-            // digest re-derivation was added) -- Rust does not
-            // independently recompute combinatorial coverage or
-            // re-execute `tenfold.foreman` transitions.
+            // coverage computation and its genuine execution results.
+            // Round-2 review finding (PR #79, Finding 4): admission was
+            // originally the generic identity-only gate, with nothing in
+            // the production path ever presenting a coverage claim to
+            // Rust. Fixed:
+            // `check_recovery_qualification_coverage`/
+            // `admit_check_recovery_qualification_coverage`
+            // (`rust/identity_generation`) genuinely, independently
+            // re-derives `RecoveryQualificationMatrix.check_coverage`'s
+            // own exact-set-membership plus high-risk repeated-volume
+            // logic, and the production path
+            // (`RecoveryQualificationMatrix.check_coverage` itself)
+            // genuinely routes through it first, before its own Python
+            // re-verification.
             independently_checks: vec![
-                "structural well-formedness only: the artifact identity is a registered, fixture-qualified Trust Table row".into(),
+                "exact-set-membership: every required cell_id was genuinely exercised (count > 0)".into(),
+                "high-risk repeated-volume: every high-risk cell_id was exercised at least high_risk_min_volume times".into(),
             ],
-            trusts_only: "that check_coverage's own exact-set-membership plus high-risk repeated-volume enforcement (tenfold.gen2.recovery_qualification.RecoveryQualificationMatrix.check_coverage) genuinely ran against genuinely exercised cells -- a Rust process has no independent combinatorial-coverage or Foreman-transition re-derivation of its own for this artifact family".into(),
-            trust_bounded_reason: "the matrix's cells and their exercise are entirely Python-runtime computation (real Foreman transitions, a real Gen1/Rust frontier differential, a real subprocess-crossed metamorphic comparison, real invariant reconstruction) -- there is no static artifact file for Rust to re-hash the way council_pin's four source files allow; strengthening this to a genuine Rust re-derivation is future work, honestly disclosed here rather than fabricated".into(),
+            trusts_only: "that the caller-supplied required_cell_ids/high_risk_cell_ids/exercised_cell_counts genuinely reflect real proof-harness execution (Foreman transitions, the Gen1/Rust frontier differential, the subprocess-crossed metamorphic comparison, invariant reconstruction) -- Rust re-derives the coverage LOGIC independently, but cannot itself re-execute those Python-runtime proof harnesses".into(),
+            trust_bounded_reason: "the matrix's cells and their exercise are entirely Python-runtime computation; there is no static artifact file for Rust to re-hash the way council_pin's four source files allow, so the independent re-derivation covers the coverage-checking LOGIC (genuinely, in Rust) rather than the underlying proof-harness executions themselves".into(),
             authority_generation: 1,
             required_negative_fixture: "matrix coverage check attempted against a corpus with a missing or under-volume high-risk cell".into(),
+            failure_result: "reject".into(),
+            fixture_qualified: true,
+        },
+        TrustTableRow {
+            artifact_identity: "recovery_takeover".into(),
+            // G2-25 Bounded Real Gen2 Recovery/Takeover
+            // (`tenfold.gen2.recovery_takeover`): a real, disposable,
+            // isolated `DurableCampaignStore`-backed campaign is
+            // dispatched, crashed (induced-failure soak), and genuinely
+            // taken over via Gen1's own already-qualified (TF-00)
+            // SQL-backed atomic fenced epoch-advance
+            // (`tenfold.recovery.takeover`, reused not re-derived, per
+            // G2-00 SS15's "no invariant split across Python/Rust").
+            // Rust cannot re-run that SQLite-backed fencing itself
+            // without duplicating Gen1's own qualified implementation --
+            // what it independently re-derives instead is the logical
+            // post-takeover verification claim itself
+            // (`check_recovery_takeover_verification`/
+            // `admit_check_recovery_takeover_verification`,
+            // `rust/identity_generation`): a genuine takeover must
+            // strictly advance the epoch, and every one of the three
+            // independently-observed invariants (old leases fenced,
+            // stale dispatch rejected, exactly one post-takeover owner)
+            // must be true, applied proactively at construction time
+            // rather than waiting for a review finding to add it.
+            independently_checks: vec![
+                "epoch monotonicity: new_epoch strictly greater than old_epoch".into(),
+                "all three claimed post-takeover invariants (old_leases_all_fenced, stale_dispatch_rejected, new_owner_count_exactly_one) are genuinely true, not merely present".into(),
+            ],
+            trusts_only: "that the caller-supplied verification claim genuinely reflects the real, independently-observed post-takeover durable state (fresh store reads, real replay-ledger rejection, real re-acquired lease ownership) -- Rust re-derives the claim's own logical consistency, but cannot itself re-read Gen1's SQLite-backed durable store".into(),
+            trust_bounded_reason: "the underlying atomic fenced epoch-advance is Gen1's own already-qualified (TF-00) SQL implementation, reused per G2-00 SS15's 'no invariant split across Python/Rust' rather than re-derived a second time in Rust; Rust's independent value here is the logical claim re-derivation, not a second fencing implementation".into(),
+            authority_generation: 1,
+            required_negative_fixture: "verification claim attempted with a non-advancing epoch or a falsely-claimed-true post-takeover invariant".into(),
             failure_result: "reject".into(),
             fixture_qualified: true,
         },
@@ -383,9 +422,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn initial_table_has_all_thirteen_minimum_families() {
+    fn initial_table_has_all_fourteen_minimum_families() {
         let table = initial_trust_table();
-        assert_eq!(table.len(), 13);
+        assert_eq!(table.len(), 14);
     }
 
     #[test]
@@ -411,6 +450,7 @@ mod tests {
             "facility_declaration",
             "council_pin",
             "recovery_qualification_matrix",
+            "recovery_takeover",
         ] {
             assert!(table.admit(identity).is_ok(), "expected {identity} to be admitted");
         }
@@ -549,7 +589,7 @@ mod tests {
             fixture_qualified: true,
         };
         assert!(table.extend(row).is_ok());
-        assert_eq!(table.len(), 14);
+        assert_eq!(table.len(), 15);
         assert!(table.admit("chronicle_event").is_ok());
     }
 

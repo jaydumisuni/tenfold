@@ -2173,6 +2173,30 @@ def _g2_24_recovery_matrix_under_volume_high_risk_cell_kill_check() -> None:
     matrix.check_coverage(counts)
 
 
+def _g2_25_recovery_takeover_non_advancing_epoch_kill_check() -> None:
+    # The "recovery_takeover" Trust Table row's own required_negative_fixture,
+    # verbatim: "verification claim attempted with a non-advancing epoch
+    # or a falsely-claimed-true post-takeover invariant." A genuine
+    # takeover must strictly advance the epoch -- feeds the real,
+    # independent Rust re-derivation a claim where new_epoch == old_epoch.
+    from .authority_transfer_bridge import rust_check_recovery_takeover_verification
+
+    rust_check_recovery_takeover_verification(
+        old_epoch=1, new_epoch=1, old_leases_all_fenced=True, stale_dispatch_rejected=True, new_owner_count_exactly_one=True
+    )
+
+
+def _g2_25_recovery_takeover_falsely_claimed_invariant_kill_check() -> None:
+    # Same required_negative_fixture, the other half: epoch genuinely
+    # advances, but one of the three post-takeover invariants is falsely
+    # claimed true.
+    from .authority_transfer_bridge import rust_check_recovery_takeover_verification
+
+    rust_check_recovery_takeover_verification(
+        old_epoch=1, new_epoch=2, old_leases_all_fenced=False, stale_dispatch_rejected=True, new_owner_count_exactly_one=True
+    )
+
+
 def build_initial_mutation_suite() -> MutationSuite:
     suite = MutationSuite()
 
@@ -3439,6 +3463,34 @@ def build_initial_mutation_suite() -> MutationSuite:
             "recovery_qualification_matrix",
             _g2_24_recovery_matrix_under_volume_high_risk_cell_kill_check,
             RecoveryQualificationError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G25-TAKEOVERNONADVANCING-001",
+            MutationCategory.RUNTIME_OBLIGATION_OMISSION,
+            "The \"recovery_takeover\" Trust Table row's own required_negative_fixture, verbatim: "
+            "\"verification claim attempted with a non-advancing epoch or a falsely-claimed-true "
+            "post-takeover invariant\" -- a claim where new_epoch == old_epoch, genuinely rejected "
+            "by the real, independent Rust re-derivation (G2-25 Bounded Real Gen2 Recovery/Takeover).",
+            "G2-00 SS15-16; G2-25",
+            "recovery_takeover",
+            _g2_25_recovery_takeover_non_advancing_epoch_kill_check,
+            AuthorityTransferCliError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G25-TAKEOVERFALSEINVARIANT-001",
+            MutationCategory.RUNTIME_OBLIGATION_OMISSION,
+            "Same required_negative_fixture as MUT-G25-TAKEOVERNONADVANCING-001, the "
+            "'falsely-claimed-true invariant' half: the epoch genuinely advances, but "
+            "old_leases_all_fenced is falsely claimed true -- genuinely rejected by the real, "
+            "independent Rust re-derivation.",
+            "G2-00 SS15-16; G2-25",
+            "recovery_takeover",
+            _g2_25_recovery_takeover_falsely_claimed_invariant_kill_check,
+            AuthorityTransferCliError,
         )
     )
 

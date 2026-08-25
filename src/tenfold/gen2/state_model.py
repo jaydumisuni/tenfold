@@ -1353,6 +1353,29 @@ def build_g2_23_state_model() -> StateModel:
     )
 
 
+G2_25_REQUIRED_STATE_MODEL_FIELD_IDS: frozenset[str] = frozenset({"recovery_takeover_verification_state"})
+
+
+def build_g2_25_state_model() -> StateModel:
+    """Extends the G2-23 State Model with G2-25's recovery-takeover
+    verification field (G2-00 SS15-16; `tenfold.gen2.recovery_takeover`
+    + `rust/identity_generation`'s `check_recovery_takeover_verification`).
+    Unlike G2-24 (a pure qualification/proof-of-coverage exercise, zero
+    new fields, matching G2-23's own council_pin precedent), G2-25
+    genuinely executes a real recovery/takeover -- authority-bearing
+    runtime state this milestone introduces, per G2-00 SS14.1's own
+    incremental-extension discipline."""
+    return build_g2_23_state_model().extend(
+        (
+            StateModelField(
+                "recovery_takeover_verification_state", AuthorityHolder.GEN2_RUST,
+                "identity_generation::RecoveryTakeoverVerificationClaim / admit_check_recovery_takeover_verification (Trust Table row \"recovery_takeover\")",
+                StateModelDisposition.RUNTIME_MAPPED, "G2-25",
+            ),
+        )
+    )
+
+
 # ============================================================================
 # G2-23 cross-runtime authoritative ownership update: closes a genuine,
 # pre-existing coverage gap G2-20's own roster left disclosed --

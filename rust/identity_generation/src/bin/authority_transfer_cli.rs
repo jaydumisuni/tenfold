@@ -36,11 +36,17 @@
 //!   `RecoveryQualificationMatrix.check_coverage`'s own exact-set-
 //!   membership plus high-risk repeated-volume logic; prints
 //!   ACCEPT/REJECT.
+//! - `check-recovery-takeover` (G2-25 Bounded Real Gen2 Recovery/
+//!   Takeover) -- reads a `RecoveryTakeoverVerificationClaim` JSON from
+//!   stdin, admits `"recovery_takeover"`, and independently re-derives
+//!   epoch monotonicity plus the three post-takeover invariants
+//!   (old leases fenced, stale dispatch rejected, exactly one
+//!   post-takeover owner); prints ACCEPT/REJECT.
 
 use identity_generation::{
-    admit_check_authority_transfer_transition, admit_check_council_pin, admit_check_recovery_qualification_coverage, admit_transition, authority_transfer_trust_table_row,
-    check_valid_authority_owner_count, trust_table_row, AuthorityTransferRecord, AuthorityTransferStabilizationPolicy, AuthorityTransferStage, CouncilPinRecord,
-    RecoveryQualificationCoverageClaim,
+    admit_check_authority_transfer_transition, admit_check_council_pin, admit_check_recovery_qualification_coverage, admit_check_recovery_takeover_verification, admit_transition,
+    authority_transfer_trust_table_row, check_valid_authority_owner_count, trust_table_row, AuthorityTransferRecord, AuthorityTransferStabilizationPolicy, AuthorityTransferStage,
+    CouncilPinRecord, RecoveryQualificationCoverageClaim, RecoveryTakeoverVerificationClaim,
 };
 use serde::Deserialize;
 use std::io::Read;
@@ -197,6 +203,26 @@ fn main() -> ExitCode {
                 Err(e) => return usage_error(&e.to_string()),
             };
             match admit_check_recovery_qualification_coverage(&admitted_table(), &claim) {
+                Ok(()) => {
+                    println!("ACCEPT");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    println!("REJECT: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        "check-recovery-takeover" => {
+            let buf = match read_stdin() {
+                Ok(b) => b,
+                Err(code) => return code,
+            };
+            let claim: RecoveryTakeoverVerificationClaim = match serde_json::from_str(&buf) {
+                Ok(v) => v,
+                Err(e) => return usage_error(&e.to_string()),
+            };
+            match admit_check_recovery_takeover_verification(&admitted_table(), &claim) {
                 Ok(()) => {
                     println!("ACCEPT");
                     ExitCode::SUCCESS
