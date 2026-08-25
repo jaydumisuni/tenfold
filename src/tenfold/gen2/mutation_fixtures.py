@@ -2173,6 +2173,41 @@ def _g2_24_recovery_matrix_under_volume_high_risk_cell_kill_check() -> None:
     matrix.check_coverage(counts)
 
 
+def _g2_25_recovery_takeover_non_advancing_epoch_kill_check() -> None:
+    # The "recovery_takeover" Trust Table row's own required_negative_fixture,
+    # verbatim: "verification claim attempted with a non-advancing epoch,
+    # a still-active or missing pre-takeover lease, a dual post-takeover
+    # owner, or a falsely-claimed-true stale-dispatch-rejection." A
+    # genuine takeover must strictly advance the epoch -- feeds the
+    # real, independent Rust re-derivation a claim where
+    # new_epoch == old_epoch.
+    from .authority_transfer_bridge import rust_check_recovery_takeover_verification
+
+    rust_check_recovery_takeover_verification(
+        old_epoch=1,
+        new_epoch=1,
+        pre_takeover_lease_ids=["lease-1"],
+        post_takeover_leases=[{"lease_id": "lease-1", "owner_lane": "gen1-owner", "active": False}, {"lease_id": "lease-2", "owner_lane": "gen2-owner", "active": True}],
+        stale_dispatch_rejected=True,
+    )
+
+
+def _g2_25_recovery_takeover_falsely_claimed_invariant_kill_check() -> None:
+    # Same required_negative_fixture, the other half: epoch genuinely
+    # advances, but the raw lease facts show the pre-takeover lease
+    # still genuinely active -- Rust independently recomputes
+    # lease-fencing from these raw facts and must reject.
+    from .authority_transfer_bridge import rust_check_recovery_takeover_verification
+
+    rust_check_recovery_takeover_verification(
+        old_epoch=1,
+        new_epoch=2,
+        pre_takeover_lease_ids=["lease-1"],
+        post_takeover_leases=[{"lease_id": "lease-1", "owner_lane": "gen1-owner", "active": True}, {"lease_id": "lease-2", "owner_lane": "gen2-owner", "active": True}],
+        stale_dispatch_rejected=True,
+    )
+
+
 def build_initial_mutation_suite() -> MutationSuite:
     suite = MutationSuite()
 
@@ -3439,6 +3474,36 @@ def build_initial_mutation_suite() -> MutationSuite:
             "recovery_qualification_matrix",
             _g2_24_recovery_matrix_under_volume_high_risk_cell_kill_check,
             RecoveryQualificationError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G25-TAKEOVERNONADVANCING-001",
+            MutationCategory.RUNTIME_OBLIGATION_OMISSION,
+            "The \"recovery_takeover\" Trust Table row's own required_negative_fixture, verbatim: "
+            "\"verification claim attempted with a non-advancing epoch, a still-active or missing "
+            "pre-takeover lease, a dual post-takeover owner, or a falsely-claimed-true "
+            "stale-dispatch-rejection\" -- a claim where new_epoch == old_epoch, genuinely rejected "
+            "by the real, independent Rust re-derivation (G2-25 Bounded Real Gen2 Recovery/Takeover).",
+            "G2-00 SS15-16; G2-25",
+            "recovery_takeover",
+            _g2_25_recovery_takeover_non_advancing_epoch_kill_check,
+            AuthorityTransferCliError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G25-TAKEOVERFALSEINVARIANT-001",
+            MutationCategory.RUNTIME_OBLIGATION_OMISSION,
+            "Same required_negative_fixture as MUT-G25-TAKEOVERNONADVANCING-001, the "
+            "'still-active pre-takeover lease' half: the epoch genuinely advances, but the raw "
+            "lease facts show the pre-takeover lease still genuinely active -- Rust independently "
+            "RECOMPUTES lease-fencing from those raw facts (not a pre-computed boolean) and "
+            "genuinely rejects.",
+            "G2-00 SS15-16; G2-25",
+            "recovery_takeover",
+            _g2_25_recovery_takeover_falsely_claimed_invariant_kill_check,
+            AuthorityTransferCliError,
         )
     )
 

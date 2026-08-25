@@ -884,6 +884,109 @@ pub fn admit_check_recovery_qualification_coverage(
     check_recovery_qualification_coverage(claim)
 }
 
+// ============================================================================
+// G2-25 Bounded Real Gen2 Recovery / Takeover. Round-2 review finding
+// (PR #80, Finding 2): the original claim shape carried three
+// Python-precomputed booleans that Rust merely checked were `true` --
+// any Python-side defect that miscomputed those booleans would sail
+// straight through, leaving the "independent verifier" step
+// unsatisfied. Fixed: Rust now receives the RAW lease facts (which
+// lease ids existed before the takeover; which leases exist and are
+// active/inactive after) and independently RECOMPUTES
+// `old_leases_all_fenced` and `new_owner_count_exactly_one` itself from
+// that raw data -- the same fencing/ownership-count logic
+// `tenfold.gen2.recovery_takeover` computes, genuinely re-derived a
+// second time, not merely re-checked. `stale_dispatch_rejected` remains
+// a caller-observed fact (whether `AuthorizedReplayLedger.
+// begin_operation` genuinely raised `ReplayConflict`) -- Rust has no
+// independent re-derivation of Gen1's replay-ledger semantics without
+// duplicating that entire implementation, honestly disclosed via
+// `trust_bounded_reason` on the Trust Table row rather than fabricated.
+// Rust still cannot re-run the real SQLite-backed takeover itself (that
+// would duplicate Gen1's own already-qualified TF-00 fencing
+// implementation, contradicting G2-00 SS15's "no invariant split
+// across Python/Rust").
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecoveryTakeoverLeaseFact {
+    pub lease_id: String,
+    pub owner_lane: String,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecoveryTakeoverVerificationClaim {
+    pub old_epoch: u64,
+    pub new_epoch: u64,
+    pub pre_takeover_lease_ids: Vec<String>,
+    pub post_takeover_leases: Vec<RecoveryTakeoverLeaseFact>,
+    pub stale_dispatch_rejected: bool,
+}
+
+pub fn check_recovery_takeover_verification(claim: &RecoveryTakeoverVerificationClaim) -> Result<(), IdentityGenerationError> {
+    if claim.new_epoch <= claim.old_epoch {
+        return Err(IdentityGenerationError::Semantic(format!(
+            "RecoveryTakeoverVerification DRIFT (independently re-derived by Rust): new_epoch ({}) did not strictly advance past old_epoch ({})",
+            claim.new_epoch, claim.old_epoch
+        )));
+    }
+    if claim.pre_takeover_lease_ids.is_empty() {
+        return Err(IdentityGenerationError::Semantic(
+            "RecoveryTakeoverVerification DRIFT (independently re-derived by Rust): no pre-takeover lease id(s) supplied -- old_leases_all_fenced would be vacuously true".into(),
+        ));
+    }
+
+    // Independent re-derivation 1: every pre-takeover lease id must
+    // still be present post-takeover AND genuinely inactive -- a
+    // missing lease id (never disappears in the real schema, but
+    // treated as a fencing failure rather than silently skipped) is
+    // rejected exactly like one that is still active.
+    let post_by_id: std::collections::HashMap<&String, &RecoveryTakeoverLeaseFact> =
+        claim.post_takeover_leases.iter().map(|fact| (&fact.lease_id, fact)).collect();
+    let mut not_fenced: Vec<&String> = claim
+        .pre_takeover_lease_ids
+        .iter()
+        .filter(|lease_id| !matches!(post_by_id.get(*lease_id), Some(fact) if !fact.active))
+        .collect();
+    if !not_fenced.is_empty() {
+        not_fenced.sort();
+        return Err(IdentityGenerationError::Semantic(format!(
+            "RecoveryTakeoverVerification DRIFT (independently re-derived by Rust): {} pre-takeover lease(s) not genuinely fenced (missing, or still active): {:?}",
+            not_fenced.len(),
+            not_fenced
+        )));
+    }
+
+    // Independent re-derivation 2: exactly one distinct active owner
+    // lane among the post-takeover leases.
+    let active_owners: HashSet<&String> = claim.post_takeover_leases.iter().filter(|fact| fact.active).map(|fact| &fact.owner_lane).collect();
+    if active_owners.len() != 1 {
+        let mut owners: Vec<&&String> = active_owners.iter().collect();
+        owners.sort();
+        return Err(IdentityGenerationError::Semantic(format!(
+            "RecoveryTakeoverVerification DRIFT (independently re-derived by Rust): expected exactly one distinct active post-takeover owner, found {}: {:?}",
+            active_owners.len(),
+            owners
+        )));
+    }
+
+    if !claim.stale_dispatch_rejected {
+        return Err(IdentityGenerationError::Semantic(
+            "RecoveryTakeoverVerification DRIFT (independently re-derived by Rust): claimed-true invariant not genuinely true: stale_dispatch_rejected".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub fn admit_check_recovery_takeover_verification(
+    table: &trust_table::TrustTable,
+    claim: &RecoveryTakeoverVerificationClaim,
+) -> Result<(), IdentityGenerationError> {
+    table.admit("recovery_takeover").map_err(|e| IdentityGenerationError::Semantic(e.to_string()))?;
+    check_recovery_takeover_verification(claim)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1557,6 +1660,116 @@ mod tests {
             .rows()
             .find(|r| r.artifact_identity == "recovery_qualification_matrix")
             .expect("recovery_qualification_matrix row should exist")
+            .is_well_formed());
+    }
+
+    // ---- G2-25 Bounded Real Gen2 Recovery / Takeover ----
+
+    fn genuine_takeover_claim() -> RecoveryTakeoverVerificationClaim {
+        RecoveryTakeoverVerificationClaim {
+            old_epoch: 1,
+            new_epoch: 2,
+            pre_takeover_lease_ids: vec!["lease-1".to_string()],
+            post_takeover_leases: vec![
+                RecoveryTakeoverLeaseFact { lease_id: "lease-1".to_string(), owner_lane: "gen1-owner".to_string(), active: false },
+                RecoveryTakeoverLeaseFact { lease_id: "lease-2".to_string(), owner_lane: "gen2-owner".to_string(), active: true },
+            ],
+            stale_dispatch_rejected: true,
+        }
+    }
+
+    #[test]
+    fn admit_check_recovery_takeover_verification_fails_closed_when_table_has_no_row() {
+        let table = trust_table::TrustTable::new();
+        assert!(admit_check_recovery_takeover_verification(&table, &genuine_takeover_claim()).is_err());
+    }
+
+    #[test]
+    fn admit_check_recovery_takeover_verification_succeeds_on_a_genuine_claim() {
+        let table = trust_table::initial_trust_table();
+        admit_check_recovery_takeover_verification(&table, &genuine_takeover_claim()).expect("a genuinely advanced, fully-fenced claim should be admitted");
+    }
+
+    #[test]
+    fn check_recovery_takeover_verification_rejects_a_non_advancing_epoch() {
+        let claim = RecoveryTakeoverVerificationClaim { new_epoch: 1, ..genuine_takeover_claim() };
+        let result = check_recovery_takeover_verification(&claim);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("did not strictly advance"), "error should name the non-advancing epoch: {err}");
+        assert!(err.contains("independently re-derived by Rust"), "error should disclose this was independently re-derived: {err}");
+    }
+
+    #[test]
+    fn check_recovery_takeover_verification_rejects_a_backward_epoch() {
+        let claim = RecoveryTakeoverVerificationClaim { old_epoch: 5, new_epoch: 3, ..genuine_takeover_claim() };
+        assert!(check_recovery_takeover_verification(&claim).is_err());
+    }
+
+    #[test]
+    fn check_recovery_takeover_verification_rejects_an_empty_pre_takeover_lease_set() {
+        let claim = RecoveryTakeoverVerificationClaim { pre_takeover_lease_ids: vec![], ..genuine_takeover_claim() };
+        let result = check_recovery_takeover_verification(&claim);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("vacuously true"));
+    }
+
+    #[test]
+    fn check_recovery_takeover_verification_independently_recomputes_fencing_and_rejects_a_still_active_pre_lease() {
+        // The claim does not carry a pre-computed "old_leases_all_fenced"
+        // boolean at all any more -- Rust genuinely recomputes it from
+        // the raw lease facts. A pre-takeover lease that is still
+        // `active: true` post-takeover must be rejected.
+        let mut claim = genuine_takeover_claim();
+        claim.post_takeover_leases[0].active = true;
+        let result = check_recovery_takeover_verification(&claim);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not genuinely fenced"), "error should name the unfenced lease: {err}");
+        assert!(err.contains("independently re-derived by Rust"));
+    }
+
+    #[test]
+    fn check_recovery_takeover_verification_rejects_a_pre_takeover_lease_missing_entirely_post_takeover() {
+        let claim = RecoveryTakeoverVerificationClaim {
+            pre_takeover_lease_ids: vec!["lease-1".to_string(), "lease-missing".to_string()],
+            ..genuine_takeover_claim()
+        };
+        assert!(check_recovery_takeover_verification(&claim).is_err());
+    }
+
+    #[test]
+    fn check_recovery_takeover_verification_rejects_a_falsely_claimed_stale_dispatch_rejection() {
+        let claim = RecoveryTakeoverVerificationClaim { stale_dispatch_rejected: false, ..genuine_takeover_claim() };
+        assert!(check_recovery_takeover_verification(&claim).is_err());
+    }
+
+    #[test]
+    fn check_recovery_takeover_verification_independently_recomputes_owner_count_and_rejects_a_dual_owner() {
+        // No pre-computed "new_owner_count_exactly_one" boolean either --
+        // Rust recomputes the distinct-active-owner count itself from the
+        // raw post-takeover lease list.
+        let mut claim = genuine_takeover_claim();
+        claim.post_takeover_leases.push(RecoveryTakeoverLeaseFact { lease_id: "lease-3".to_string(), owner_lane: "another-owner".to_string(), active: true });
+        let result = check_recovery_takeover_verification(&claim);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("exactly one distinct active"), "error should name the owner-count mismatch: {err}");
+    }
+
+    #[test]
+    fn check_recovery_takeover_verification_rejects_zero_active_owners() {
+        let mut claim = genuine_takeover_claim();
+        claim.post_takeover_leases[1].active = false;
+        assert!(check_recovery_takeover_verification(&claim).is_err());
+    }
+
+    #[test]
+    fn recovery_takeover_row_is_well_formed() {
+        assert!(trust_table::initial_trust_table()
+            .rows()
+            .find(|r| r.artifact_identity == "recovery_takeover")
+            .expect("recovery_takeover row should exist")
             .is_well_formed());
     }
 }
