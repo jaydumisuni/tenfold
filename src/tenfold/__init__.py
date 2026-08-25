@@ -1,78 +1,9 @@
 """Tenfold model-free execution core."""
 
-from .assurance_adapters import (
-    AssuranceAdapterError,
-    AssuranceSatisfactionRecord,
-    AssuranceVerdict,
-    ExternalAssuranceResponse,
-    FrozenAssuranceRequest,
-    SecOpsAssuranceAdapter,
-    SergeantMilestoneAdapter,
-    SpecialistAssuranceAdapter,
-    VerifiedAssurance,
-    freeze_assurance_request,
-    missing_mandatory_assurance,
-    satisfaction_record,
-    validate_assurance_response,
-)
-from .browser_facility import BrowserScenario, BrowserStep, PlaywrightFacility
-from .consultation import (
-    AdviceClaim,
-    AdviceDecision,
-    AdviceReviewRecord,
-    ConsultantResponse,
-    ConsultantRuntime,
-    FrozenConsultationRequest,
-    ValidatedAdvice,
-    decide_advice,
-    freeze_consultation,
-    validate_consultant_response,
-)
-from .contracts import (
-    AdvicePacket,
-    AssuranceBinding,
-    BlueprintManifest,
-    CampaignManifest,
-    CampaignNode,
-    CouplingAssuranceRecord,
-    Dependency,
-    DependencyClass,
-    EvidencePacket,
-    Milestone,
-    NodeState,
-    TaskPacket,
-)
-from .derivation_assurance import DerivationProof, independently_assure
-from .durability import AuthorizedReplayLedger, DurableAuthorityError, DurableCampaignStore
-from .facility import ArtifactEvidence, FacilityError, FacilityEvidence, FacilityKind
-from .foreman import Foreman
-from .method_profiles import (
-    MethodEvidenceStore,
-    MethodLearningSession,
-    MethodLearningSnapshot,
-    MethodObservation,
-    MethodObservationCategory,
-    MethodProfileBinding,
-    MethodProfileError,
-    MethodProfileNotFound,
-    MethodRevisionProposal,
-    ProjectMethodDescriptor,
-    ProjectMethodRegistry,
-    StaleMethodProfile,
-)
-from .oracle_facility import OracleFacility, OracleLiveContext, OracleTerminalSpec
-from .ptah_facility import (
-    PTAH_A06_ACCEPTED,
-    PtahAuthorityProfile,
-    PtahFacility,
-    PtahProviderContext,
-    PtahSessionContext,
-)
-from .reconciliation import Finding, ScaleReconciler
-from .repository_facility import RepositoryFacility, RepositoryStateStore
-from .scheduler import ResourceCapacity, ResourceScheduler, WorkItem
-from .workers import ExecutionMode, JobKind, LocalWorkerRuntime, ResourceRequest, WorkerJob, WorkerSpec
-from .workforce import LocalWorkforce
+from __future__ import annotations
+
+import importlib
+from typing import Any
 
 __all__ = [
     "AdviceClaim",
@@ -158,3 +89,111 @@ __all__ = [
     "validate_assurance_response",
     "validate_consultant_response",
 ]
+
+# PEP 562 lazy exports: mechanically derived from this package's own
+# former eager `from .module import (...)` statements -- a 1:1
+# transcription, not a re-derivation. Importing this package no longer
+# eagerly imports every submodule (several of which, e.g. dispatch_lease,
+# genuinely and intentionally import tenfold.foreman/tenfold.ownership/
+# tenfold.facility as real Gen1 differential-testing oracles for their
+# own purposes) -- each submodule now loads only on first genuine access
+# to one of its names, exactly like `from tenfold.gen2 import X` /
+# `tenfold.gen2.X` always behaved from the caller's point of view.
+_LAZY_EXPORTS: dict[str, str] = {
+    "AdviceClaim": "consultation",
+    "AdviceDecision": "consultation",
+    "AdvicePacket": "contracts",
+    "AdviceReviewRecord": "consultation",
+    "ArtifactEvidence": "facility",
+    "AssuranceAdapterError": "assurance_adapters",
+    "AssuranceBinding": "contracts",
+    "AssuranceSatisfactionRecord": "assurance_adapters",
+    "AssuranceVerdict": "assurance_adapters",
+    "AuthorizedReplayLedger": "durability",
+    "BlueprintManifest": "contracts",
+    "BrowserScenario": "browser_facility",
+    "BrowserStep": "browser_facility",
+    "CampaignManifest": "contracts",
+    "CampaignNode": "contracts",
+    "ConsultantResponse": "consultation",
+    "ConsultantRuntime": "consultation",
+    "CouplingAssuranceRecord": "contracts",
+    "Dependency": "contracts",
+    "DependencyClass": "contracts",
+    "DerivationProof": "derivation_assurance",
+    "DurableAuthorityError": "durability",
+    "DurableCampaignStore": "durability",
+    "EvidencePacket": "contracts",
+    "ExecutionMode": "workers",
+    "ExternalAssuranceResponse": "assurance_adapters",
+    "FacilityError": "facility",
+    "FacilityEvidence": "facility",
+    "FacilityKind": "facility",
+    "Finding": "reconciliation",
+    "Foreman": "foreman",
+    "FrozenAssuranceRequest": "assurance_adapters",
+    "FrozenConsultationRequest": "consultation",
+    "JobKind": "workers",
+    "LocalWorkerRuntime": "workers",
+    "LocalWorkforce": "workforce",
+    "MethodEvidenceStore": "method_profiles",
+    "MethodLearningSession": "method_profiles",
+    "MethodLearningSnapshot": "method_profiles",
+    "MethodObservation": "method_profiles",
+    "MethodObservationCategory": "method_profiles",
+    "MethodProfileBinding": "method_profiles",
+    "MethodProfileError": "method_profiles",
+    "MethodProfileNotFound": "method_profiles",
+    "MethodRevisionProposal": "method_profiles",
+    "Milestone": "contracts",
+    "NodeState": "contracts",
+    "OracleFacility": "oracle_facility",
+    "OracleLiveContext": "oracle_facility",
+    "OracleTerminalSpec": "oracle_facility",
+    "PTAH_A06_ACCEPTED": "ptah_facility",
+    "PlaywrightFacility": "browser_facility",
+    "ProjectMethodDescriptor": "method_profiles",
+    "ProjectMethodRegistry": "method_profiles",
+    "PtahAuthorityProfile": "ptah_facility",
+    "PtahFacility": "ptah_facility",
+    "PtahProviderContext": "ptah_facility",
+    "PtahSessionContext": "ptah_facility",
+    "RepositoryFacility": "repository_facility",
+    "RepositoryStateStore": "repository_facility",
+    "ResourceCapacity": "scheduler",
+    "ResourceRequest": "workers",
+    "ResourceScheduler": "scheduler",
+    "ScaleReconciler": "reconciliation",
+    "SecOpsAssuranceAdapter": "assurance_adapters",
+    "SergeantMilestoneAdapter": "assurance_adapters",
+    "SpecialistAssuranceAdapter": "assurance_adapters",
+    "StaleMethodProfile": "method_profiles",
+    "TaskPacket": "contracts",
+    "ValidatedAdvice": "consultation",
+    "VerifiedAssurance": "assurance_adapters",
+    "WorkItem": "scheduler",
+    "WorkerJob": "workers",
+    "WorkerSpec": "workers",
+    "decide_advice": "consultation",
+    "freeze_assurance_request": "assurance_adapters",
+    "freeze_consultation": "consultation",
+    "independently_assure": "derivation_assurance",
+    "missing_mandatory_assurance": "assurance_adapters",
+    "satisfaction_record": "assurance_adapters",
+    "validate_assurance_response": "assurance_adapters",
+    "validate_consultant_response": "consultation",
+}
+
+
+def __getattr__(name: str) -> Any:
+    module_name = _LAZY_EXPORTS.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module = importlib.import_module(f".{module_name}", __name__)
+    value = getattr(module, name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_LAZY_EXPORTS))

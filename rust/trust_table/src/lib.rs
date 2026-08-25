@@ -318,6 +318,31 @@ pub fn initial_trust_table() -> TrustTable {
             failure_result: "reject".into(),
             fixture_qualified: true,
         },
+        TrustTableRow {
+            artifact_identity: "council_pin".into(),
+            // G2-23 Council-pinning deliverable: "Convert Council from
+            // live Gen1 dependency into reproducible pinned inherited
+            // component." Council (`tenfold.council`/`tenfold.officers`)
+            // is a pure-Python reconciliation artifact with no Rust
+            // re-derivation crate of its own for its OWN reconciliation
+            // logic -- but `identity_generation::admit_check_council_pin`
+            // (round-2 review, PR #78 Finding 2) genuinely re-reads and
+            // re-hashes the real installed source files from disk
+            // (relative to `CARGO_MANIFEST_DIR`, hence the repo root)
+            // and compares against the record's declared digests -- a
+            // real, independent Rust re-derivation of that specific
+            // claim, not a caller-supplied string trusted at face value.
+            independently_checks: vec![
+                "council.py/officers.py/contracts.py/assurance.py source digests, genuinely re-read and re-hashed from disk and compared against the declared record".into(),
+                "structural well-formedness: pin_generation is positive; every digest field is a genuine 64-character hex SHA-256".into(),
+            ],
+            trusts_only: "that the declared python_implementation/python_version/python_build/platform_string, the interface signature digest and the bound external/frozen policy digest genuinely reflect the live environment/interface/policy at pin time -- a Rust process cannot introspect a Python interpreter's own build/version or a Python function's live signature; that authority_generation is genuinely checked against pin_generation for staleness (Python-side, in invoke_pinned_council)".into(),
+            trust_bounded_reason: "the four source-file digests ARE independently re-derived here by re-reading the real files from disk, never trusted as a caller-supplied claim; the runtime/interface/policy fields and the pin_generation-vs-authority_generation staleness binding describe the live Python interpreter's own state, not a static file, so a Rust process cannot re-derive them the same way -- those remain mechanically re-derived and compared on the Python side instead (`tenfold.gen2.council_pin.verify_council_pin`)".into(),
+            authority_generation: 1,
+            required_negative_fixture: "invocation attempted against a drifted/stale pinned record".into(),
+            failure_result: "reject".into(),
+            fixture_qualified: true,
+        },
     ];
     for row in rows {
         table.extend(row).expect("initial_trust_table rows are well-formed and non-duplicate by construction");
@@ -330,9 +355,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn initial_table_has_all_eleven_minimum_families() {
+    fn initial_table_has_all_twelve_minimum_families() {
         let table = initial_trust_table();
-        assert_eq!(table.len(), 11);
+        assert_eq!(table.len(), 12);
     }
 
     #[test]
@@ -356,6 +381,7 @@ mod tests {
             "external_assurance",
             "runtime_obligation",
             "facility_declaration",
+            "council_pin",
         ] {
             assert!(table.admit(identity).is_ok(), "expected {identity} to be admitted");
         }
@@ -494,7 +520,7 @@ mod tests {
             fixture_qualified: true,
         };
         assert!(table.extend(row).is_ok());
-        assert_eq!(table.len(), 12);
+        assert_eq!(table.len(), 13);
         assert!(table.admit("chronicle_event").is_ok());
     }
 
