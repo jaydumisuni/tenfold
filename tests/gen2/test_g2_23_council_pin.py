@@ -152,6 +152,11 @@ def test_g2_23_rust_check_council_pin_rejects_zero_generation() -> None:
 
 
 def test_g2_23_council_has_no_gen1_foreman_dependency_statically() -> None:
+    """Self-review follow-up: covers all four modules CouncilPinRecord
+    tracks (council.py/officers.py/contracts.py/assurance.py), not just
+    the original two -- contracts.py/assurance.py became genuine tracked
+    dependencies via the Finding 7 fix, so this static check must cover
+    them too."""
     check_no_gen1_foreman_dependency()
 
 

@@ -261,12 +261,15 @@ def verify_council_pin(record: CouncilPinRecord) -> None:
 
 
 def check_no_gen1_foreman_dependency() -> None:
-    """Genuinely walks the real source of `council.py` and `officers.py`
-    via `ast`, confirming neither module's own import statements
-    reference `tenfold.foreman`/`tenfold.ownership`/`tenfold.facility`
-    (by substring, catching absolute and relative-import forms alike) --
-    a real, mechanical, static check, not an assumed property."""
-    for module in (council_module, officers_module):
+    """Genuinely walks the real source of `council.py`/`officers.py`/
+    `contracts.py`/`assurance.py` via `ast`, confirming none of their
+    own import statements reference `tenfold.foreman`/`tenfold.
+    ownership`/`tenfold.facility` (by substring, catching absolute and
+    relative-import forms alike) -- a real, mechanical, static check,
+    not an assumed property. Covers all four modules `CouncilPinRecord`
+    now tracks (the Finding 7 fix added `contracts.py`/`assurance.py` as
+    genuine transitive dependencies), not just the original two."""
+    for module in (council_module, officers_module, contracts_module, assurance_module):
         source = Path(inspect.getfile(module)).read_text(encoding="utf-8")
         tree = ast.parse(source)
         for node in ast.walk(tree):
