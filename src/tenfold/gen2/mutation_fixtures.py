@@ -2222,8 +2222,27 @@ def _g2_26_full_system_qualification_dirty_domain_kill_check() -> None:
     from .authority_transfer_bridge import rust_check_full_system_qualification
 
     rust_check_full_system_qualification(
+        observer_domains_checked=13,
+        observer_domains_clean=12,
+        mutation_suite_survived=0,
+        shared_trust_undeclared_dependencies=0,
+        model_blackout_violations=0,
+        chronicle_uncovered_writers=0,
+    )
+
+
+def _g2_26_full_system_qualification_partial_roster_kill_check() -> None:
+    # Round-2 review finding (PR #81): "the Rust aggregate accepts any
+    # nonzero checked count rather than the exact expected roster" -- a
+    # claim with a genuinely nonzero, genuinely all-clean, but PARTIAL
+    # sweep (12 of the real 13-domain roster, every one of those 12
+    # reported clean) must still be rejected; only observer_domains_checked
+    # == EXPECTED_OBSERVER_DOMAIN_COUNT counts as full coverage.
+    from .authority_transfer_bridge import rust_check_full_system_qualification
+
+    rust_check_full_system_qualification(
         observer_domains_checked=12,
-        observer_domains_clean=11,
+        observer_domains_clean=12,
         mutation_suite_survived=0,
         shared_trust_undeclared_dependencies=0,
         model_blackout_violations=0,
@@ -3571,6 +3590,19 @@ def build_initial_mutation_suite() -> MutationSuite:
             "G2-00 (entire); G2-26",
             "full_system_qualification",
             _g2_26_full_system_qualification_dirty_domain_kill_check,
+            AuthorityTransferCliError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G26-QUALIFICATIONPARTIALROSTER-001",
+            MutationCategory.RUNTIME_OBLIGATION_OMISSION,
+            "Round-2 review finding (PR #81): a genuinely nonzero, genuinely all-clean, but PARTIAL Observer sweep "
+            "(12 of the real 13-domain roster, every one of those 12 reported clean) must still be rejected -- "
+            "'any nonzero checked count' was never the real bar; only the exact expected roster size is.",
+            "G2-00 (entire); G2-26",
+            "full_system_qualification",
+            _g2_26_full_system_qualification_partial_roster_kill_check,
             AuthorityTransferCliError,
         )
     )

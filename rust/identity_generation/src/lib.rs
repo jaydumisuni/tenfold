@@ -999,6 +999,17 @@ pub fn admit_check_recovery_takeover_verification(
 // swept sub-check must have genuinely reported zero violations.
 // ============================================================================
 
+// Round-2 review finding: the real ObserverCoverageDomain roster
+// (runtime_obligation.py) has exactly 13 required members. Checking only
+// `observer_domains_checked == 0` let ANY nonzero-but-partial sweep (e.g.
+// 12 of 13, silently missing one domain) through as if fully covered.
+// Rust cannot import Python's own enum, so this constant is the
+// independent re-derivation's own frozen expectation of that roster
+// size -- a mismatch here is itself a genuine drift signal (the Python
+// side's own roster size changed without this constant being updated
+// too), not merely a partial-sweep detector.
+pub const EXPECTED_OBSERVER_DOMAIN_COUNT: u64 = 13;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FullSystemQualificationClaim {
     pub observer_domains_checked: u64,
@@ -1010,10 +1021,11 @@ pub struct FullSystemQualificationClaim {
 }
 
 pub fn check_full_system_qualification(claim: &FullSystemQualificationClaim) -> Result<(), IdentityGenerationError> {
-    if claim.observer_domains_checked == 0 {
-        return Err(IdentityGenerationError::Semantic(
-            "HybridFullSystemQualification DRIFT (independently re-derived by Rust): zero Observer domains checked -- coverage would be vacuous".into(),
-        ));
+    if claim.observer_domains_checked != EXPECTED_OBSERVER_DOMAIN_COUNT {
+        return Err(IdentityGenerationError::Semantic(format!(
+            "HybridFullSystemQualification DRIFT (independently re-derived by Rust): {} Observer domain(s) checked, expected exactly {} -- a partial sweep is not full coverage",
+            claim.observer_domains_checked, EXPECTED_OBSERVER_DOMAIN_COUNT
+        )));
     }
     if claim.observer_domains_clean != claim.observer_domains_checked {
         return Err(IdentityGenerationError::Semantic(format!(
@@ -1842,8 +1854,8 @@ mod tests {
 
     fn genuine_qualification_claim() -> FullSystemQualificationClaim {
         FullSystemQualificationClaim {
-            observer_domains_checked: 12,
-            observer_domains_clean: 12,
+            observer_domains_checked: EXPECTED_OBSERVER_DOMAIN_COUNT,
+            observer_domains_clean: EXPECTED_OBSERVER_DOMAIN_COUNT,
             mutation_suite_survived: 0,
             shared_trust_undeclared_dependencies: 0,
             model_blackout_violations: 0,
@@ -1868,12 +1880,28 @@ mod tests {
         let claim = FullSystemQualificationClaim { observer_domains_checked: 0, observer_domains_clean: 0, ..genuine_qualification_claim() };
         let result = check_full_system_qualification(&claim);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("vacuous"));
+        assert!(result.unwrap_err().to_string().contains("expected exactly"));
+    }
+
+    #[test]
+    fn check_full_system_qualification_rejects_a_partial_observer_roster() {
+        // Round-2 review finding: a nonzero-but-partial sweep (12 of the
+        // real 13-domain roster) must be rejected exactly like zero --
+        // "any nonzero checked count" was never the real bar.
+        let claim = FullSystemQualificationClaim {
+            observer_domains_checked: EXPECTED_OBSERVER_DOMAIN_COUNT - 1,
+            observer_domains_clean: EXPECTED_OBSERVER_DOMAIN_COUNT - 1,
+            ..genuine_qualification_claim()
+        };
+        let result = check_full_system_qualification(&claim);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("expected exactly"), "error should name the expected roster size: {err}");
     }
 
     #[test]
     fn check_full_system_qualification_rejects_a_dirty_observer_domain() {
-        let claim = FullSystemQualificationClaim { observer_domains_clean: 11, ..genuine_qualification_claim() };
+        let claim = FullSystemQualificationClaim { observer_domains_clean: EXPECTED_OBSERVER_DOMAIN_COUNT - 1, ..genuine_qualification_claim() };
         let result = check_full_system_qualification(&claim);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
