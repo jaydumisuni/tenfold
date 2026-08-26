@@ -451,6 +451,40 @@ pub fn initial_trust_table() -> TrustTable {
             failure_result: "reject".into(),
             fixture_qualified: true,
         },
+        TrustTableRow {
+            artifact_identity: "self_construction_capability".into(),
+            // G2-27 Self-Construction Minimum Gate
+            // (`tenfold.gen2.self_construction`): the real, independent
+            // verification of whether all live Gen1 execution authority
+            // could disappear immediately after this point while Gen2
+            // can still execute G2-28...G2-30 (G2-00 SS20). Rust cannot
+            // re-run the Python-side AST scan of the tenfold.gen2
+            // package itself (that would duplicate the scan, not
+            // independently re-derive it); what it independently
+            // re-derives is the aggregate logical claim: exactly the
+            // frozen G2-00 SS20 condition-roster count (25) must have
+            // been independently derived, and the claimed
+            // self_construction_capable boolean must genuinely equal
+            // (undisclosed_findings == 0) -- neither over-claiming
+            // capability while hiding an undisclosed finding, nor
+            // under-claiming it despite zero undisclosed findings, is
+            // accepted. A FALSE self_construction_capable claim is not
+            // itself a failure here: G2-27's own Council-condition
+            // clause explicitly anticipates FALSE as a legitimate
+            // outcome of this gate; only an internally INCONSISTENT
+            // claim is rejected.
+            independently_checks: vec![
+                "exactly EXPECTED_SELF_CONSTRUCTION_CONDITION_COUNT (25) conditions genuinely derived from frozen G2-00 SS20".into(),
+                "undisclosed_findings does not exceed total_findings (internally consistent raw counts)".into(),
+                "the claimed self_construction_capable boolean genuinely equals (undisclosed_findings == 0)".into(),
+            ],
+            trusts_only: "that the caller-supplied conditions_derived/total_findings/undisclosed_findings counts genuinely reflect a real AST scan of the live tenfold.gen2 package (Gen1DependencyFinding derivation, the naming-convention/adjudicated-exception disclosure classification) -- Rust re-derives the aggregate claim's own logical consistency, but cannot itself re-run the Python-side static-analysis scan".into(),
+            trust_bounded_reason: "the underlying per-module scan and its disclosure classification are Python-side static analysis with no independent Rust re-derivation of their own (unlike e.g. council_pin's real source re-hash); this row's own independent value is the aggregate claim's internal consistency, honestly disclosed as trust-bounded rather than fabricated as a second independent scan".into(),
+            authority_generation: 1,
+            required_negative_fixture: "capability claim attempted with a wrong condition count, an internally inconsistent finding-count pair, or a self_construction_capable boolean that does not match (undisclosed_findings == 0)".into(),
+            failure_result: "reject".into(),
+            fixture_qualified: true,
+        },
     ];
     for row in rows {
         table.extend(row).expect("initial_trust_table rows are well-formed and non-duplicate by construction");
@@ -463,9 +497,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn initial_table_has_all_fifteen_minimum_families() {
+    fn initial_table_has_all_sixteen_minimum_families() {
         let table = initial_trust_table();
-        assert_eq!(table.len(), 15);
+        assert_eq!(table.len(), 16);
     }
 
     #[test]
@@ -493,6 +527,7 @@ mod tests {
             "recovery_qualification_matrix",
             "recovery_takeover",
             "full_system_qualification",
+            "self_construction_capability",
         ] {
             assert!(table.admit(identity).is_ok(), "expected {identity} to be admitted");
         }
@@ -631,7 +666,7 @@ mod tests {
             fixture_qualified: true,
         };
         assert!(table.extend(row).is_ok());
-        assert_eq!(table.len(), 16);
+        assert_eq!(table.len(), 17);
         assert!(table.admit("chronicle_event").is_ok());
     }
 
