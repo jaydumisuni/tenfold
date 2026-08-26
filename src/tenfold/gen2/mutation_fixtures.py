@@ -2250,6 +2250,56 @@ def _g2_26_full_system_qualification_partial_roster_kill_check() -> None:
     )
 
 
+def _g2_27_self_construction_wrong_condition_count_kill_check() -> None:
+    # The "self_construction_capability" Trust Table row's own
+    # required_negative_fixture, verbatim: "capability claim attempted
+    # with a wrong condition count, an internally inconsistent
+    # finding-count pair, or a self_construction_capable boolean that
+    # does not match (undisclosed_findings == 0)" -- the first half: a
+    # claim deriving fewer than the real frozen G2-00 SS20 roster count
+    # (25), genuinely rejected by the real, independent Rust
+    # re-derivation (G2-27 Self-Construction Minimum Gate).
+    from .authority_transfer_bridge import rust_check_self_construction_capability
+
+    rust_check_self_construction_capability(
+        conditions_derived=24,
+        total_findings=27,
+        undisclosed_findings=0,
+        self_construction_capable=True,
+    )
+
+
+def _g2_27_self_construction_inconsistent_finding_count_kill_check() -> None:
+    # Same required_negative_fixture, the "internally inconsistent
+    # finding-count pair" half: undisclosed_findings exceeds
+    # total_findings -- an internally impossible raw-count claim Rust
+    # must reject regardless of what boolean is claimed.
+    from .authority_transfer_bridge import rust_check_self_construction_capability
+
+    rust_check_self_construction_capability(
+        conditions_derived=25,
+        total_findings=3,
+        undisclosed_findings=5,
+        self_construction_capable=False,
+    )
+
+
+def _g2_27_self_construction_overclaimed_capable_kill_check() -> None:
+    # Same required_negative_fixture, the "boolean does not match
+    # (undisclosed_findings == 0)" half: a genuinely non-zero
+    # undisclosed-findings count, yet self_construction_capable is
+    # falsely claimed True -- Rust independently re-derives the
+    # boolean from the raw counts and must reject the mismatch.
+    from .authority_transfer_bridge import rust_check_self_construction_capability
+
+    rust_check_self_construction_capability(
+        conditions_derived=25,
+        total_findings=5,
+        undisclosed_findings=1,
+        self_construction_capable=True,
+    )
+
+
 def _g2_25_recovery_takeover_falsely_claimed_invariant_kill_check() -> None:
     # Same required_negative_fixture, the other half: epoch genuinely
     # advances, but the raw lease facts show the pre-takeover lease
@@ -3603,6 +3653,47 @@ def build_initial_mutation_suite() -> MutationSuite:
             "G2-00 (entire); G2-26",
             "full_system_qualification",
             _g2_26_full_system_qualification_partial_roster_kill_check,
+            AuthorityTransferCliError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G27-CAPABILITYWRONGCOUNT-001",
+            MutationCategory.RUNTIME_OBLIGATION_OMISSION,
+            "The \"self_construction_capability\" Trust Table row's own required_negative_fixture, verbatim: "
+            "\"capability claim attempted with a wrong condition count, an internally inconsistent finding-count "
+            "pair, or a self_construction_capable boolean that does not match (undisclosed_findings == 0)\" -- the "
+            "first half: a claim deriving 24 rather than the real frozen G2-00 SS20 roster count (25), genuinely "
+            "rejected by the real, independent Rust re-derivation (G2-27 Self-Construction Minimum Gate).",
+            "G2-00 SS20; G2-27",
+            "self_construction_capability",
+            _g2_27_self_construction_wrong_condition_count_kill_check,
+            AuthorityTransferCliError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G27-CAPABILITYINCONSISTENTCOUNT-001",
+            MutationCategory.RUNTIME_OBLIGATION_OMISSION,
+            "Same required_negative_fixture, the 'internally inconsistent finding-count pair' half: "
+            "undisclosed_findings exceeds total_findings -- an internally impossible raw-count claim Rust must "
+            "reject regardless of what boolean is claimed.",
+            "G2-00 SS20; G2-27",
+            "self_construction_capability",
+            _g2_27_self_construction_inconsistent_finding_count_kill_check,
+            AuthorityTransferCliError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G27-CAPABILITYOVERCLAIM-001",
+            MutationCategory.RUNTIME_OBLIGATION_OMISSION,
+            "Same required_negative_fixture, the 'boolean does not match (undisclosed_findings == 0)' half: a "
+            "genuinely non-zero undisclosed-findings count, yet self_construction_capable is falsely claimed True "
+            "-- Rust independently re-derives the boolean from the raw counts and must reject the mismatch.",
+            "G2-00 SS20; G2-27",
+            "self_construction_capability",
+            _g2_27_self_construction_overclaimed_capable_kill_check,
             AuthorityTransferCliError,
         )
     )

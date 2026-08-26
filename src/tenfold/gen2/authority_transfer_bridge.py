@@ -181,6 +181,33 @@ def rust_check_full_system_qualification(
     )
 
 
+def rust_check_self_construction_capability(
+    *,
+    conditions_derived: int,
+    total_findings: int,
+    undisclosed_findings: int,
+    self_construction_capable: bool,
+) -> None:
+    """G2-27 Self-Construction Minimum Gate: admits
+    `"self_construction_capability"` and genuinely, independently
+    re-derives the aggregate claim's internal consistency (exact frozen
+    G2-00 SS20 condition-roster count, and the claimed
+    self_construction_capable boolean genuinely equal to
+    (undisclosed_findings == 0)) in Rust. A FALSE claim is not itself
+    rejected -- only an internally inconsistent one is."""
+    _run(
+        "check-self-construction-capability",
+        input_text=json.dumps(
+            {
+                "conditions_derived": conditions_derived,
+                "total_findings": total_findings,
+                "undisclosed_findings": undisclosed_findings,
+                "self_construction_capable": self_construction_capable,
+            }
+        ),
+    )
+
+
 def rust_transition_recovery_takeover_record(record: dict, new_stage: str, policy: dict) -> dict:
     """G2-25 Bounded Real Gen2 Recovery/Takeover (round-2 review, PR #80
     Finding 1 fix): admits `"recovery_takeover"` and binds the record's

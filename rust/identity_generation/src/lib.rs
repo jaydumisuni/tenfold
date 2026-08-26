@@ -1064,6 +1064,59 @@ pub fn admit_check_full_system_qualification(
     check_full_system_qualification(claim)
 }
 
+// ============================================================================
+// G2-27 Self-Construction Minimum Gate: independently re-derives the
+// aggregate SELF_CONSTRUCTION_CAPABLE claim from raw per-condition/
+// per-finding counts. Rust cannot re-run the whole Python-side AST scan
+// of the tenfold.gen2 package itself (that would duplicate the scan, not
+// independently re-derive it); what it independently re-derives is the
+// logical claim: exactly EXPECTED_SELF_CONSTRUCTION_CONDITION_COUNT
+// conditions independently derived, and ZERO undisclosed live-Gen1
+// dependency findings -- a caller cannot claim capability while hiding
+// even one undisclosed finding, nor by silently deriving fewer than the
+// real frozen G2-00 SS20 condition count.
+// ============================================================================
+
+pub const EXPECTED_SELF_CONSTRUCTION_CONDITION_COUNT: u64 = 25;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfConstructionCapabilityClaim {
+    pub conditions_derived: u64,
+    pub total_findings: u64,
+    pub undisclosed_findings: u64,
+    pub self_construction_capable: bool,
+}
+
+pub fn check_self_construction_capability(claim: &SelfConstructionCapabilityClaim) -> Result<(), IdentityGenerationError> {
+    if claim.conditions_derived != EXPECTED_SELF_CONSTRUCTION_CONDITION_COUNT {
+        return Err(IdentityGenerationError::Semantic(format!(
+            "SelfConstructionCapability DRIFT (independently re-derived by Rust): {} condition(s) derived, expected exactly {} (frozen G2-00 SS20 roster)",
+            claim.conditions_derived, EXPECTED_SELF_CONSTRUCTION_CONDITION_COUNT
+        )));
+    }
+    if claim.undisclosed_findings > claim.total_findings {
+        return Err(IdentityGenerationError::Semantic(
+            "SelfConstructionCapability DRIFT (independently re-derived by Rust): undisclosed_findings exceeds total_findings -- internally inconsistent claim".into(),
+        ));
+    }
+    let genuinely_capable = claim.undisclosed_findings == 0;
+    if claim.self_construction_capable != genuinely_capable {
+        return Err(IdentityGenerationError::Semantic(format!(
+            "SelfConstructionCapability DRIFT (independently re-derived by Rust): claimed self_construction_capable={} but {} undisclosed finding(s) genuinely imply {}",
+            claim.self_construction_capable, claim.undisclosed_findings, genuinely_capable
+        )));
+    }
+    Ok(())
+}
+
+pub fn admit_check_self_construction_capability(
+    table: &trust_table::TrustTable,
+    claim: &SelfConstructionCapabilityClaim,
+) -> Result<(), IdentityGenerationError> {
+    table.admit("self_construction_capability").map_err(|e| IdentityGenerationError::Semantic(e.to_string()))?;
+    check_self_construction_capability(claim)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1939,6 +1992,82 @@ mod tests {
             .rows()
             .find(|r| r.artifact_identity == "full_system_qualification")
             .expect("full_system_qualification row should exist")
+            .is_well_formed());
+    }
+
+    // ---- G2-27 Self-Construction Minimum Gate ----
+
+    fn genuine_capable_claim() -> SelfConstructionCapabilityClaim {
+        SelfConstructionCapabilityClaim {
+            conditions_derived: EXPECTED_SELF_CONSTRUCTION_CONDITION_COUNT,
+            total_findings: 12,
+            undisclosed_findings: 0,
+            self_construction_capable: true,
+        }
+    }
+
+    #[test]
+    fn admit_check_self_construction_capability_fails_closed_when_table_has_no_row() {
+        let table = trust_table::TrustTable::new();
+        assert!(admit_check_self_construction_capability(&table, &genuine_capable_claim()).is_err());
+    }
+
+    #[test]
+    fn admit_check_self_construction_capability_succeeds_on_a_genuine_capable_claim() {
+        let table = trust_table::initial_trust_table();
+        admit_check_self_construction_capability(&table, &genuine_capable_claim()).expect("a genuinely consistent capable claim should be admitted");
+    }
+
+    #[test]
+    fn admit_check_self_construction_capability_succeeds_on_a_genuine_incapable_claim() {
+        // FALSE is a legitimate, anticipated outcome -- must not itself be rejected.
+        let table = trust_table::initial_trust_table();
+        let claim = SelfConstructionCapabilityClaim {
+            total_findings: 5,
+            undisclosed_findings: 2,
+            self_construction_capable: false,
+            ..genuine_capable_claim()
+        };
+        admit_check_self_construction_capability(&table, &claim).expect("a genuinely consistent incapable (FALSE) claim should be admitted");
+    }
+
+    #[test]
+    fn check_self_construction_capability_rejects_a_wrong_condition_count() {
+        let claim = SelfConstructionCapabilityClaim { conditions_derived: EXPECTED_SELF_CONSTRUCTION_CONDITION_COUNT - 1, ..genuine_capable_claim() };
+        let result = check_self_construction_capability(&claim);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("expected exactly"));
+    }
+
+    #[test]
+    fn check_self_construction_capability_rejects_an_internally_inconsistent_finding_count() {
+        let claim = SelfConstructionCapabilityClaim { total_findings: 3, undisclosed_findings: 5, ..genuine_capable_claim() };
+        let result = check_self_construction_capability(&claim);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("internally inconsistent"));
+    }
+
+    #[test]
+    fn check_self_construction_capability_rejects_overclaiming_capable_with_undisclosed_findings() {
+        let claim = SelfConstructionCapabilityClaim { total_findings: 5, undisclosed_findings: 1, self_construction_capable: true, ..genuine_capable_claim() };
+        let result = check_self_construction_capability(&claim);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("independently re-derived by Rust"));
+    }
+
+    #[test]
+    fn check_self_construction_capability_rejects_underclaiming_incapable_with_zero_undisclosed_findings() {
+        let claim = SelfConstructionCapabilityClaim { total_findings: 5, undisclosed_findings: 0, self_construction_capable: false, ..genuine_capable_claim() };
+        assert!(check_self_construction_capability(&claim).is_err());
+    }
+
+    #[test]
+    fn self_construction_capability_row_is_well_formed() {
+        assert!(trust_table::initial_trust_table()
+            .rows()
+            .find(|r| r.artifact_identity == "self_construction_capability")
+            .expect("self_construction_capability row should exist")
             .is_well_formed());
     }
 }
