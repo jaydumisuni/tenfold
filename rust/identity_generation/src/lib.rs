@@ -987,6 +987,83 @@ pub fn admit_check_recovery_takeover_verification(
     check_recovery_takeover_verification(claim)
 }
 
+// ============================================================================
+// G2-26 Hybrid Full-System Qualification: applying the same proactive
+// discipline established at G2-24 (Finding 4) and G2-25 (Finding 2) --
+// the aggregate qualification verdict must genuinely pass through a
+// real, independent Rust re-derivation before being accepted, not
+// merely be admitted by artifact-identity string. Rust cannot re-run
+// the whole Python-side aggregation sweep itself (that would duplicate
+// every already-qualified sub-mechanism a second time); what it CAN and
+// does independently re-derive is the logical claim itself: every
+// swept sub-check must have genuinely reported zero violations.
+// ============================================================================
+
+// Round-2 review finding: the real ObserverCoverageDomain roster
+// (runtime_obligation.py) has exactly 13 required members. Checking only
+// `observer_domains_checked == 0` let ANY nonzero-but-partial sweep (e.g.
+// 12 of 13, silently missing one domain) through as if fully covered.
+// Rust cannot import Python's own enum, so this constant is the
+// independent re-derivation's own frozen expectation of that roster
+// size -- a mismatch here is itself a genuine drift signal (the Python
+// side's own roster size changed without this constant being updated
+// too), not merely a partial-sweep detector.
+pub const EXPECTED_OBSERVER_DOMAIN_COUNT: u64 = 13;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FullSystemQualificationClaim {
+    pub observer_domains_checked: u64,
+    pub observer_domains_clean: u64,
+    pub mutation_suite_survived: u64,
+    pub shared_trust_undeclared_dependencies: u64,
+    pub model_blackout_violations: u64,
+    pub chronicle_uncovered_writers: u64,
+}
+
+pub fn check_full_system_qualification(claim: &FullSystemQualificationClaim) -> Result<(), IdentityGenerationError> {
+    if claim.observer_domains_checked != EXPECTED_OBSERVER_DOMAIN_COUNT {
+        return Err(IdentityGenerationError::Semantic(format!(
+            "HybridFullSystemQualification DRIFT (independently re-derived by Rust): {} Observer domain(s) checked, expected exactly {} -- a partial sweep is not full coverage",
+            claim.observer_domains_checked, EXPECTED_OBSERVER_DOMAIN_COUNT
+        )));
+    }
+    if claim.observer_domains_clean != claim.observer_domains_checked {
+        return Err(IdentityGenerationError::Semantic(format!(
+            "HybridFullSystemQualification DRIFT (independently re-derived by Rust): {} of {} Observer domain(s) not clean",
+            claim.observer_domains_checked - claim.observer_domains_clean,
+            claim.observer_domains_checked
+        )));
+    }
+    let mut failed: Vec<&str> = Vec::new();
+    if claim.mutation_suite_survived > 0 {
+        failed.push("mutation_suite_survived");
+    }
+    if claim.shared_trust_undeclared_dependencies > 0 {
+        failed.push("shared_trust_undeclared_dependencies");
+    }
+    if claim.model_blackout_violations > 0 {
+        failed.push("model_blackout_violations");
+    }
+    if claim.chronicle_uncovered_writers > 0 {
+        failed.push("chronicle_uncovered_writers");
+    }
+    if !failed.is_empty() {
+        return Err(IdentityGenerationError::Semantic(format!(
+            "HybridFullSystemQualification DRIFT (independently re-derived by Rust): non-zero violation count(s) in: {:?}",
+            failed
+        )));
+    }
+    Ok(())
+}
+
+pub fn admit_check_full_system_qualification(
+    table: &trust_table::TrustTable,
+    claim: &FullSystemQualificationClaim,
+) -> Result<(), IdentityGenerationError> {
+    table.admit("full_system_qualification").map_err(|e| IdentityGenerationError::Semantic(e.to_string()))?;
+    check_full_system_qualification(claim)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1770,6 +1847,98 @@ mod tests {
             .rows()
             .find(|r| r.artifact_identity == "recovery_takeover")
             .expect("recovery_takeover row should exist")
+            .is_well_formed());
+    }
+
+    // ---- G2-26 Hybrid Full-System Qualification ----
+
+    fn genuine_qualification_claim() -> FullSystemQualificationClaim {
+        FullSystemQualificationClaim {
+            observer_domains_checked: EXPECTED_OBSERVER_DOMAIN_COUNT,
+            observer_domains_clean: EXPECTED_OBSERVER_DOMAIN_COUNT,
+            mutation_suite_survived: 0,
+            shared_trust_undeclared_dependencies: 0,
+            model_blackout_violations: 0,
+            chronicle_uncovered_writers: 0,
+        }
+    }
+
+    #[test]
+    fn admit_check_full_system_qualification_fails_closed_when_table_has_no_row() {
+        let table = trust_table::TrustTable::new();
+        assert!(admit_check_full_system_qualification(&table, &genuine_qualification_claim()).is_err());
+    }
+
+    #[test]
+    fn admit_check_full_system_qualification_succeeds_on_a_genuine_clean_claim() {
+        let table = trust_table::initial_trust_table();
+        admit_check_full_system_qualification(&table, &genuine_qualification_claim()).expect("a genuinely clean claim should be admitted");
+    }
+
+    #[test]
+    fn check_full_system_qualification_rejects_zero_domains_checked() {
+        let claim = FullSystemQualificationClaim { observer_domains_checked: 0, observer_domains_clean: 0, ..genuine_qualification_claim() };
+        let result = check_full_system_qualification(&claim);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("expected exactly"));
+    }
+
+    #[test]
+    fn check_full_system_qualification_rejects_a_partial_observer_roster() {
+        // Round-2 review finding: a nonzero-but-partial sweep (12 of the
+        // real 13-domain roster) must be rejected exactly like zero --
+        // "any nonzero checked count" was never the real bar.
+        let claim = FullSystemQualificationClaim {
+            observer_domains_checked: EXPECTED_OBSERVER_DOMAIN_COUNT - 1,
+            observer_domains_clean: EXPECTED_OBSERVER_DOMAIN_COUNT - 1,
+            ..genuine_qualification_claim()
+        };
+        let result = check_full_system_qualification(&claim);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("expected exactly"), "error should name the expected roster size: {err}");
+    }
+
+    #[test]
+    fn check_full_system_qualification_rejects_a_dirty_observer_domain() {
+        let claim = FullSystemQualificationClaim { observer_domains_clean: EXPECTED_OBSERVER_DOMAIN_COUNT - 1, ..genuine_qualification_claim() };
+        let result = check_full_system_qualification(&claim);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not clean"), "error should name the dirty domain count: {err}");
+        assert!(err.contains("independently re-derived by Rust"));
+    }
+
+    #[test]
+    fn check_full_system_qualification_rejects_a_surviving_mutant() {
+        let claim = FullSystemQualificationClaim { mutation_suite_survived: 1, ..genuine_qualification_claim() };
+        assert!(check_full_system_qualification(&claim).is_err());
+    }
+
+    #[test]
+    fn check_full_system_qualification_rejects_an_undeclared_shared_trust_dependency() {
+        let claim = FullSystemQualificationClaim { shared_trust_undeclared_dependencies: 1, ..genuine_qualification_claim() };
+        assert!(check_full_system_qualification(&claim).is_err());
+    }
+
+    #[test]
+    fn check_full_system_qualification_rejects_a_model_blackout_violation() {
+        let claim = FullSystemQualificationClaim { model_blackout_violations: 1, ..genuine_qualification_claim() };
+        assert!(check_full_system_qualification(&claim).is_err());
+    }
+
+    #[test]
+    fn check_full_system_qualification_rejects_an_uncovered_chronicle_writer() {
+        let claim = FullSystemQualificationClaim { chronicle_uncovered_writers: 1, ..genuine_qualification_claim() };
+        assert!(check_full_system_qualification(&claim).is_err());
+    }
+
+    #[test]
+    fn full_system_qualification_row_is_well_formed() {
+        assert!(trust_table::initial_trust_table()
+            .rows()
+            .find(|r| r.artifact_identity == "full_system_qualification")
+            .expect("full_system_qualification row should exist")
             .is_well_formed());
     }
 }

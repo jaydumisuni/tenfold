@@ -43,6 +43,13 @@
 //!   raw lease facts (old leases fenced, exactly one post-takeover
 //!   owner) plus the caller-observed stale-dispatch-rejection fact;
 //!   prints ACCEPT/REJECT.
+//! - `check-full-system-qualification` (G2-26 Hybrid Full-System
+//!   Qualification) -- reads a `FullSystemQualificationClaim` JSON from
+//!   stdin, admits `"full_system_qualification"`, and independently
+//!   re-derives the aggregate claim: Observer coverage is non-vacuous
+//!   and fully clean, and every swept sub-check (Mutation Suite, Shared
+//!   Trust Surface Manifest, model blackout, Chronicle head coverage)
+//!   reported zero violations; prints ACCEPT/REJECT.
 //! - `transition-recovery-takeover-record` (G2-25 Bounded Real Gen2
 //!   Recovery/Takeover, round-2 review finding, PR #80 Finding 1) --
 //!   reads `{"record": AuthorityTransferRecord, "new_stage":
@@ -57,9 +64,10 @@
 //!   dataclass `.transition()` method.
 
 use identity_generation::{
-    admit_check_authority_transfer_transition, admit_check_council_pin, admit_check_recovery_qualification_coverage, admit_check_recovery_takeover_verification, admit_transition,
-    admit_transition_for, authority_transfer_trust_table_row, check_valid_authority_owner_count, trust_table_row, AuthorityTransferRecord, AuthorityTransferStabilizationPolicy,
-    AuthorityTransferStage, CouncilPinRecord, RecoveryQualificationCoverageClaim, RecoveryTakeoverVerificationClaim,
+    admit_check_authority_transfer_transition, admit_check_council_pin, admit_check_full_system_qualification, admit_check_recovery_qualification_coverage,
+    admit_check_recovery_takeover_verification, admit_transition, admit_transition_for, authority_transfer_trust_table_row, check_valid_authority_owner_count, trust_table_row,
+    AuthorityTransferRecord, AuthorityTransferStabilizationPolicy, AuthorityTransferStage, CouncilPinRecord, FullSystemQualificationClaim, RecoveryQualificationCoverageClaim,
+    RecoveryTakeoverVerificationClaim,
 };
 use serde::Deserialize;
 use std::io::Read;
@@ -236,6 +244,26 @@ fn main() -> ExitCode {
                 Err(e) => return usage_error(&e.to_string()),
             };
             match admit_check_recovery_takeover_verification(&admitted_table(), &claim) {
+                Ok(()) => {
+                    println!("ACCEPT");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    println!("REJECT: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        "check-full-system-qualification" => {
+            let buf = match read_stdin() {
+                Ok(b) => b,
+                Err(code) => return code,
+            };
+            let claim: FullSystemQualificationClaim = match serde_json::from_str(&buf) {
+                Ok(v) => v,
+                Err(e) => return usage_error(&e.to_string()),
+            };
+            match admit_check_full_system_qualification(&admitted_table(), &claim) {
                 Ok(()) => {
                     println!("ACCEPT");
                     ExitCode::SUCCESS
