@@ -53,7 +53,19 @@
     "limitations": [],
     "anomalies": [],
     "questions": [],
-    "dispatch_epoch": 1
+    "dispatch_epoch": 1,
+    "detector_bindings": [
+      {
+        "detector_id": "g2-19-corpus-detector-1",
+        "admitted_domain": "g2-19-corpus-domain-1",
+        "tool_version": "v1",
+        "input_refs": ["g2-19-corpus-input-ref-1"]
+      }
+    ]
+  },
+  "real_dispatch_digest": "g2-19-corpus-dispatch-digest",
+  "admitted_detectors": {
+    "g2-19-corpus-detector-1": ["g2-19-corpus-domain-1"]
   },
   "lease": {
     "lease_id": "g2-19-corpus-lease-1",

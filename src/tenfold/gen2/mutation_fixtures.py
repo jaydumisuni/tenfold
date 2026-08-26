@@ -244,17 +244,22 @@ from .council_pin import CouncilPinError, build_council_pin_record, invoke_pinne
 from .recovery_qualification import RecoveryQualificationError, build_g2_24_recovery_qualification_matrix
 from .bootstrap_protocol import (
     BootstrapProtocolError,
+    DetectorBinding,
     EvidencePacketV1,
     FacilityRequestV1,
     FacilityResultV1,
     TaskPacketV1,
+    check_evidence_packet_detector_bindings,
     check_evidence_packet_generation_current,
+    check_evidence_packet_provenance,
     check_facility_result_matches_request,
     validate_bootstrap_corpus,
 )
 from .bootstrap_protocol_bridge import (
     BootstrapProtocolCliError,
+    rust_check_evidence_packet_detector_bindings,
     rust_check_evidence_packet_generation_current,
+    rust_check_evidence_packet_provenance,
     rust_check_facility_result_matches_request,
     rust_validate_bootstrap_corpus,
     rust_validate_task_packet,
@@ -1805,7 +1810,9 @@ def _g2_19_stale_evidence_packet_kill_check() -> None:
     # The "evidence_packet" Trust Table row's own required_negative_
     # fixture, verbatim: "stale/wrong-generation evidence". Activates the
     # row seeded PENDING_IMPLEMENTATION at G2-03, honestly left that way
-    # through G2-18.
+    # through G2-18. Proves the generation third of that row's
+    # independently_checks claim; the provenance and detector/tool/input
+    # bindings thirds are proven separately below (SC-16 closure).
     packet_dict = {
         "packet_id": "packet-1",
         "task_id": "task-1",
@@ -1834,6 +1841,91 @@ def _g2_19_stale_evidence_packet_kill_check() -> None:
 
     packet = EvidencePacketV1(**{**packet_dict, "observations": (), "artifacts": (), "results": (), "limitations": (), "anomalies": (), "questions": ()})
     check_evidence_packet_generation_current(packet, 2, 1)
+
+
+def _g2_19_unprovenanced_evidence_packet_kill_check() -> None:
+    # The "evidence_packet" Trust Table row's own required_negative_
+    # fixture, verbatim: "an unprovenanced dispatch_digest" (SC-16
+    # closure). A packet whose claimed dispatch_digest does not match the
+    # caller's independently-known real value is not genuinely traceable
+    # to the dispatch it claims.
+    packet_dict = {
+        "packet_id": "packet-1",
+        "task_id": "task-1",
+        "assignment_id": "assignment-1",
+        "attempt": 1,
+        "dispatch_digest": "digest-1",
+        "campaign_id": "campaign-1",
+        "campaign_generation": 1,
+        "node_id": "g2-19",
+        "worker_identity": "opus-handoff",
+        "source_binding": "sha-1",
+        "observations": [],
+        "artifacts": [],
+        "results": [],
+        "limitations": [],
+        "anomalies": [],
+        "questions": [],
+        "dispatch_epoch": 1,
+        "detector_bindings": [{"detector_id": "detector-1", "admitted_domain": "domain-1", "tool_version": "v1", "input_refs": ["input-ref-1"]}],
+    }
+    try:
+        rust_check_evidence_packet_provenance(packet_dict, "some-other-digest")
+    except BootstrapProtocolCliError:
+        pass
+    else:
+        raise AssertionError("rust bootstrap_protocol kernel incorrectly admitted an unprovenanced dispatch_digest")
+
+    packet = EvidencePacketV1(
+        **{
+            **packet_dict,
+            "observations": (),
+            "artifacts": (),
+            "results": (),
+            "limitations": (),
+            "anomalies": (),
+            "questions": (),
+            "detector_bindings": (DetectorBinding(**{**packet_dict["detector_bindings"][0], "input_refs": tuple(packet_dict["detector_bindings"][0]["input_refs"])}),),
+        }
+    )
+    check_evidence_packet_provenance(packet, real_dispatch_digest="some-other-digest")
+
+
+def _g2_19_evidence_packet_no_detector_bindings_kill_check() -> None:
+    # The "evidence_packet" Trust Table row's own required_negative_
+    # fixture, verbatim: "no detector_bindings attached" (SC-16 closure).
+    # An evidence packet with zero attested detectors cannot be qualified
+    # detector-and-tool-bound evidence.
+    packet_dict = {
+        "packet_id": "packet-1",
+        "task_id": "task-1",
+        "assignment_id": "assignment-1",
+        "attempt": 1,
+        "dispatch_digest": "digest-1",
+        "campaign_id": "campaign-1",
+        "campaign_generation": 1,
+        "node_id": "g2-19",
+        "worker_identity": "opus-handoff",
+        "source_binding": "sha-1",
+        "observations": [],
+        "artifacts": [],
+        "results": [],
+        "limitations": [],
+        "anomalies": [],
+        "questions": [],
+        "dispatch_epoch": 1,
+        "detector_bindings": [],
+    }
+    admitted_detectors = {"detector-1": ["domain-1"]}
+    try:
+        rust_check_evidence_packet_detector_bindings(packet_dict, admitted_detectors)
+    except BootstrapProtocolCliError:
+        pass
+    else:
+        raise AssertionError("rust bootstrap_protocol kernel incorrectly admitted an EvidencePacketV1 with no detector_bindings attached")
+
+    packet = EvidencePacketV1(**{**packet_dict, "observations": (), "artifacts": (), "results": (), "limitations": (), "anomalies": (), "questions": (), "detector_bindings": ()})
+    check_evidence_packet_detector_bindings(packet, admitted_detectors={k: frozenset(v) for k, v in admitted_detectors.items()})
 
 
 def _g2_19_facility_result_mismatch_kill_check() -> None:
@@ -3382,14 +3474,43 @@ def build_initial_mutation_suite() -> MutationSuite:
             "An EvidencePacketV1 produced against a campaign_generation/dispatch_epoch other than "
             "the caller's current, independently-known values -- stale/wrong-generation evidence -- "
             "is rejected by both the real compiled Rust bootstrap_protocol kernel and the real "
-            "Python re-derivation, killing the required_negative_fixture of the evidence_packet row "
-            "seeded PENDING_IMPLEMENTATION at G2-03. Proves only the generation third of that row's "
-            "independently_checks claim; provenance and detector/tool/input bindings remain unbuilt, "
-            "so the row itself honestly stays fixture_qualified: false (G2-19, round-2 review "
-            "finding).",
+            "Python re-derivation, killing one of the three required_negative_fixture scenarios of "
+            "the evidence_packet row seeded PENDING_IMPLEMENTATION at G2-03. Proves the generation "
+            "third of that row's independently_checks claim; the provenance and detector/tool/input "
+            "bindings thirds are proven by MUT-G19-EVIDENCEPROVENANCE-001 and "
+            "MUT-G19-EVIDENCEDETECTOR-001 (SC-16 closure, following G2-27's own independent SS20 "
+            "verification), which together flip the row to fixture_qualified: true.",
             "G2-00 SS4.1; G2-19",
             "evidence_packet",
             _g2_19_stale_evidence_packet_kill_check,
+            BootstrapProtocolError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G19-EVIDENCEPROVENANCE-001",
+            MutationCategory.BOUNDARY_INDEPENDENCE_FAILURE,
+            "The evidence_packet row's own required_negative_fixture, verbatim: \"an unprovenanced "
+            "dispatch_digest\" -- an EvidencePacketV1 whose claimed dispatch_digest does not match "
+            "the caller's independently-known real value is rejected by both the real compiled Rust "
+            "bootstrap_protocol kernel and the real Python re-derivation (SC-16 closure, G2-19).",
+            "G2-00 SS4.1; G2-19",
+            "evidence_packet",
+            _g2_19_unprovenanced_evidence_packet_kill_check,
+            BootstrapProtocolError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G19-EVIDENCEDETECTOR-001",
+            MutationCategory.BOUNDARY_INDEPENDENCE_FAILURE,
+            "The evidence_packet row's own required_negative_fixture, verbatim: \"no "
+            "detector_bindings attached\" -- an EvidencePacketV1 with zero attested detectors is "
+            "rejected by both the real compiled Rust bootstrap_protocol kernel and the real Python "
+            "re-derivation (SC-16 closure, G2-19).",
+            "G2-00 SS4.1; G2-19",
+            "evidence_packet",
+            _g2_19_evidence_packet_no_detector_bindings_kill_check,
             BootstrapProtocolError,
         )
     )

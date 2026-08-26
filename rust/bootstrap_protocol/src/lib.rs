@@ -36,6 +36,7 @@
 //! loads the same corpus file into the Python mirror.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fmt;
 
 pub const PROTOCOL_VERSION: &str = "tenfold.bootstrap.v1";
@@ -149,10 +150,51 @@ impl TaskPacketV1 {
 
 // ============================================================================
 // Evidence Packet -- activates the pre-existing `"evidence_packet"` Trust
-// Table row (seeded at G2-03, honestly left `fixture_qualified: false`
-// through G2-18). Required negative fixture, verbatim from that row:
-// "stale/wrong-generation evidence".
+// Table row (seeded at G2-03, originally built only the generation-
+// currency third of its claim, honestly left `fixture_qualified: false`
+// through G2-27's own closure). SC-16 closure genuinely completes the
+// remaining two thirds -- `DetectorBinding` names WHICH qualified
+// detector/tool produced a result and WHAT real inputs it examined,
+// `check_evidence_packet_provenance` independently confirms the packet's
+// claimed `dispatch_digest` matches a real, independently-known value,
+// and `check_evidence_packet_detector_bindings` confirms every attached
+// `DetectorBinding` names an admitted detector operating inside its own
+// admitted domain -- flipping the row to `fixture_qualified: true`.
+// Required negative fixture, verbatim from that row: "stale/wrong-
+// generation evidence, an unprovenanced dispatch_digest, no
+// detector_bindings attached, or a detector operating outside its
+// admitted domain".
 // ============================================================================
+
+/// Names the qualified detector/tool that produced one evidence result,
+/// the domain it is admitted to operate within, and the real inputs it
+/// examined -- the "detector/tool/input bindings" third of the
+/// `"evidence_packet"` Trust Table row's own claim.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DetectorBinding {
+    pub detector_id: String,
+    pub admitted_domain: String,
+    pub tool_version: String,
+    pub input_refs: Vec<String>,
+}
+
+impl DetectorBinding {
+    pub fn validate(&self) -> Result<(), BootstrapProtocolError> {
+        for (field, value) in [("detector_id", &self.detector_id), ("admitted_domain", &self.admitted_domain), ("tool_version", &self.tool_version)] {
+            if value.trim().is_empty() {
+                return Err(err(format!("DetectorBinding: {field} must be non-empty")));
+            }
+        }
+        if self.input_refs.is_empty() {
+            return Err(err(format!(
+                "DetectorBinding {:?}: input_refs must be non-empty -- evidence must cite what it genuinely examined, not merely assert a conclusion",
+                self.detector_id
+            )));
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -174,6 +216,8 @@ pub struct EvidencePacketV1 {
     pub anomalies: Vec<String>,
     pub questions: Vec<String>,
     pub dispatch_epoch: u64,
+    #[serde(default)]
+    pub detector_bindings: Vec<DetectorBinding>,
 }
 
 impl EvidencePacketV1 {
@@ -198,6 +242,9 @@ impl EvidencePacketV1 {
         if self.dispatch_epoch == 0 {
             return Err(err(format!("EvidencePacketV1 {:?}: dispatch_epoch must be positive", self.packet_id)));
         }
+        for binding in &self.detector_bindings {
+            binding.validate()?;
+        }
         Ok(())
     }
 }
@@ -221,6 +268,49 @@ pub fn check_evidence_packet_generation_current(packet: &EvidencePacketV1, curre
             "EvidencePacketV1 {:?}: dispatch_epoch {} does not match current dispatch_epoch {} -- stale/wrong-generation evidence",
             packet.packet_id, packet.dispatch_epoch, current_dispatch_epoch
         )));
+    }
+    Ok(())
+}
+
+/// The `"evidence_packet"` row's own `independently_checks`: "generation,
+/// provenance, detector/tool/input bindings." This is the provenance
+/// third: a packet's claimed `dispatch_digest` must match the caller's
+/// independently-known real dispatch digest for that exact
+/// task/assignment/attempt -- the same trust-boundary pattern
+/// `check_evidence_packet_generation_current` already established.
+pub fn check_evidence_packet_provenance(packet: &EvidencePacketV1, real_dispatch_digest: &str) -> Result<(), BootstrapProtocolError> {
+    packet.validate()?;
+    if packet.dispatch_digest != real_dispatch_digest {
+        return Err(err(format!(
+            "EvidencePacketV1 {:?}: claimed dispatch_digest {:?} does not match the real, independently-known dispatch digest {:?} -- unprovenanced evidence",
+            packet.packet_id, packet.dispatch_digest, real_dispatch_digest
+        )));
+    }
+    Ok(())
+}
+
+/// The `"evidence_packet"` row's own `independently_checks`: "generation,
+/// provenance, detector/tool/input bindings." This is the detector/tool/
+/// input-bindings third: every `DetectorBinding` the packet attaches must
+/// name a detector_id present in the caller's independently-known
+/// `admitted_detectors` registry, and its claimed admitted_domain must
+/// genuinely be one of that specific detector's real admitted domains. A
+/// packet with no detector bindings at all is rejected outright.
+pub fn check_evidence_packet_detector_bindings(packet: &EvidencePacketV1, admitted_detectors: &HashMap<String, Vec<String>>) -> Result<(), BootstrapProtocolError> {
+    packet.validate()?;
+    if packet.detector_bindings.is_empty() {
+        return Err(err(format!("EvidencePacketV1 {:?}: no detector_bindings attached -- evidence must be genuinely detector/tool-bound", packet.packet_id)));
+    }
+    for binding in &packet.detector_bindings {
+        let Some(domains) = admitted_detectors.get(&binding.detector_id) else {
+            return Err(err(format!("EvidencePacketV1 {:?}: detector {:?} is not in the admitted-detector registry", packet.packet_id, binding.detector_id)));
+        };
+        if !domains.iter().any(|d| d == &binding.admitted_domain) {
+            return Err(err(format!(
+                "EvidencePacketV1 {:?}: detector {:?} is not admitted for domain {:?} (its real admitted domains: {:?})",
+                packet.packet_id, binding.detector_id, binding.admitted_domain, domains
+            )));
+        }
     }
     Ok(())
 }
@@ -329,6 +419,14 @@ pub struct BootstrapCorpusV1 {
     pub facility_result: FacilityResultV1,
     pub assurance_result: proof_graph::AssuranceBindingClaim,
     pub chronicle_event: chronicle::ChronicleEntry,
+    /// The corpus's own independently-known "ground truth" for the
+    /// evidence packet's claimed `dispatch_digest` -- the same role
+    /// `campaign_identity.generation`/`lease.epoch` already play for the
+    /// generation check.
+    pub real_dispatch_digest: String,
+    /// The corpus's own independently-known detector-admission registry:
+    /// detector_id -> the real domains that detector is admitted for.
+    pub admitted_detectors: HashMap<String, Vec<String>>,
 }
 
 fn validate_lease(lease: &dispatch_lease::WriteLease) -> Result<(), BootstrapProtocolError> {
@@ -366,6 +464,11 @@ pub fn validate_bootstrap_corpus(corpus: &BootstrapCorpusV1) -> Result<(), Boots
     // reference points) rather than trusting a caller-supplied packet that
     // happens to validate() on its own.
     check_evidence_packet_generation_current(&corpus.evidence_packet, corpus.campaign_identity.generation, corpus.lease.epoch)?;
+    // Provenance and detector/tool/input bindings -- the two thirds of
+    // the "evidence_packet" row's own claim this crate now genuinely
+    // builds (previously honestly deferred, G2-19 round-2 finding).
+    check_evidence_packet_provenance(&corpus.evidence_packet, &corpus.real_dispatch_digest)?;
+    check_evidence_packet_detector_bindings(&corpus.evidence_packet, &corpus.admitted_detectors)?;
     validate_lease(&corpus.lease)?;
     check_facility_result_matches_request(&corpus.facility_request, &corpus.facility_result)?;
     if !corpus.assurance_result.reconciled() {
@@ -438,18 +541,25 @@ pub fn admit_validate_task_packet(table: &trust_table::TrustTable, packet: &Task
 }
 
 /// Gates the standalone (not corpus-embedded) generation-currency check
-/// behind full Trust Table admission of "evidence_packet" -- which, as of
-/// G2-19, always fails closed, since that row honestly remains
-/// `fixture_qualified: false` (round-2 review finding: only the
-/// generation third of its claim is genuinely built). Kept as a real,
-/// tested function -- proving fail-closed admission is itself a
-/// requirement -- but intentionally not exposed via the CLI; the free
-/// `check_evidence_packet_generation_current` above is what the CLI and
-/// the corpus proof actually use for the capability this crate genuinely
-/// built.
+/// behind full Trust Table admission of "evidence_packet" -- genuinely
+/// qualified as of the SC-16 closure (G2-27's own honest finding that
+/// this row remained `fixture_qualified: false`; provenance and
+/// detector/tool/input bindings are now genuinely built alongside
+/// generation, see `check_evidence_packet_provenance`/
+/// `check_evidence_packet_detector_bindings` below).
 pub fn admit_check_evidence_packet_generation_current(table: &trust_table::TrustTable, packet: &EvidencePacketV1, current_campaign_generation: u64, current_dispatch_epoch: u64) -> Result<(), BootstrapProtocolError> {
     table.admit("evidence_packet").map_err(|e| err(e.to_string()))?;
     check_evidence_packet_generation_current(packet, current_campaign_generation, current_dispatch_epoch)
+}
+
+pub fn admit_check_evidence_packet_provenance(table: &trust_table::TrustTable, packet: &EvidencePacketV1, real_dispatch_digest: &str) -> Result<(), BootstrapProtocolError> {
+    table.admit("evidence_packet").map_err(|e| err(e.to_string()))?;
+    check_evidence_packet_provenance(packet, real_dispatch_digest)
+}
+
+pub fn admit_check_evidence_packet_detector_bindings(table: &trust_table::TrustTable, packet: &EvidencePacketV1, admitted_detectors: &HashMap<String, Vec<String>>) -> Result<(), BootstrapProtocolError> {
+    table.admit("evidence_packet").map_err(|e| err(e.to_string()))?;
+    check_evidence_packet_detector_bindings(packet, admitted_detectors)
 }
 
 pub fn admit_check_facility_result_matches_request(table: &trust_table::TrustTable, request: &FacilityRequestV1, result: &FacilityResultV1) -> Result<(), BootstrapProtocolError> {
@@ -457,23 +567,16 @@ pub fn admit_check_facility_result_matches_request(table: &trust_table::TrustTab
     check_facility_result_matches_request(request, result)
 }
 
-/// Deliberately does NOT `table.admit("evidence_packet")`: that row's own
-/// `independently_checks` claims "generation, provenance, detector/tool/
-/// input bindings", and this crate only genuinely built the generation
-/// third (round-2 review finding, G2-19 -- see the row's definition in
-/// `rust/trust_table`). Requiring that admission here would make the
-/// whole corpus proof either falsely claim full evidence_packet
-/// qualification (if the row were wrongly marked qualified) or always
-/// fail closed for a reason unrelated to this corpus's own genuine
-/// validity (now that the row is honestly unqualified). Instead, the
-/// evidence_packet field is checked by `validate_bootstrap_corpus` itself
-/// via the free (non-admission-gated) `check_evidence_packet_generation_
-/// current` -- exactly the capability this milestone actually built,
-/// no more.
+/// Now genuinely requires ALL FOUR family admissions, including
+/// "evidence_packet" -- previously deliberately bypassed (G2-19 round-2
+/// finding: that row's own claim was only a third built). SC-16 closure
+/// completes the row's real qualification (provenance, detector/tool/
+/// input bindings), so admission is now genuine, not an overclaim.
 pub fn admit_validate_bootstrap_corpus(table: &trust_table::TrustTable, corpus: &BootstrapCorpusV1) -> Result<(), BootstrapProtocolError> {
     table.admit("task_packet").map_err(|e| err(e.to_string()))?;
     table.admit("facility_request_result").map_err(|e| err(e.to_string()))?;
     table.admit("bootstrap_protocol_corpus").map_err(|e| err(e.to_string()))?;
+    table.admit("evidence_packet").map_err(|e| err(e.to_string()))?;
     validate_bootstrap_corpus(corpus)
 }
 
@@ -518,6 +621,16 @@ mod tests {
         }
     }
 
+    fn detector_binding() -> DetectorBinding {
+        DetectorBinding { detector_id: "g2-19-detector-1".into(), admitted_domain: "g2-19-domain-1".into(), tool_version: "v1".into(), input_refs: vec!["input-ref-1".into()] }
+    }
+
+    fn admitted_detectors() -> HashMap<String, Vec<String>> {
+        let mut map = HashMap::new();
+        map.insert("g2-19-detector-1".to_string(), vec!["g2-19-domain-1".to_string()]);
+        map
+    }
+
     fn evidence_packet(campaign_generation: u64, dispatch_epoch: u64) -> EvidencePacketV1 {
         EvidencePacketV1 {
             packet_id: "packet-1".into(),
@@ -537,6 +650,7 @@ mod tests {
             anomalies: vec![],
             questions: vec![],
             dispatch_epoch,
+            detector_bindings: vec![detector_binding()],
         }
     }
 
@@ -612,6 +726,8 @@ mod tests {
             facility_result: result,
             assurance_result: reconciled_assurance_claim(),
             chronicle_event: real_chronicle_entry(),
+            real_dispatch_digest: "digest-1".into(),
+            admitted_detectors: admitted_detectors(),
         }
     }
 
@@ -756,6 +872,34 @@ mod tests {
         assert!(validate_bootstrap_corpus(&c).is_err());
     }
 
+    #[test]
+    fn corpus_rejects_evidence_packet_with_unprovenanced_dispatch_digest() {
+        let mut c = valid_corpus();
+        c.real_dispatch_digest = "some-other-digest".into();
+        assert!(validate_bootstrap_corpus(&c).is_err());
+    }
+
+    #[test]
+    fn corpus_rejects_evidence_packet_with_no_detector_bindings() {
+        let mut c = valid_corpus();
+        c.evidence_packet.detector_bindings = vec![];
+        assert!(validate_bootstrap_corpus(&c).is_err());
+    }
+
+    #[test]
+    fn corpus_rejects_evidence_packet_with_an_unadmitted_detector() {
+        let mut c = valid_corpus();
+        c.evidence_packet.detector_bindings = vec![DetectorBinding { detector_id: "unregistered-detector".into(), ..detector_binding() }];
+        assert!(validate_bootstrap_corpus(&c).is_err());
+    }
+
+    #[test]
+    fn corpus_rejects_evidence_packet_with_a_detector_outside_its_admitted_domain() {
+        let mut c = valid_corpus();
+        c.evidence_packet.detector_bindings = vec![DetectorBinding { admitted_domain: "some-other-domain".into(), ..detector_binding() }];
+        assert!(validate_bootstrap_corpus(&c).is_err());
+    }
+
     // ---- Trust Table admission ----
 
     #[test]
@@ -800,19 +944,33 @@ mod tests {
     }
 
     #[test]
-    fn admit_check_evidence_packet_generation_current_fails_closed_even_for_a_current_generation_packet() {
-        // Round-2 review finding (G2-19, Finding 1): the "evidence_packet"
-        // row honestly remains fixture_qualified: false -- only the
-        // generation third of its independently_checks claim is built, not
-        // provenance/detector/tool/input bindings. admit() must therefore
-        // still refuse it even for a packet that is genuinely current, and
-        // even against admitted_table() (which admits task_packet/
-        // facility_request_result/bootstrap_protocol_corpus, but never
-        // activates evidence_packet). The free check_evidence_packet_
-        // generation_current above is the one genuinely exercised
-        // capability; this admit_-gated wrapper is intentionally not
-        // usable yet.
-        assert!(admit_check_evidence_packet_generation_current(&admitted_table(), &evidence_packet(1, 1), 1, 1).is_err());
+    fn admit_check_evidence_packet_generation_current_succeeds_once_admitted() {
+        // SC-16 closure: "evidence_packet" is now genuinely
+        // fixture_qualified -- admission succeeds for a genuinely current
+        // packet against the real Trust Table.
+        admit_check_evidence_packet_generation_current(&trust_table::initial_trust_table(), &evidence_packet(1, 1), 1, 1).unwrap();
+    }
+
+    #[test]
+    fn admit_check_evidence_packet_provenance_succeeds_on_a_genuinely_provenanced_packet() {
+        admit_check_evidence_packet_provenance(&trust_table::initial_trust_table(), &evidence_packet(1, 1), "digest-1").unwrap();
+    }
+
+    #[test]
+    fn admit_check_evidence_packet_provenance_rejects_an_unprovenanced_packet() {
+        assert!(admit_check_evidence_packet_provenance(&trust_table::initial_trust_table(), &evidence_packet(1, 1), "some-other-digest").is_err());
+    }
+
+    #[test]
+    fn admit_check_evidence_packet_detector_bindings_succeeds_on_a_genuinely_bound_packet() {
+        admit_check_evidence_packet_detector_bindings(&trust_table::initial_trust_table(), &evidence_packet(1, 1), &admitted_detectors()).unwrap();
+    }
+
+    #[test]
+    fn admit_check_evidence_packet_detector_bindings_rejects_a_packet_with_no_bindings() {
+        let mut packet = evidence_packet(1, 1);
+        packet.detector_bindings = vec![];
+        assert!(admit_check_evidence_packet_detector_bindings(&trust_table::initial_trust_table(), &packet, &admitted_detectors()).is_err());
     }
 
     #[test]
