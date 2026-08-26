@@ -184,6 +184,7 @@ def rust_check_full_system_qualification(
 def rust_check_self_construction_capability(
     *,
     conditions_derived: int,
+    conditions_qualified: int,
     total_findings: int,
     undisclosed_findings: int,
     self_construction_capable: bool,
@@ -193,13 +194,18 @@ def rust_check_self_construction_capability(
     re-derives the aggregate claim's internal consistency (exact frozen
     G2-00 SS20 condition-roster count, and the claimed
     self_construction_capable boolean genuinely equal to
-    (undisclosed_findings == 0)) in Rust. A FALSE claim is not itself
-    rejected -- only an internally inconsistent one is."""
+    (undisclosed_findings == 0 and conditions_qualified ==
+    conditions_derived)) in Rust -- round-2 review finding, PR #82
+    Finding 1: qualification is now a genuine, independently re-derived
+    part of the aggregate claim, not merely the absence of a Gen1
+    import. A FALSE claim is not itself rejected -- only an internally
+    inconsistent one is."""
     _run(
         "check-self-construction-capability",
         input_text=json.dumps(
             {
                 "conditions_derived": conditions_derived,
+                "conditions_qualified": conditions_qualified,
                 "total_findings": total_findings,
                 "undisclosed_findings": undisclosed_findings,
                 "self_construction_capable": self_construction_capable,

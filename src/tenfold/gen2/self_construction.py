@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import ast
 import inspect
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from . import (
@@ -54,6 +54,7 @@ from . import (
     constitutional,
     council_pin,
     dispatch_lease,
+    dispatch_lease_bridge,
     dispatch_mutation_transfer,
     effect_census,
     effect_transfer,
@@ -72,6 +73,18 @@ from . import (
     verifier,
 )
 from .authority_transfer_bridge import AuthorityTransferCliError, rust_check_self_construction_capability
+from .full_system_qualification import (
+    derive_accepted_uncertainty_hazards_drift_signal,
+    derive_ambient_authority_drift_signal,
+    derive_authority_drift_signal,
+    derive_authority_plane_preimage_drift_signal,
+    derive_chronicle_checkpoint_integrity_signal,
+    derive_effect_census_mismatches_signal,
+    derive_effect_reach_drift_signal,
+    derive_facility_limitations_signal,
+    derive_mintable_bound_drift_signal,
+    derive_recovery_qualification_drift_signal,
+)
 from .recovery_takeover import ExternalAssuranceProof, SERGEANT_AUTHORITY_VERSION, _sergeant_env
 from .verifier import independent_reconcile_external_assurance
 from tenfold.assurance_adapters import AssuranceVerdict, FrozenAssuranceRequest, SergeantMilestoneAdapter, VerifiedAssurance
@@ -145,6 +158,303 @@ def independent_derive_self_construction_conditions() -> tuple[SelfConstructionC
 
 
 # ============================================================================
+# Per-condition qualification: round-2 review finding (Finding 1) --
+# "none of the 25 conditions is checked for qualification or supporting
+# evidence, so capability becomes true solely because the import scan
+# has no undisclosed findings." A module owning a condition and never
+# importing Gen1 is necessary but NOT sufficient evidence the capability
+# genuinely, functionally exists -- confirmed concretely for SC-23
+# below. Each condition below is genuinely, functionally exercised:
+# where a dedicated Trust Table row exists for the artifact, admission
+# is checked via the real compiled Rust `admit` CLI (the same
+# already-established, already-adversarially-reviewed mechanism every
+# Trust-Table-gated milestone in this campaign uses); where G2-26 already
+# built a real DriftSignal derivation for the same mechanism, that
+# genuine, already-PROVEN function is reused directly; the remainder get
+# a minimal but real, direct functional exercise.
+# ============================================================================
+
+
+@dataclass(frozen=True)
+class ConditionQualificationResult:
+    condition_id: str
+    qualified: bool
+    evidence: str
+
+
+def _check_trust_table_admits(*artifact_identities: str) -> tuple[bool, str]:
+    """Genuinely calls the real, compiled Rust `admit` CLI subcommand
+    (`authority_transfer_bridge.rust_admit`) for each `artifact_identity`
+    -- the artifact is qualified only if it has a real, well-formed
+    Trust Table row with `fixture_qualified: true`; a row that exists
+    but is honestly `fixture_qualified: false` (e.g. `"evidence_packet"`,
+    G2-19's own disclosed partial build) is genuinely rejected here, not
+    silently passed."""
+    from .authority_transfer_bridge import AuthorityTransferCliError, rust_admit
+
+    failures: list[str] = []
+    for identity in artifact_identities:
+        try:
+            rust_admit(identity)
+        except AuthorityTransferCliError as e:
+            failures.append(f"{identity}: {e}")
+    if failures:
+        return False, "; ".join(failures)
+    return True, f"genuinely admitted by the real Trust Table: {', '.join(artifact_identities)}"
+
+
+def _qualify_sc01_closure_consumption() -> ConditionQualificationResult:
+    ok, evidence = _check_trust_table_admits("requirement_closure", "classification_closure", "constitutional_policy")
+    return ConditionQualificationResult("SC-01", ok, evidence)
+
+
+def _qualify_sc02_canonical_decoding() -> ConditionQualificationResult:
+    import json as _json
+
+    payload = _json.dumps({"a": 1, "b": [2, 3]}, sort_keys=True)
+    decoded = verifier.independent_decode_canonical_json(payload)
+    ok = decoded == {"a": 1, "b": [2, 3]}
+    return ConditionQualificationResult("SC-02", ok, f"real independent_decode_canonical_json round-trip: {decoded!r}")
+
+
+def _qualify_sc03_campaign_program_validation() -> ConditionQualificationResult:
+    ok, evidence = _check_trust_table_admits("campaign_program")
+    return ConditionQualificationResult("SC-03", ok, evidence)
+
+
+def _qualify_sc04_typed_final_program_coverage() -> ConditionQualificationResult:
+    ok, evidence = _check_trust_table_admits("compilation_certificate_witnesses")
+    return ConditionQualificationResult("SC-04", ok, evidence)
+
+
+def _qualify_sc05_structural_floors() -> ConditionQualificationResult:
+    ok, evidence = _check_trust_table_admits("classification_closure", "constitutional_policy")
+    return ConditionQualificationResult("SC-05", ok, evidence)
+
+
+def _qualify_sc06_identity_dispatch_leases() -> ConditionQualificationResult:
+    from . import dispatch_lease_bridge
+
+    ok, evidence = _check_trust_table_admits("identity_generation", "authority_transfer")
+    try:
+        frontier = dispatch_lease_bridge.rust_compute_frontier(
+            [{"node_id": "n1", "state": "authorized", "dependencies": []}]
+        )
+        dispatch_ok = isinstance(frontier, dict)
+    except Exception as e:  # noqa: BLE001
+        dispatch_ok = False
+        evidence = f"{evidence}; rust_compute_frontier smoke call failed: {e}"
+    return ConditionQualificationResult("SC-06", ok and dispatch_ok, f"{evidence}; real rust_compute_frontier smoke call executed" if dispatch_ok else evidence)
+
+
+def _qualify_sc07_chronicle(work_dir: Path) -> ConditionQualificationResult:
+    signal = derive_chronicle_checkpoint_integrity_signal(work_dir)
+    return ConditionQualificationResult("SC-07", not signal.detected, signal.description)
+
+
+def _qualify_sc08_execution_context() -> ConditionQualificationResult:
+    signal = derive_ambient_authority_drift_signal()
+    return ConditionQualificationResult("SC-08", not signal.detected, signal.description)
+
+
+def _qualify_sc09_effective_automation() -> ConditionQualificationResult:
+    substrate = capability_graph.LocalAutomationSubstrate()
+    substrate.attach_resource("r1", ("source-a",), "scope-1")
+    substrate.declare_scope_automation("scope-1", ("source-b",))
+    direct = capability_graph.query_effective_policy(substrate, "r1")
+    cross = capability_graph.traverse_containing_scope(substrate, "r1")
+    result = capability_graph.cross_check_effective_policy(direct, cross)
+    ok = result is not None
+    return ConditionQualificationResult("SC-09", ok, f"real LocalAutomationSubstrate query/traverse/cross-check executed: {result!r}")
+
+
+def _qualify_sc10_effect_reach() -> ConditionQualificationResult:
+    signal = derive_effect_reach_drift_signal()
+    return ConditionQualificationResult("SC-10", not signal.detected, signal.description)
+
+
+def _qualify_sc11_facility_enumeration() -> ConditionQualificationResult:
+    signal = derive_facility_limitations_signal()
+    ok2, evidence2 = _check_trust_table_admits("facility_declaration")
+    return ConditionQualificationResult("SC-11", (not signal.detected) and ok2, f"{signal.description}; {evidence2}")
+
+
+def _qualify_sc12_effect_census(work_dir: Path) -> ConditionQualificationResult:
+    signal = derive_effect_census_mismatches_signal(work_dir)
+    return ConditionQualificationResult("SC-12", not signal.detected, signal.description)
+
+
+def _qualify_sc13_authority_plane_preimage() -> ConditionQualificationResult:
+    plane_signal = derive_authority_plane_preimage_drift_signal()
+    bound_signal = derive_mintable_bound_drift_signal()
+    ok = not plane_signal.detected and not bound_signal.detected
+    return ConditionQualificationResult("SC-13", ok, f"{plane_signal.description}; {bound_signal.description}")
+
+
+def _qualify_sc14_reconciliation_and_eio(work_dir: Path) -> ConditionQualificationResult:
+    # The same real check_effect_integrity mechanism SC-12 exercises
+    # governs Effect Integrity Obligations -- a genuine, legitimate
+    # overlap (the roadmap's own SS20 text also groups Effect Census and
+    # EIOs closely together, SC-12/SC-14 back to back).
+    signal = derive_effect_census_mismatches_signal(work_dir)
+    return ConditionQualificationResult("SC-14", not signal.detected, signal.description)
+
+
+def _qualify_sc15_hazard_disposition() -> ConditionQualificationResult:
+    signal = derive_accepted_uncertainty_hazards_drift_signal()
+    return ConditionQualificationResult("SC-15", not signal.detected, signal.description)
+
+
+def _qualify_sc16_evidence_and_proof_graph() -> ConditionQualificationResult:
+    # Round-2 review finding (Finding 1): the prior version never
+    # checked this at all. "evidence_packet"'s own Trust Table row has
+    # remained honestly `fixture_qualified: false` since G2-19
+    # (provenance and detector/tool/input bindings were never built,
+    # only the generation-currency third) -- this condition is genuinely
+    # NOT yet fully owned by Gen2, and this check honestly reports that.
+    ok, evidence = _check_trust_table_admits("evidence_packet", "external_assurance")
+    return ConditionQualificationResult("SC-16", ok, evidence)
+
+
+def _qualify_sc17_observer() -> ConditionQualificationResult:
+    try:
+        runtime_obligation.check_observer_coverage_roster_is_fully_accounted_for()
+    except Exception as e:  # noqa: BLE001
+        return ConditionQualificationResult("SC-17", False, str(e))
+    return ConditionQualificationResult("SC-17", True, "real check_observer_coverage_roster_is_fully_accounted_for() genuinely passed")
+
+
+def _qualify_sc18_runtime_obligation_registry() -> ConditionQualificationResult:
+    ok, evidence = _check_trust_table_admits("runtime_obligation")
+    return ConditionQualificationResult("SC-18", ok, evidence)
+
+
+def _qualify_sc19_mutation_suite() -> ConditionQualificationResult:
+    suite = mutation_fixtures.build_initial_mutation_suite()
+    try:
+        suite.check_required_category_coverage()
+    except Exception as e:  # noqa: BLE001
+        return ConditionQualificationResult("SC-19", False, str(e))
+    score = suite.score()
+    ok = score.survived == 0
+    return ConditionQualificationResult("SC-19", ok, f"real mutation suite score: total={score.total}, killed={score.killed}, survived={score.survived}, pending={score.pending}")
+
+
+def _qualify_sc20_escape_taxonomy() -> ConditionQualificationResult:
+    registry = closure_runtime.RetrospectiveProbeRegistry(())
+    try:
+        registry.validate()
+        reopened = registry.reopened_generations()
+    except Exception as e:  # noqa: BLE001
+        return ConditionQualificationResult("SC-20", False, str(e))
+    return ConditionQualificationResult("SC-20", True, f"real RetrospectiveProbeRegistry genuinely constructed and validated; reopened_generations()={reopened!r}")
+
+
+def _qualify_sc21_state_model() -> ConditionQualificationResult:
+    signal = derive_authority_drift_signal()
+    return ConditionQualificationResult("SC-21", not signal.detected, signal.description)
+
+
+def _qualify_sc22_independent_verifier() -> ConditionQualificationResult:
+    """Genuinely re-confirms `verifier.py`'s own design property (G2-04:
+    "deliberately imports no producer module") by walking its real
+    source, not merely trusting the module's own docstring claim."""
+    source_path = Path(inspect.getfile(verifier))
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    non_gen2_imports: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("tenfold.") and not node.module.startswith("tenfold.gen2"):
+            non_gen2_imports.append(node.module)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith("tenfold.") and not alias.name.startswith("tenfold.gen2"):
+                    non_gen2_imports.append(alias.name)
+    ok = not non_gen2_imports
+    return ConditionQualificationResult("SC-22", ok, "verifier.py genuinely imports no non-tenfold.gen2 module" if ok else f"verifier.py imports: {non_gen2_imports}")
+
+
+def _qualify_sc23_repository_construction_facility() -> ConditionQualificationResult:
+    """Round-2 review finding (Finding 1, the concrete counter-example
+    the review names): genuinely attempts to construct and validate a
+    real `REAL_MUTATING` `FacilityContract` against Gen2's own
+    `check_critical_gate` -- the same G2-14 critical gate a permanent
+    mutation fixture already proves cannot be bypassed even with every
+    property genuinely qualified ("REAL MUTATING FACILITY AUTHORITY =
+    DISABLED until G2-18 is PROVEN"). G2-18 has since reached PROVEN, but
+    no later milestone ever lifted this code-level gate, and no Gen2-
+    owned mutating repository-construction Facility class exists
+    anywhere in `tenfold.gen2` -- the only real, mutating
+    `RepositoryFacility` in this codebase is Gen1's own
+    `tenfold.repository_facility.RepositoryFacility`. This condition
+    therefore, honestly, does not qualify."""
+    records = tuple(
+        facility.PropertyQualificationRecord(p, facility.QualificationState.QUALIFIED, ("ev-1",), None) for p in facility.FacilityProperty
+    )
+    contract = facility.FacilityContract(
+        "g2-27-repository-construction-probe", 1, facility.FacilityIOClass.REAL_MUTATING, facility.FacilityAdapterBoundary.REPOSITORY,
+        "repository-construction", "authority@ref", records, ("ev-declaration",),
+    )
+    try:
+        facility.check_critical_gate(contract)
+    except facility.RealMutatingFacilityAuthorityDisabled as e:
+        return ConditionQualificationResult(
+            "SC-23", False,
+            f"genuinely attempted a REAL_MUTATING FacilityContract validation and it was genuinely rejected: {e} "
+            "-- no Gen2-owned mutating repository-construction Facility exists; only Gen1's own "
+            "tenfold.repository_facility.RepositoryFacility provides real repository mutation today",
+        )
+    return ConditionQualificationResult("SC-23", True, "a real REAL_MUTATING FacilityContract genuinely passed the critical gate")
+
+
+def _qualify_sc24_recovery_takeover(work_dir: Path) -> ConditionQualificationResult:
+    signal = derive_recovery_qualification_drift_signal(work_dir)
+    ok2, evidence2 = _check_trust_table_admits("recovery_qualification_matrix", "recovery_takeover")
+    return ConditionQualificationResult("SC-24", (not signal.detected) and ok2, f"{signal.description}; {evidence2}")
+
+
+def _qualify_sc25_council_pin() -> ConditionQualificationResult:
+    try:
+        council_pin.check_no_gen1_foreman_dependency()
+        pin = council_pin.load_frozen_council_pin()
+    except Exception as e:  # noqa: BLE001
+        return ConditionQualificationResult("SC-25", False, str(e))
+    ok2, evidence2 = _check_trust_table_admits("council_pin")
+    return ConditionQualificationResult("SC-25", ok2, f"real frozen council pin genuinely loaded (pin_generation={pin.pin_generation}); {evidence2}")
+
+
+def derive_condition_qualifications(work_dir: Path) -> tuple[ConditionQualificationResult, ...]:
+    """Genuinely exercises every one of the 25 SS20 conditions -- never a
+    bare presence/absence-of-Gen1-import check alone."""
+    return (
+        _qualify_sc01_closure_consumption(),
+        _qualify_sc02_canonical_decoding(),
+        _qualify_sc03_campaign_program_validation(),
+        _qualify_sc04_typed_final_program_coverage(),
+        _qualify_sc05_structural_floors(),
+        _qualify_sc06_identity_dispatch_leases(),
+        _qualify_sc07_chronicle(work_dir),
+        _qualify_sc08_execution_context(),
+        _qualify_sc09_effective_automation(),
+        _qualify_sc10_effect_reach(),
+        _qualify_sc11_facility_enumeration(),
+        _qualify_sc12_effect_census(work_dir),
+        _qualify_sc13_authority_plane_preimage(),
+        _qualify_sc14_reconciliation_and_eio(work_dir),
+        _qualify_sc15_hazard_disposition(),
+        _qualify_sc16_evidence_and_proof_graph(),
+        _qualify_sc17_observer(),
+        _qualify_sc18_runtime_obligation_registry(),
+        _qualify_sc19_mutation_suite(),
+        _qualify_sc20_escape_taxonomy(),
+        _qualify_sc21_state_model(),
+        _qualify_sc22_independent_verifier(),
+        _qualify_sc23_repository_construction_facility(),
+        _qualify_sc24_recovery_takeover(work_dir),
+        _qualify_sc25_council_pin(),
+    )
+
+
+# ============================================================================
 # Residual live-Gen1-authority dependency scan: a real, mechanical AST
 # walk of the canonical `tenfold.gen2` package, generalizing the same
 # technique `council_pin.check_no_gen1_foreman_dependency` (G2-23)
@@ -203,6 +513,27 @@ _ADJUDICATED_EXCEPTIONS: dict[tuple[str, str], str] = {
         "Gen1-authority-module function directly; not a violation of SS20's 'live Gen1 authority... "
         "load-bearing' language because SS15 sanctions reusing the qualified ALGORITHM, distinct from Gen1 "
         "OWNING the decision -- G2-25 PROVEN review record, docs/gen2/G2-25-review-record.md"
+    ),
+    ("tenfold.gen2.recovery_qualification", "exercise_recovery_qualification_matrix"): (
+        "G2-24's own main qualification orchestrator (mirrors G2-26's execute_hybrid_full_system_qualification's "
+        "own role) -- calling run_within_gen1_surface_recovery_differential from here is the milestone's OWN "
+        "disclosed qualification apparatus genuinely including a Gen1-differential comparison as one of its own "
+        "proof steps, not evidence of an undisclosed load-bearing dependency reachable from ordinary G2-28...G2-30 "
+        "construction (this orchestrator is itself a milestone-qualification-time function, never re-invoked by "
+        "later construction) -- G2-24 PROVEN review record, docs/gen2/G2-24-review-record.md"
+    ),
+    ("tenfold.gen2.recovery_takeover", "_scenario_clean_dispatch_then_takeover"): (
+        "one of G2-25's own three real bounded scenarios (run_repeated_bounded_scenarios), each genuinely "
+        "including a shadow-recovery-differential step as part of G2-25's own disclosed Process "
+        "('Shadow recovery -> induced-failure soak -> ... -> repeated bounded scenarios') -- not a load-bearing "
+        "dependency reachable from ordinary G2-28...G2-30 construction -- G2-25 PROVEN review record, "
+        "docs/gen2/G2-25-review-record.md"
+    ),
+    ("tenfold.gen2.recovery_takeover", "_scenario_in_flight_operation_at_takeover"): (
+        "same as _scenario_clean_dispatch_then_takeover -- G2-25 PROVEN review record, docs/gen2/G2-25-review-record.md"
+    ),
+    ("tenfold.gen2.recovery_takeover", "_scenario_stale_post_takeover_dispatch_rejected"): (
+        "same as _scenario_clean_dispatch_then_takeover -- G2-25 PROVEN review record, docs/gen2/G2-25-review-record.md"
     ),
     ("tenfold.gen2.mutation_fixtures", "build_initial_mutation_suite"): (
         "the two references this function makes to LeaseConflict/FacilityError (MUT-G11-LEASECONFLICT-001, "
@@ -321,15 +652,63 @@ _SCANNED_MODULES: dict[str, object] = {
 }
 
 
+def _find_undisclosed_callers_of(function_name: str) -> tuple[str, ...]:
+    """Round-2 review finding (Finding 2): a naming-convention-marked
+    function is only genuinely non-load-bearing if nothing OUTSIDE
+    another disclosed/adjudicated context actually calls it -- the name
+    alone proves nothing about reachability. Genuinely searches every
+    scanned `tenfold.gen2` module's real source for a call site of
+    `function_name`, returning the qualified name of any calling
+    function that is NOT itself disclosed (naming-convention marker or
+    adjudicated exception) -- i.e. a genuine, undisclosed production
+    caller, mechanically discovered, not merely assumed absent."""
+    undisclosed_callers: list[str] = []
+    for module_short_name, module_obj in sorted(_SCANNED_MODULES.items()):
+        source_path = Path(inspect.getfile(module_obj))
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+        dotted = _module_dotted_name(module_short_name)
+        for func_node in ast.walk(tree):
+            if not isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if func_node.name == function_name:
+                continue  # the function's own definition/recursive self-reference is not a new caller
+            caller_marker_match = any(marker in func_node.name for marker in _DISCLOSED_FUNCTION_NAME_MARKERS)
+            caller_adjudicated = (dotted, func_node.name) in _ADJUDICATED_EXCEPTIONS
+            if caller_marker_match or caller_adjudicated:
+                continue
+            for inner in ast.walk(func_node):
+                if isinstance(inner, ast.Call):
+                    called_name = inner.func.id if isinstance(inner.func, ast.Name) else inner.func.attr if isinstance(inner.func, ast.Attribute) else None
+                    if called_name == function_name:
+                        undisclosed_callers.append(f"{dotted}.{func_node.name}")
+    return tuple(sorted(set(undisclosed_callers)))
+
+
 def derive_residual_gen1_dependency_report() -> tuple[Gen1DependencyFinding, ...]:
     """Genuinely scans every real, canonical `tenfold.gen2` module this
     milestone tracks -- not a hypothetical or caller-supplied list --
     returning every finding (disclosed and undisclosed alike, so the
-    report is a real audit trail, not merely a pass/fail bit)."""
+    report is a real audit trail, not merely a pass/fail bit). Round-2
+    review finding (Finding 2): a marker-disclosed finding is further
+    downgraded to genuinely undisclosed if `_find_undisclosed_callers_of`
+    discovers a real, non-test-file, non-disclosed caller -- naming a
+    function `gen1_*` is not itself proof it is unreachable from
+    ordinary construction."""
     all_findings: list[Gen1DependencyFinding] = []
     for module_short_name, module_obj in sorted(_SCANNED_MODULES.items()):
         all_findings.extend(scan_module_for_gen1_authority_dependency(module_short_name, module_obj))
-    return tuple(all_findings)
+
+    hardened: list[Gen1DependencyFinding] = []
+    for finding in all_findings:
+        if finding.disclosed and finding.disclosure_reason == "naming-convention marker":
+            callers = _find_undisclosed_callers_of(finding.function)
+            if callers:
+                finding = replace(
+                    finding, disclosed=False,
+                    disclosure_reason=f"UNDISCLOSED -- naming-convention marker alone is insufficient: genuinely called from undisclosed caller(s) {callers}",
+                )
+        hardened.append(finding)
+    return tuple(hardened)
 
 
 # ============================================================================
@@ -340,21 +719,31 @@ def derive_residual_gen1_dependency_report() -> tuple[Gen1DependencyFinding, ...
 @dataclass(frozen=True)
 class SelfConstructionCapabilityReport:
     conditions: tuple[SelfConstructionCondition, ...]
+    qualifications: tuple[ConditionQualificationResult, ...]
+    unqualified_conditions: tuple[ConditionQualificationResult, ...]
     findings: tuple[Gen1DependencyFinding, ...]
     undisclosed_findings: tuple[Gen1DependencyFinding, ...]
     self_construction_capable: bool
 
 
-def derive_self_construction_capability() -> SelfConstructionCapabilityReport:
+def derive_self_construction_capability(*, work_dir: Path) -> SelfConstructionCapabilityReport:
     """The real, independent SS20 verification. Never raises merely
     because the honest answer is FALSE -- FALSE is an explicitly
-    anticipated, legitimate outcome of this gate."""
+    anticipated, legitimate outcome of this gate. Round-2 review finding
+    (Finding 1): capability now genuinely requires BOTH zero undisclosed
+    live-Gen1-authority dependencies AND every one of the 25 conditions
+    being genuinely, functionally qualified -- not merely the absence of
+    a Gen1 import."""
     conditions = independent_derive_self_construction_conditions()
+    qualifications = derive_condition_qualifications(work_dir)
+    unqualified = tuple(q for q in qualifications if not q.qualified)
     findings = derive_residual_gen1_dependency_report()
     undisclosed = tuple(f for f in findings if not f.disclosed)
-    capable = not undisclosed
+    capable = not undisclosed and not unqualified
     return SelfConstructionCapabilityReport(
         conditions=conditions,
+        qualifications=qualifications,
+        unqualified_conditions=unqualified,
         findings=findings,
         undisclosed_findings=undisclosed,
         self_construction_capable=capable,
@@ -374,6 +763,7 @@ _G2_27_CHANGED_FILES = (
     "rust/identity_generation/src/bin/authority_transfer_cli.rs",
     "rust/trust_table/src/lib.rs",
     "src/tenfold/gen2/authority_transfer_bridge.py",
+    "src/tenfold/gen2/mutation_fixtures.py",
 )
 
 
@@ -384,10 +774,26 @@ def run_g2_27_external_assurance(result_summary: dict) -> ExternalAssuranceProof
     evidence summary to real Sergeant TWICE, independently (copy A
     "supplied", copy B "retained"), then genuinely reconciles them via
     `independent_reconcile_external_assurance` (G2-04) -- never trusting
-    a single self-reported verdict. Gates on `AssuranceVerdict.BLOCK`
-    only (a genuine external rejection); PASS and NEEDS_WORK are both
-    genuine, non-fabricated verdicts for the same disclosed reason
-    G2-25 Finding 4 and the TF-31 fix each already established."""
+    a single self-reported verdict.
+
+    Round-2 review finding (Finding 3): unlike G2-25/G2-26 (intermediate
+    construction proofs where external assurance is one of several
+    required evidence types), G2-27 IS the authority-crossover decision
+    itself, and its own Acceptance text requires external assurance to
+    genuinely CONCLUDE the specific SELF_CONSTRUCTION_CAPABLE claim --
+    not merely fail to reject it. This function still raises only on a
+    genuine `BLOCK` (a real external rejection) or a reconciliation
+    mismatch (a real process-integrity failure) -- both remain true
+    error conditions, not legitimate outcomes, matching every prior
+    external-assurance call site in this campaign. Whether the returned
+    `supplied` verdict genuinely achieved `eligible_for_satisfaction`
+    (real `PASS`, zero `required_actions` -- the frozen
+    `validate_assurance_response`'s own eligibility semantics) is left
+    for `execute_self_construction_gate` to fold into the FINAL,
+    combined `self_construction_capable` verdict, since a `NEEDS_WORK`
+    verdict is a genuine, non-error, non-fabricated external answer --
+    it simply does not, itself, satisfy "external assurance concludes
+    capable" for this specific, most-consequential gate."""
     evidence_digest = canonical_digest(result_summary)
     resolver = MappingReviewMaterialResolver({evidence_digest: result_summary})
     request = FrozenAssuranceRequest(
@@ -463,23 +869,32 @@ def run_g2_27_external_assurance(result_summary: dict) -> ExternalAssuranceProof
 class SelfConstructionGateResult:
     report: SelfConstructionCapabilityReport
     external_assurance: ExternalAssuranceProof
+    #: The FINAL, combined verdict G2-27's own Acceptance clause names:
+    #: "Independent verifier + external assurance conclude
+    #: SELF_CONSTRUCTION_CAPABLE" -- genuinely `report.self_construction_
+    #: capable AND external_assurance.supplied.eligible_for_satisfaction`
+    #: (round-2 review finding, Finding 3). `report.self_construction_
+    #: capable` alone is the internal verifier's own sub-determination,
+    #: not the gate's authoritative answer.
+    self_construction_capable: bool
 
 
-def execute_self_construction_gate() -> SelfConstructionGateResult:
+def execute_self_construction_gate(*, work_dir: Path) -> SelfConstructionGateResult:
     """The full G2-27 gate. Genuinely derives the SS20 conditions,
     genuinely scans the live tenfold.gen2 package for residual live-Gen1
     dependencies, routes the aggregate claim through the real,
     independent Rust re-derivation, and reconciles real external
     assurance -- in that order, per G2-27's own Process ("independent
-    verifier -> external assurance"). Never raises merely because
-    `self_construction_capable` is FALSE; raises only for a genuine
-    internal-consistency failure (Rust DRIFT, a genuine external BLOCK,
-    or a reconciliation mismatch)."""
-    report = derive_self_construction_capability()
+    verifier -> external assurance"). Never raises merely because the
+    final `self_construction_capable` is FALSE; raises only for a
+    genuine internal-consistency failure (Rust DRIFT, a genuine external
+    BLOCK, or a reconciliation mismatch)."""
+    report = derive_self_construction_capability(work_dir=work_dir)
 
     try:
         rust_check_self_construction_capability(
             conditions_derived=len(report.conditions),
+            conditions_qualified=len(report.qualifications) - len(report.unqualified_conditions),
             total_findings=len(report.findings),
             undisclosed_findings=len(report.undisclosed_findings),
             self_construction_capable=report.self_construction_capable,
@@ -491,6 +906,8 @@ def execute_self_construction_gate() -> SelfConstructionGateResult:
         {
             "milestone_id": "g2-27",
             "conditions_derived": len(report.conditions),
+            "conditions_qualified": len(report.qualifications) - len(report.unqualified_conditions),
+            "unqualified_conditions": [q.condition_id for q in report.unqualified_conditions],
             "total_findings": len(report.findings),
             "undisclosed_findings_count": len(report.undisclosed_findings),
             "undisclosed_findings": [
@@ -501,4 +918,6 @@ def execute_self_construction_gate() -> SelfConstructionGateResult:
         }
     )
 
-    return SelfConstructionGateResult(report=report, external_assurance=external_assurance)
+    final_capable = report.self_construction_capable and external_assurance.supplied.eligible_for_satisfaction
+
+    return SelfConstructionGateResult(report=report, external_assurance=external_assurance, self_construction_capable=final_capable)

@@ -1082,6 +1082,7 @@ pub const EXPECTED_SELF_CONSTRUCTION_CONDITION_COUNT: u64 = 25;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SelfConstructionCapabilityClaim {
     pub conditions_derived: u64,
+    pub conditions_qualified: u64,
     pub total_findings: u64,
     pub undisclosed_findings: u64,
     pub self_construction_capable: bool,
@@ -1094,16 +1095,28 @@ pub fn check_self_construction_capability(claim: &SelfConstructionCapabilityClai
             claim.conditions_derived, EXPECTED_SELF_CONSTRUCTION_CONDITION_COUNT
         )));
     }
+    // Round-2 review finding (PR #82 Finding 1): a caller could satisfy
+    // the import-scan check alone while a real capability (e.g. a
+    // qualified repository-construction Facility) simply does not exist
+    // in Gen2 yet. conditions_qualified must genuinely equal
+    // conditions_derived -- a partial qualification is not full
+    // self-construction capability, exactly like a partial Observer
+    // sweep was never full coverage (G2-26's own precedent).
+    if claim.conditions_qualified > claim.conditions_derived {
+        return Err(IdentityGenerationError::Semantic(
+            "SelfConstructionCapability DRIFT (independently re-derived by Rust): conditions_qualified exceeds conditions_derived -- internally inconsistent claim".into(),
+        ));
+    }
     if claim.undisclosed_findings > claim.total_findings {
         return Err(IdentityGenerationError::Semantic(
             "SelfConstructionCapability DRIFT (independently re-derived by Rust): undisclosed_findings exceeds total_findings -- internally inconsistent claim".into(),
         ));
     }
-    let genuinely_capable = claim.undisclosed_findings == 0;
+    let genuinely_capable = claim.undisclosed_findings == 0 && claim.conditions_qualified == claim.conditions_derived;
     if claim.self_construction_capable != genuinely_capable {
         return Err(IdentityGenerationError::Semantic(format!(
-            "SelfConstructionCapability DRIFT (independently re-derived by Rust): claimed self_construction_capable={} but {} undisclosed finding(s) genuinely imply {}",
-            claim.self_construction_capable, claim.undisclosed_findings, genuinely_capable
+            "SelfConstructionCapability DRIFT (independently re-derived by Rust): claimed self_construction_capable={} but {} undisclosed finding(s) and {} of {} conditions qualified genuinely imply {}",
+            claim.self_construction_capable, claim.undisclosed_findings, claim.conditions_qualified, claim.conditions_derived, genuinely_capable
         )));
     }
     Ok(())
@@ -2000,6 +2013,7 @@ mod tests {
     fn genuine_capable_claim() -> SelfConstructionCapabilityClaim {
         SelfConstructionCapabilityClaim {
             conditions_derived: EXPECTED_SELF_CONSTRUCTION_CONDITION_COUNT,
+            conditions_qualified: EXPECTED_SELF_CONSTRUCTION_CONDITION_COUNT,
             total_findings: 12,
             undisclosed_findings: 0,
             self_construction_capable: true,
@@ -2060,6 +2074,38 @@ mod tests {
     fn check_self_construction_capability_rejects_underclaiming_incapable_with_zero_undisclosed_findings() {
         let claim = SelfConstructionCapabilityClaim { total_findings: 5, undisclosed_findings: 0, self_construction_capable: false, ..genuine_capable_claim() };
         assert!(check_self_construction_capability(&claim).is_err());
+    }
+
+    #[test]
+    fn check_self_construction_capability_rejects_an_internally_inconsistent_qualification_count() {
+        let claim = SelfConstructionCapabilityClaim { conditions_qualified: EXPECTED_SELF_CONSTRUCTION_CONDITION_COUNT + 1, ..genuine_capable_claim() };
+        let result = check_self_construction_capability(&claim);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("conditions_qualified exceeds conditions_derived"));
+    }
+
+    #[test]
+    fn check_self_construction_capability_rejects_overclaiming_capable_with_a_partial_qualification() {
+        // Round-2 review finding (PR #82 Finding 1): a claim with zero
+        // undisclosed import findings but a genuinely PARTIAL
+        // qualification (24 of 25 conditions, e.g. SC-23's repository
+        // construction Facility genuinely unqualified) must still be
+        // rejected if it claims capable=true.
+        let claim = SelfConstructionCapabilityClaim { conditions_qualified: EXPECTED_SELF_CONSTRUCTION_CONDITION_COUNT - 1, self_construction_capable: true, ..genuine_capable_claim() };
+        let result = check_self_construction_capability(&claim);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("conditions qualified"), "error should name the qualification shortfall: {err}");
+    }
+
+    #[test]
+    fn admit_check_self_construction_capability_succeeds_on_a_genuine_partial_qualification_claim() {
+        // FALSE driven by a genuine qualification shortfall (not just
+        // undisclosed findings) is equally a legitimate, honestly
+        // reported outcome.
+        let table = trust_table::initial_trust_table();
+        let claim = SelfConstructionCapabilityClaim { conditions_qualified: EXPECTED_SELF_CONSTRUCTION_CONDITION_COUNT - 1, self_construction_capable: false, ..genuine_capable_claim() };
+        admit_check_self_construction_capability(&table, &claim).expect("a genuinely consistent partial-qualification (FALSE) claim should be admitted");
     }
 
     #[test]

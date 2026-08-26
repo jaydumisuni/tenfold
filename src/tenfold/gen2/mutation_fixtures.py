@@ -2263,6 +2263,7 @@ def _g2_27_self_construction_wrong_condition_count_kill_check() -> None:
 
     rust_check_self_construction_capability(
         conditions_derived=24,
+        conditions_qualified=24,
         total_findings=27,
         undisclosed_findings=0,
         self_construction_capable=True,
@@ -2278,6 +2279,7 @@ def _g2_27_self_construction_inconsistent_finding_count_kill_check() -> None:
 
     rust_check_self_construction_capability(
         conditions_derived=25,
+        conditions_qualified=25,
         total_findings=3,
         undisclosed_findings=5,
         self_construction_capable=False,
@@ -2294,8 +2296,25 @@ def _g2_27_self_construction_overclaimed_capable_kill_check() -> None:
 
     rust_check_self_construction_capability(
         conditions_derived=25,
+        conditions_qualified=25,
         total_findings=5,
         undisclosed_findings=1,
+        self_construction_capable=True,
+    )
+
+
+def _g2_27_self_construction_overclaimed_partial_qualification_kill_check() -> None:
+    # Round-2 review finding (PR #82 Finding 1): a claim with zero
+    # undisclosed import findings but a genuinely PARTIAL qualification
+    # (24 of 25 conditions) must still be rejected if it claims
+    # self_construction_capable=True.
+    from .authority_transfer_bridge import rust_check_self_construction_capability
+
+    rust_check_self_construction_capability(
+        conditions_derived=25,
+        conditions_qualified=24,
+        total_findings=27,
+        undisclosed_findings=0,
         self_construction_capable=True,
     )
 
@@ -3694,6 +3713,20 @@ def build_initial_mutation_suite() -> MutationSuite:
             "G2-00 SS20; G2-27",
             "self_construction_capability",
             _g2_27_self_construction_overclaimed_capable_kill_check,
+            AuthorityTransferCliError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G27-CAPABILITYPARTIALQUALIFICATION-001",
+            MutationCategory.RUNTIME_OBLIGATION_OMISSION,
+            "Round-2 review finding (PR #82 Finding 1): a claim with zero undisclosed import findings but a "
+            "genuinely PARTIAL qualification (24 of the real 25-condition roster) must still be rejected if it "
+            "claims self_construction_capable=True -- qualification is now a genuine, independently re-derived "
+            "part of the aggregate claim, not merely the absence of a Gen1 import.",
+            "G2-00 SS20; G2-27",
+            "self_construction_capability",
+            _g2_27_self_construction_overclaimed_partial_qualification_kill_check,
             AuthorityTransferCliError,
         )
     )
