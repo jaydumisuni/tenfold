@@ -22,7 +22,7 @@ This file records the repository recovery point. Always recover live GitHub stat
 - Canonical review/freeze record: `docs/09-gen2-review-record.md`.
 - Canonical chat-workspace execution rule: `docs/10-chat-workspace-execution.md`.
 - Complete generational evolution map: `docs/11-generational-evolution-map.md`.
-- Gen-2 implementation: **IN PROGRESS** (G2-01 PROVEN; G2-02 PROVEN; G2-03 PROVEN; G2-04 PROVEN; G2-05 PROVEN; G2-06 PROVEN; G2-07 PROVEN; G2-08 PROVEN; G2-09 PROVEN; G2-10 PROVEN; G2-11 PROVEN; G2-12 PROVEN; G2-13 PROVEN; G2-14 PROVEN; G2-15 PROVEN; G2-16 PROVEN; G2-17 PROVEN; G2-18 PROVEN; G2-19 PROVEN; G2-20 PROVEN; G2-21 PROVEN; G2-22 PROVEN; G2-23 PROVEN; G2-24 PROVEN; G2-25 PROVEN).
+- Gen-2 implementation: **IN PROGRESS** (G2-01 PROVEN; G2-02 PROVEN; G2-03 PROVEN; G2-04 PROVEN; G2-05 PROVEN; G2-06 PROVEN; G2-07 PROVEN; G2-08 PROVEN; G2-09 PROVEN; G2-10 PROVEN; G2-11 PROVEN; G2-12 PROVEN; G2-13 PROVEN; G2-14 PROVEN; G2-15 PROVEN; G2-16 PROVEN; G2-17 PROVEN; G2-18 PROVEN; G2-19 PROVEN; G2-20 PROVEN; G2-21 PROVEN; G2-22 PROVEN; G2-23 PROVEN; G2-24 PROVEN; G2-25 PROVEN; G2-26 PROVEN).
 - Gen-2 qualification: **IN PROGRESS**.
 - G2-01 — Gen-1 Reference and Inheritance Freeze: **PROVEN**. Proven candidate `8e33f7a4240e18141ae44d6733043660f64c1640`. Canonical review/proof record: `docs/gen2/G2-01-review-record.md`.
 - G2-02 — Constitutional Schema and Policy Foundation: **PROVEN**. Proven candidate `a3a9b19702b203ad79aecebdf039eb12254e8daf`. Canonical review/proof record: `docs/gen2/G2-02-review-record.md`.
@@ -49,8 +49,9 @@ This file records the repository recovery point. Always recover live GitHub stat
 - G2-23 — Remaining Constitutional Authority-Slice Migration + Council Pinning: **PROVEN**. Proven candidate `f940a009edfb88b57e31ba3485ae9fb0feb118cb`. Canonical review/proof record: `docs/gen2/G2-23-review-record.md`.
 - G2-24 — Recovery Qualification Matrix: **PROVEN**. Proven candidate `283020b56632d8992c3460d6c0465c39683da509`. Canonical review/proof record: `docs/gen2/G2-24-review-record.md`.
 - G2-25 — Bounded Real Gen2 Recovery / Takeover: **PROVEN**. Proven candidate `e94d3e56103aac38b96ea6b859246c65ac28fe39`. Canonical review/proof record: `docs/gen2/G2-25-review-record.md`.
-- Current next Gen-2 milestone: **G2-26 — Hybrid Full-System Qualification** (real dependency frontier: ready, since G2-25 is PROVEN).
-- Construction runtime: **qualified Tenfold Gen 1** (Gen2 now owns the full construction execution authority set the roadmap names through this point, including Recovery/Takeover in disposable qualification context, per G2-23's and G2-25's own Result clauses).
+- G2-26 — Hybrid Full-System Qualification (entire G2-00): **PROVEN**. Proven candidate `8cb9cd0e1d4a2856f96f7f5f2277e4178c1d6082`. Canonical review/proof record: `docs/gen2/G2-26-review-record.md`.
+- Current next Gen-2 milestone: **G2-27 — Self-Construction Minimum Gate** (real dependency frontier: ready, since G2-26 is PROVEN).
+- Construction runtime: **qualified Tenfold Gen 1** (Gen2 now owns the full construction execution authority set the roadmap names through this point, including Recovery/Takeover in disposable qualification context, per G2-23's and G2-25's own Result clauses; G2-26 genuinely aggregated/reconciled the entire G2-00 authority surface at least once end-to-end but does not itself enable self-construction, per its own "Does not enable" clause).
 
 Do not restart Gen-2 architecture design from chat memory. Recover G2-00, the Gen-2 roadmap, workspace rule and generational evolution map first. Reopen G2-00 only if implementation/evidence demonstrates a real frozen-authority violation or the Owner explicitly authorises an architecture change.
 
