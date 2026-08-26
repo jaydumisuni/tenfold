@@ -1,0 +1,161 @@
+{
+  "schemaVersion": "tenfold.oracle166.physical-packet.v1",
+  "campaignId": "oracle-166-tenfold-workspace",
+  "campaignGeneration": 2,
+  "repository": "jaydumisuni/Oracle-",
+  "issue": 166,
+  "pullRequest": 169,
+  "candidateHead": "0da59cf295cad3b2fcaaae34294969005ee876fb",
+  "candidateBase": "32d836e1fdac35755b1bbbaddc55d689cf117112",
+  "targetNode": "kratos-HP-290-G4-Microtower-PC",
+  "targetUser": "kratos",
+  "operatorCheckout": "/home/kratos/Oracle",
+  "stateRoot": "${XDG_STATE_HOME:-$HOME/.local/state}/OracleRelay",
+  "service": "oracle-recovery-relay.service",
+  "transportPolicy": {
+    "primary": "oracle.live.v1",
+    "recoveryFallback": "github-relay-fallback",
+    "dispatchFacility": "Tenfold OracleFacility",
+    "requiresBoundLiveContext": true,
+    "requiresExclusiveLease": "oracle-node:kratos-hp-290-g4-microtower-pc"
+  },
+  "prerequisites": [
+    "Oracle PR #169 head still equals candidateHead and changed-file source blob receipts still match Tenfold authority manifest.",
+    "Independent exact-head security/authority review has no unresolved material finding.",
+    "A concrete reachable OracleLiveContext is bound to targetNode with positive session/epoch/generation values.",
+    "The Tenfold task has execute permission and an exclusive node lease for the bound request.",
+    "No pre-0da59cf proof packet or result may satisfy any assertion in this packet."
+  ],
+  "globalStopConditions": [
+    "candidate head or any source blob receipt changes",
+    "Oracle Live context changes before or during a dispatched case",
+    "a refusal case mutates the protected external/operator target it is meant to preserve",
+    "a credential/token appears in returned evidence",
+    "an expected fail-closed case unexpectedly proceeds to Git mutation or relay launch",
+    "physical prerequisites require authority expansion not already granted"
+  ],
+  "globalEvidence": [
+    "hostname and current user",
+    "candidate head and five source blob receipts",
+    "operator checkout Git status before and after",
+    "service state/enabled/linger",
+    "state-root/runtime physical paths and mount identities",
+    "supervisor status state/detail with tokenExposed=false",
+    "hashes of all preservation sentinels before and after",
+    "fresh Git-recovery command/result identity for final hostname round trip",
+    "Oracle Live context identity and independent Live-primary result"
+  ],
+  "cases": [
+    {
+      "id": "P01_INSTALL_EXACT_CANDIDATE",
+      "objective": "Install the exact reviewed candidate and prove persistent isolated ownership.",
+      "setup": ["materialize exact candidateHead without resetting the operator checkout", "capture operator checkout status and sentinel hashes"],
+      "action": ["run scripts/install-oracle-recovery-relay-systemd-user.sh from the exact candidate"],
+      "assert": ["service is active", "service is enabled", "user linger is yes", "WorkingDirectory is stateRoot, not operatorCheckout", "runtimeRepo is below stateRoot", "tokenExposed=false"],
+      "preserve": ["all unrelated operator checkout files"]
+    },
+    {
+      "id": "P02_DIRTY_OPERATOR_PRESERVATION",
+      "objective": "Prove unrelated untracked operator content does not block or get destroyed by the isolated owner.",
+      "setup": ["create a uniquely named untracked sentinel in operatorCheckout and hash it", "capture git status --porcelain"],
+      "action": ["restart/reconcile recovery service through its persistent owner"],
+      "assert": ["sentinel hash unchanged", "sentinel remains untracked", "operator checkout tracked state unchanged", "service remains isolated"]
+    },
+    {
+      "id": "P03_PROSPECTIVE_STATE_ALIAS_REFUSAL",
+      "objective": "Reject symlink-parent and, where supported, bind-parent aliases before final OracleRelay child creation or target mutation.",
+      "setup": ["create protected external target with sentinel", "redirect an XDG state parent toward protected target while final OracleRelay child is absent"],
+      "action": ["invoke installer with hostile state-parent mapping"],
+      "assert": ["installer refuses before final state child mutation", "protected sentinel unchanged", "no recovery-owned file created inside protected target"]
+    },
+    {
+      "id": "P04_BOOTSTRAP_DESCENDANT_ALIAS_REFUSAL",
+      "objective": "Reject stale bootstrap-source/scripts/.oracle aliases before publishing supervisor or token.",
+      "setup": ["for each recovery-owned bootstrap descendant, replace the descendant with a symlink or external mount alias to a protected target"],
+      "action": ["invoke installer separately for each hostile descendant"],
+      "assert": ["installer refuses", "protected target bytes unchanged", "no token/supervisor content published through alias"]
+    },
+    {
+      "id": "P05_SYSTEMD_UNIT_ATOMIC_REPLACEMENT",
+      "objective": "Replace a stale unit leaf symlink atomically without following it.",
+      "setup": ["point the expected unit-file leaf at a protected external sentinel"],
+      "action": ["invoke installer"],
+      "assert": ["unit path becomes a regular recovery-owned file", "former symlink target hash unchanged", "unit contains isolated WorkingDirectory and no embedded token"]
+    },
+    {
+      "id": "P06_RUNTIME_SYMLINK_REJECTION",
+      "objective": "Reject/quarantine only a runtime symlink path entry while preserving its target.",
+      "setup": ["make stateRoot/repo a symlink to a valid protected Oracle checkout and record target status/hash"],
+      "action": ["start/restart supervisor"],
+      "assert": ["runtime symlink is not used as Git authority", "only path entry may be quarantined", "symlink target bytes and Git status unchanged"]
+    },
+    {
+      "id": "P07_RUNTIME_BIND_MOUNT_REJECTION",
+      "objective": "Reject a bind/external mount at stateRoot/repo without moving or unmounting it.",
+      "setup": ["bind-mount a protected valid checkout at stateRoot/repo when platform authority supports it", "record target and mount evidence"],
+      "action": ["start/restart supervisor"],
+      "assert": ["status becomes runtime-rejected-mount", "mount remains mounted", "target bytes/Git status unchanged", "no Git fetch/reset/token copy or relay launch occurs"]
+    },
+    {
+      "id": "P08_NESTED_RUNTIME_MOUNT_REJECTION",
+      "objective": "Reject any nested mount below a normal runtime root.",
+      "setup": ["create otherwise normal runtime", "bind-mount protected target beneath runtime at .git or tracked subtree"],
+      "action": ["start/restart supervisor"],
+      "assert": ["status becomes runtime-rejected-nested-mount", "nested mount remains mounted", "mounted target unchanged", "runtime is not moved or used"]
+    },
+    {
+      "id": "P09_HOSTILE_LOCAL_GIT_CONFIG_REJECTION",
+      "objective": "Reject executable/indirect repository-local Git configuration before worktree-mutating Git commands.",
+      "setup": ["seed reused isolated runtime with include/includeIf indirection, executable filter clean/smudge/process commands, helper/url rewrite or critical value drift", "place protected external sentinel targeted by hostile command"],
+      "action": ["start/restart supervisor"],
+      "assert": ["runtime_valid fails before status/fetch/reset that could execute hostile config", "protected sentinel unchanged", "hostile runtime is rejected/quarantined only when safe"]
+    },
+    {
+      "id": "P10_QUARANTINE_AND_RUNTIME_ORACLE_ALIAS_REFUSAL",
+      "objective": "Reject unsafe quarantine and runtime .oracle aliases without following targets.",
+      "setup": ["independently alias stateRoot/quarantine and runtime/.oracle to protected targets"],
+      "action": ["exercise runtime rejection/token-copy paths"],
+      "assert": ["unsafe quarantine yields quarantine-rejected or equivalent fail-closed status", "runtime .oracle alias prevents token publication", "protected targets unchanged"]
+    },
+    {
+      "id": "P11_ATOMIC_STATUS_AND_RUNTIME_TOKEN_LEAVES",
+      "objective": "Replace stale status/token leaf symlinks atomically without mutating former targets.",
+      "setup": ["point recovery-supervisor-status.json and runtime .oracle/agent-token.txt leaves to protected external sentinels"],
+      "action": ["exercise status publication and runtime token copy separately"],
+      "assert": ["published leaves become regular recovery-owned files", "former targets unchanged", "published status reports tokenExposed=false"]
+    },
+    {
+      "id": "P12_LEGITIMATE_RUNTIME_AND_GIT_ROUNDTRIP",
+      "objective": "Restore legitimate isolated runtime, safely refresh canonical main and complete a fresh recovery relay hostname round trip.",
+      "setup": ["remove only proof-owned hostile path entries/mounts", "restore normal isolated state", "keep unrelated operator sentinel present"],
+      "action": ["restart persistent recovery owner", "wait for clean runtime validation and canonical origin/main fast-forward", "submit a newly generated Git-recovery hostname command"],
+      "assert": ["runtime remote is exactly https://github.com/jaydumisuni/Oracle-.git", "main maps to origin/main", "fresh result returns KRATOS hostname", "operator sentinel remains unchanged"]
+    },
+    {
+      "id": "P13_CREDENTIAL_NONEXPOSURE",
+      "objective": "Prove credentials remain local across all persistent and returned evidence surfaces.",
+      "setup": ["collect unit text, supervisor/relay status, bounded logs and fresh result files"],
+      "action": ["scan for token material and common bearer/secret markers without printing local credential value"],
+      "assert": ["no token value in unit/log/status/result/repository evidence", "tokenExposed=false", "token file permissions remain local/restricted"]
+    },
+    {
+      "id": "P14_ORACLE_LIVE_PRIMARY_REPROOF",
+      "objective": "Independently re-prove oracle.live.v1 remains the preferred interactive path after recovery proof.",
+      "setup": ["bind a fresh read-only Live client to targetNode using local credential boundary"],
+      "action": ["perform independent node.ping/hostname-class round trip over Oracle Live"],
+      "assert": ["target node is reachable over oracle.live.v1", "request/response identity is exact", "Git relay remains documented/observed as fallback only"]
+    }
+  ],
+  "cleanupPolicy": [
+    "Cleanup may remove only uniquely proof-owned files, symlinks, temporary worktrees and mounts created by this packet.",
+    "Never reset/clean/delete unrelated operator checkout state.",
+    "Never unmount a pre-existing or rejected mount that was not created by this proof packet.",
+    "Preserve failure evidence until Tenfold Council reconciliation completes."
+  ],
+  "nonClaims": [
+    "Packet preparation is not physical proof.",
+    "A hosted workflow cannot satisfy any physical case.",
+    "No case may run before exact-head independent review and a bound Live context are proven.",
+    "Successful physical cases do not themselves authorize Merge/Ship."
+  ]
+}
