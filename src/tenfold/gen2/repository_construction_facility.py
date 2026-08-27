@@ -39,7 +39,9 @@ of a read-only or disposable-sandbox one.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from hashlib import sha256
@@ -188,6 +190,21 @@ def build_disposable_local_git_facility(tmp_dir: Path) -> DisposableRepositoryCo
     _run_git(repo_root, "init", "-b", "main")
     _run_git(repo_root, "config", "user.name", "tenfold-gen2-sc23")
     _run_git(repo_root, "config", "user.email", "tenfold-gen2-sc23@local.invalid")
+    # Review finding (PR #84, round 4): the real `git update-ref` calls
+    # create_branch/commit_files internally make (via
+    # LocalGitRepositoryTransport) fire repository-controlled hooks
+    # (e.g. reference-transaction) regardless of any file-path scope
+    # check -- a genuinely unbounded external-effect vector no scope
+    # check can contain, confirmed reproducible by the reviewer.
+    # core.hooksPath is a repo-local git config setting; redirecting it
+    # to a fresh, permanently-empty directory genuinely, durably
+    # disables every hook for this repository's entire lifetime,
+    # including operations made through LocalGitRepositoryTransport
+    # (whose own environment sandboxing does not otherwise touch
+    # hooksPath).
+    no_hooks_dir = tmp_dir / "no-hooks"
+    no_hooks_dir.mkdir()
+    _run_git(repo_root, "config", "core.hooksPath", str(no_hooks_dir))
     (repo_root / "README.md").write_text("gen2 sc23 disposable scratch repository\n", encoding="utf-8")
     _run_git(repo_root, "add", "README.md")
     _run_git(repo_root, "commit", "-m", "initial")
@@ -476,8 +493,89 @@ class RepositoryConstructionPropertyQualificationHarness:
             self.rig.facility.commit(commit_task, repository=self.rig.repository, branch=request["branch"], owner="assign-reach", expected_head=self.rig.initial_sha, files=escaping_files, message="escape\n", operation_id="op-reach-commit", foreman_epoch=1)
         except Gen1RepositoryFacilityError:
             rejected = True
-        state = QualificationState.QUALIFIED if rejected else QualificationState.UNQUALIFIED
-        return RepositoryConstructionScenarioResult("effect-reach", FacilityProperty.EFFECT_REACH, state, ("out-of-scope-commit-path-rejected",), f"rejected={rejected}")
+
+        # Review finding (PR #84, round 4, reproduced by the reviewer):
+        # `git update-ref` (invoked internally by create_branch/
+        # commit_files) fires repository-controlled hooks (e.g.
+        # reference-transaction) regardless of any file-path scope
+        # check -- a genuinely unbounded external-effect vector no
+        # scope check can contain. A positive control first proves the
+        # hook mechanism itself is real (a genuinely separate,
+        # throwaway repo WITHOUT hooksPath neutralization, where the
+        # same hook genuinely fires), then confirms the admitted
+        # Facility's own real create_branch call against THIS rig's
+        # repository (which has core.hooksPath redirected at
+        # construction time) does not trigger it.
+        hook_mechanism_confirmed_real = self._probe_reference_transaction_hook_fires_without_neutralization()
+        hooks_neutralized_on_admitted_repository = self._probe_reference_transaction_hook_does_not_fire_on_rig()
+
+        ok = rejected and hook_mechanism_confirmed_real and hooks_neutralized_on_admitted_repository
+        state = QualificationState.QUALIFIED if ok else QualificationState.UNQUALIFIED
+        return RepositoryConstructionScenarioResult(
+            "effect-reach",
+            FacilityProperty.EFFECT_REACH,
+            state,
+            ("out-of-scope-commit-path-rejected", "reference-transaction-hook-mechanism-confirmed-real", "hooks-genuinely-neutralized-on-the-admitted-repository"),
+            f"rejected={rejected} hook_mechanism_confirmed_real={hook_mechanism_confirmed_real} hooks_neutralized_on_admitted_repository={hooks_neutralized_on_admitted_repository}",
+        )
+
+    _REFERENCE_TRANSACTION_HOOK_SCRIPT = "#!/bin/sh\necho fired > \"$MARKER_PATH\"\nexit 0\n"
+
+    def _install_reference_transaction_hook(self, hooks_dir: Path, marker_path: Path) -> None:
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        hook_path = hooks_dir / "reference-transaction"
+        hook_path.write_text(self._REFERENCE_TRANSACTION_HOOK_SCRIPT, encoding="utf-8")
+        hook_path.chmod(0o755)
+        _ = marker_path  # documents intent; the marker path is passed via MARKER_PATH env at invocation time
+
+    def _probe_reference_transaction_hook_fires_without_neutralization(self) -> bool:
+        """Positive control: a genuinely separate, throwaway repository
+        (never `self.rig`'s own), with NO `core.hooksPath` redirect,
+        proving the reference-transaction hook mechanism itself is real
+        -- not merely assumed."""
+        with tempfile.TemporaryDirectory(prefix="tenfold-gen2-sc23-hook-probe-") as probe_dir_str:
+            probe_dir = Path(probe_dir_str)
+            probe_repo = probe_dir / "probe-repo"
+            probe_repo.mkdir()
+            marker_path = probe_dir / "hook-fired-marker.txt"
+            _run_git(probe_repo, "init", "-b", "main")
+            _run_git(probe_repo, "config", "user.name", "tenfold-gen2-sc23-probe")
+            _run_git(probe_repo, "config", "user.email", "tenfold-gen2-sc23-probe@local.invalid")
+            self._install_reference_transaction_hook(probe_repo / ".git" / "hooks", marker_path)
+            (probe_repo / "README.md").write_text("probe\n", encoding="utf-8")
+            _run_git(probe_repo, "add", "README.md")
+            env = {**os.environ, "MARKER_PATH": str(marker_path)}
+            subprocess.run(["git", "-C", str(probe_repo), "commit", "-m", "initial"], check=True, capture_output=True, env=env)
+            return marker_path.exists()
+
+    def _probe_reference_transaction_hook_does_not_fire_on_rig(self) -> bool:
+        """Confirms the admitted Facility's own repository (hooks
+        neutralized via `core.hooksPath` at construction time) does not
+        trigger a real hook, via a genuine Facility-driven create_branch
+        call -- not a raw, bypassing git invocation."""
+        marker_path = self.rig.repo_root.parent / "rig-hook-fired-marker.txt"
+        if marker_path.exists():
+            marker_path.unlink()
+        # core.hooksPath already redirects away from .git/hooks for this
+        # repo; installing the script there is a genuine negative
+        # control confirming redirection, not merely absence of a hook.
+        self._install_reference_transaction_hook(self.rig.repo_root / ".git" / "hooks", marker_path)
+
+        probe_request = {"operation_id": "op-hook-probe", "repository": self.rig.repository, "branch": "sc23/hook-probe", "owner": "assign-hook-probe", "base_ref": "main", "expected_base_sha": self.rig.initial_sha}
+        binding = repository_request_binding("create_branch", **probe_request)
+        resource = repository_ref_resource(self.rig.repository, "sc23/hook-probe")
+        task = _dispatch(self.rig, assignment_id="assign-hook-probe", attempt=1, campaign_generation=1, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=resource, request_binding=binding)
+
+        os.environ["MARKER_PATH"] = str(marker_path)
+        try:
+            self.rig.facility.create_branch(task, repository=probe_request["repository"], branch="sc23/hook-probe", owner="assign-hook-probe", base_ref="main", expected_base_sha=self.rig.initial_sha, operation_id="op-hook-probe", foreman_epoch=1)
+        finally:
+            os.environ.pop("MARKER_PATH", None)
+
+        not_fired = not marker_path.exists()
+        if marker_path.exists():
+            marker_path.unlink()
+        return not_fired
 
     def run_recovery_takeover_scenario(self) -> RepositoryConstructionScenarioResult:
         # Review finding (PR #84): the original version overwrote only
@@ -535,6 +633,17 @@ class RepositoryConstructionPropertyQualificationHarness:
         durable_writer_before_takeover_commit = restarted_facility.state.writer(self.rig.repository, request["branch"])
         durable_writer_reconstructed = durable_writer_before_takeover_commit == "assign-owner-a"
 
+        # Review finding (PR #84, round 4): the writer check alone
+        # proves ownership survived, but not that the RECEIPTS table
+        # (which provides duplicate-key/conflicting-request detection
+        # across restarts, via _idempotent) also survived -- losing
+        # receipts would let a reused operation_id execute a different
+        # request post-restart undetected. Inspect the exact pre-crash
+        # receipt for owner-a's original create_branch operation,
+        # BEFORE any new mutation.
+        durable_receipt_before_takeover_commit = restarted_facility.state.receipt("op-takeover")
+        durable_receipt_reconstructed = durable_receipt_before_takeover_commit is not None and durable_receipt_before_takeover_commit.result == self.rig.initial_sha
+
         stale_rejected = False
         try:
             self.rig.facility.commit(stale_task, repository=self.rig.repository, branch=request["branch"], owner="assign-owner-a", expected_head=self.rig.initial_sha, files={"stale.txt": b"stale"}, message="stale\n", operation_id="op-takeover-stale-commit", foreman_epoch=1)
@@ -548,14 +657,14 @@ class RepositoryConstructionPropertyQualificationHarness:
         except Gen1RepositoryFacilityError:
             new_owner_admitted = False
 
-        ok = stale_rejected and new_owner_admitted and durable_writer_reconstructed
+        ok = stale_rejected and new_owner_admitted and durable_writer_reconstructed and durable_receipt_reconstructed
         state = QualificationState.QUALIFIED if ok else QualificationState.UNQUALIFIED
         return RepositoryConstructionScenarioResult(
             "recovery-takeover-genuine-restart",
             FacilityProperty.RECOVERY_TAKEOVER,
             state,
-            ("stale-epoch-dispatch-rejected-after-takeover", "new-owner-admitted-under-new-epoch-via-a-genuinely-restarted-facility-instance", "durable-writer-state-reconstructed-from-disk"),
-            f"stale_rejected={stale_rejected} new_owner_admitted={new_owner_admitted} durable_writer_reconstructed={durable_writer_reconstructed}",
+            ("stale-epoch-dispatch-rejected-after-takeover", "new-owner-admitted-under-new-epoch-via-a-genuinely-restarted-facility-instance", "durable-writer-state-reconstructed-from-disk", "durable-receipt-state-reconstructed-from-disk"),
+            f"stale_rejected={stale_rejected} new_owner_admitted={new_owner_admitted} durable_writer_reconstructed={durable_writer_reconstructed} durable_receipt_reconstructed={durable_receipt_reconstructed}",
         )
 
     def run_generation_enforcement_scenario(self) -> RepositoryConstructionScenarioResult:

@@ -118,22 +118,55 @@ def test_sc23_observation_semantics_rejects_a_stale_expected_sha(rig) -> None:
 
 
 def test_sc23_effect_reach_rejects_an_out_of_scope_commit_path(rig) -> None:
+    """Review finding (PR #84, round 4, reproduced by the reviewer):
+    git itself can execute arbitrary code via repository-controlled
+    hooks (e.g. reference-transaction, fired by the real git update-ref
+    calls create_branch/commit_files make internally) regardless of any
+    file-path scope check. This now also confirms the hook mechanism
+    is genuinely real (a positive control against a separate,
+    non-neutralized repository) and that hooks are genuinely
+    neutralized on the admitted repository (core.hooksPath redirected
+    at construction time)."""
     result = RepositoryConstructionPropertyQualificationHarness(rig).run_effect_reach_scenario()
     assert result.property == FacilityProperty.EFFECT_REACH
     assert result.state == QualificationState.QUALIFIED
+    assert "hook_mechanism_confirmed_real=True" in result.detail
+    assert "hooks_neutralized_on_admitted_repository=True" in result.detail
+
+
+def test_sc23_reference_transaction_hook_genuinely_fires_without_neutralization(rig) -> None:
+    """Positive control, standalone: proves the hook mechanism itself
+    is real (not merely assumed) against a genuinely separate,
+    throwaway, non-neutralized repository."""
+    harness = RepositoryConstructionPropertyQualificationHarness(rig)
+    assert harness._probe_reference_transaction_hook_fires_without_neutralization() is True
+
+
+def test_sc23_reference_transaction_hook_does_not_fire_on_the_admitted_repository(rig) -> None:
+    """Negative control, standalone: a real hook installed at the
+    admitted repository's default hooks location does not fire,
+    confirming core.hooksPath redirection genuinely neutralizes it."""
+    harness = RepositoryConstructionPropertyQualificationHarness(rig)
+    assert harness._probe_reference_transaction_hook_does_not_fire_on_rig() is True
 
 
 def test_sc23_recovery_takeover_reuses_real_gen1_fencing_via_a_genuine_restart(rig) -> None:
     """Review finding (PR #84): the takeover must genuinely reconstruct
     durable state via a fresh RepositoryFacility/RepositoryStateStore
     over the same on-disk SQLite file, not merely overwrite an
-    in-memory snapshot on the same live objects."""
+    in-memory snapshot on the same live objects. Round 4: also confirms
+    the receipts table (not just the writers table) genuinely survives
+    the restart, inspected BEFORE any new mutation -- receipts provide
+    duplicate-key/conflicting-request detection across restarts, so
+    losing them would let a reused operation_id execute a different
+    request post-restart undetected."""
     result = RepositoryConstructionPropertyQualificationHarness(rig).run_recovery_takeover_scenario()
     assert result.property == FacilityProperty.RECOVERY_TAKEOVER
     assert result.state == QualificationState.QUALIFIED
     assert "new_owner_admitted=True" in result.detail
     assert "stale_rejected=True" in result.detail
     assert "durable_writer_reconstructed=True" in result.detail
+    assert "durable_receipt_reconstructed=True" in result.detail
 
 
 def test_sc23_generation_enforcement_exercises_a_genuine_generation_transition(rig) -> None:

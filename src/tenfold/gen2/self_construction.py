@@ -654,6 +654,11 @@ _ADJUDICATED_EXCEPTIONS: dict[tuple[str, str], str] = {
     ("tenfold.gen2.repository_construction_facility", "run_latency_bounds_scenario"): (
         "same as run_duplicate_key_scenario -- SC-23 closure, docs/gen2/G2-27-SC23-closure-review-record.md"
     ),
+    ("tenfold.gen2.repository_construction_facility", "_probe_reference_transaction_hook_does_not_fire_on_rig"): (
+        "one of this module's own real, bounded, disposable-repository adversarial scenarios (a genuine "
+        "Facility-driven create_branch call proving hooks are neutralized) -- SC-23 closure, round-4 review "
+        "finding, docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
 }
 
 

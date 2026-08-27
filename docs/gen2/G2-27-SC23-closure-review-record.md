@@ -292,6 +292,43 @@ verdict (see below) rather than a hardcoded stale expectation.
    All 3 fixed genuinely in round 3. Full local re-verification:
    `pytest tests/gen2/test_sc23_repository_construction_facility.py`
    and the full mutation suite/repository sweep re-run clean.
+8. A fourth Codex pass, against the round-3 fix commit, found 2 further
+   genuine findings (1 P1, 1 P2) -- both reproduced by the reviewer,
+   not merely theorized:
+   - **P1 ("Neutralize Git hooks before qualifying effect reach")**:
+     the real `git update-ref` calls `create_branch`/`commit_files`
+     make internally fire repository-controlled hooks (e.g.
+     `reference-transaction`), regardless of any file-path scope
+     check -- the reviewer reproduced an admitted `create_branch`
+     writing a marker file outside the repository via such a hook, a
+     genuinely unbounded external-effect vector no scope check can
+     contain. **Fixed at the source**: `build_disposable_local_git_facility`
+     now redirects `core.hooksPath` to a fresh, permanently-empty
+     directory at repository-construction time -- a real, durable,
+     repo-local git config change, not a one-off test trick.
+     `run_effect_reach_scenario` now includes a genuine positive
+     control (a separate, throwaway, non-neutralized repository
+     confirming the hook mechanism itself is real) and a genuine
+     negative control (a real hook installed at the admitted
+     repository's default hooks location, confirmed not to fire via a
+     genuine Facility-driven `create_branch` call).
+   - **P2 ("Verify receipt recovery during takeover")**: the round-3
+     restart fix verified the durable WRITER survived the restart, but
+     not the RECEIPTS table -- which provides duplicate-key/
+     conflicting-request detection across restarts via `_idempotent`;
+     the reviewer confirmed a restarted store with receipts deleted
+     (writers retained) still passed. Fixed: the restart check now
+     also inspects the exact pre-crash receipt for owner-a's original
+     `create_branch` operation, before any new mutation.
+
+   Both fixed genuinely in round 4, with new permanent tests
+   (including 2 standalone tests isolating the hook positive/negative
+   controls). This also surfaced 2 new, genuine live-Gen1-authority
+   usages needing disclosure (the new hook-neutralization scenario
+   references `repository_ref_resource`/`repository_request_binding`)
+   -- added to `_ADJUDICATED_EXCEPTIONS`, confirmed 0 undisclosed.
+   Full local re-verification: mutation suite unchanged (110/0/5),
+   full test file and repository sweep re-run clean.
 
 ## Real, honest end-to-end result
 
