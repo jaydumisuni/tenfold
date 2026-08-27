@@ -328,10 +328,74 @@ def test_sc23_tree_entries_at_detects_a_content_corrupted_file(rig) -> None:
     corrupted_sha = subprocess_check_output(rig, ["rev-parse", "sc23/corruption-probe"])
 
     corrupted_tree = tree_entries_at(rig, corrupted_sha)
-    corrupted_paths = {path for path, _blob in corrupted_tree}
-    genuine_paths = {path for path, _blob in genuine_tree}
+    corrupted_paths = {path for path, _mode, _blob in corrupted_tree}
+    genuine_paths = {path for path, _mode, _blob in genuine_tree}
     assert corrupted_paths == genuine_paths  # same path set...
     assert corrupted_tree != genuine_tree  # ...but genuinely different content
+
+
+def test_sc23_tree_entries_at_detects_a_mode_only_change(rig) -> None:
+    """Review finding (PR #84, round 10, P1, reproduced by the
+    reviewer): the original (path, blob_sha) tuple discarded each
+    entry's MODE -- a commit that flips README.md from 100644 to
+    100755 while keeping the same path and blob would still compare
+    equal. tree_entries_at now includes mode, so a mode-only change is
+    genuinely detected."""
+    from tenfold.gen2.repository_construction_facility import _run_git, tree_entries_at
+
+    genuine_tree = tree_entries_at(rig, rig.initial_sha)
+
+    _run_git(rig.repo_root, "checkout", "-b", "sc23/mode-probe", rig.initial_sha)
+    (rig.repo_root / "README.md").chmod(0o755)
+    _run_git(rig.repo_root, "update-index", "--chmod=+x", "README.md")
+    _run_git(rig.repo_root, "commit", "-m", "flip mode")
+    _run_git(rig.repo_root, "checkout", "main")
+    mode_flipped_sha = subprocess_check_output(rig, ["rev-parse", "sc23/mode-probe"])
+
+    mode_flipped_tree = tree_entries_at(rig, mode_flipped_sha)
+    flipped_blobs = {(path, blob) for path, _mode, blob in mode_flipped_tree}
+    genuine_blobs = {(path, blob) for path, _mode, blob in genuine_tree}
+    assert flipped_blobs == genuine_blobs  # same path set and same blob content...
+    assert mode_flipped_tree != genuine_tree  # ...but genuinely different mode
+
+
+def test_sc23_wrapper_rejects_a_registered_repository_with_symlinked_git_objects(tmp_path) -> None:
+    """Review finding (PR #84, round 10, P1, reproduced by the
+    reviewer): LocalGitRepositoryTransport only checks the repository
+    ROOT is not a symlink -- it never checks whether .git/objects
+    itself is symlinked elsewhere, which would let commit_files write
+    real blob/tree/commit objects OUTSIDE the registered repository,
+    escaping the admitted identity's local-commit-only EFFECT_REACH
+    boundary. The wrapper now genuinely rejects admission for any
+    registered repository whose .git/objects or .git/refs is a
+    symlink."""
+    import subprocess
+
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    repo_root.mkdir()
+    subprocess.run(["git", "-C", str(repo_root), "init", "-b", "main"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "config", "user.name", "test"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "config", "user.email", "test@local.invalid"], check=True, capture_output=True)
+    (repo_root / "README.md").write_text("existing repo\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_root), "add", "README.md"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "commit", "-qm", "initial"], check=True, capture_output=True)
+
+    # Redirect .git/objects to an external directory outside repo_root
+    # -- simulating an attacker (or a prior hostile process) having
+    # replaced it with a symlink before this repository is registered.
+    external_objects = tmp_path / "external-objects"
+    real_objects = repo_root / ".git" / "objects"
+    real_objects_backup = tmp_path / "objects-backup"
+    real_objects.rename(real_objects_backup)
+    real_objects_backup.rename(external_objects)
+    (repo_root / ".git" / "objects").symlink_to(external_objects, target_is_directory=True)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    with pytest.raises(RepositoryConstructionQualificationError):
+        gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
 
 
 def subprocess_check_output(rig, args: list[str]) -> str:

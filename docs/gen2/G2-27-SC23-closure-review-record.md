@@ -528,6 +528,49 @@ verdict (see below) rather than a hardcoded stale expectation.
     `test_g2_27_self_construction.py`, full mutation suite, and full
     repository sweep (1323 passed, only the 9 known pre-existing
     Windows-only failures, zero regressions) re-run clean.
+14. CodeRabbit was itself rate-limited on the round-9 fix commit; Codex
+    (retried after its own earlier quota exhaustion) responded with 2
+    further genuine findings, both P1, both reproduced by the reviewer:
+    - **P1 ("Reject symlinked Git storage before admitting the
+      repository")**: `LocalGitRepositoryTransport.__init__` checks
+      only that the repository ROOT itself is not a symlink -- it
+      never checks whether `.git`'s own internal storage directories
+      are symlinked elsewhere. The reviewer reproduced registering a
+      repository whose `.git/objects` was a symlink to an external
+      directory, then `commit_files()` genuinely writing blob, tree,
+      and commit objects to that EXTERNAL location -- an admitted
+      local-commit-only operation writing outside the registered
+      repository, a real escape of the admitted identity's own
+      EFFECT_REACH boundary. **Fixed**: a new
+      `_reject_symlinked_git_storage_for_every_registered_repository`
+      check, called alongside hook neutralization for every repository
+      the transport has registered, rejects admission outright if
+      `.git/objects` or `.git/refs` is a symlink. New permanent test
+      redirects an existing repository's `.git/objects` to an external
+      directory before registration and confirms the wrapper now
+      refuses to admit it.
+    - **P1 ("Include entry modes in reconciled tree comparisons")**:
+      the round-8 `tree_entries_at` fix compared `(path, blob_sha)`
+      pairs but discarded each entry's MODE from `git ls-tree`'s
+      output -- the reviewer reproduced, via
+      `run_reconciliation_and_ack_semantics_scenario`, a commit that
+      changes `README.md`'s mode from `100644` to `100755` (an
+      executable-bit flip) while keeping the same path and blob still
+      being reported `QUALIFIED`. **Fixed**: `tree_entries_at` now
+      returns `(path, mode, blob_sha)` triples; its one caller
+      (the reconciliation scenario's expected-tree comparison) was
+      updated to include `ack.txt`'s own mode (`"100644"`, since it is
+      a NEW path absent from the parent tree --
+      `LocalGitRepositoryTransport._mode_for_path` only ever preserves
+      an EXISTING path's mode). New permanent test flips an existing
+      file's mode via a real commit and confirms `tree_entries_at` now
+      distinguishes it from the genuine tree despite identical path and
+      blob content.
+
+    Both genuinely fixed in round 10, with new permanent tests for
+    each. Full local re-verification: full test file,
+    `test_g2_27_self_construction.py`, full mutation suite, and full
+    repository sweep re-run clean.
 
 ## Real, honest end-to-end result
 

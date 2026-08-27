@@ -142,6 +142,32 @@ def _neutralize_hooks_for_every_registered_repository(transport: LocalGitReposit
         transport._run(name, "config", "core.hooksPath", str(no_hooks_dir))  # noqa: SLF001 -- see docstring
 
 
+def _reject_symlinked_git_storage_for_every_registered_repository(transport: LocalGitRepositoryTransport) -> None:
+    """Review finding (PR #84, round 10, P1, reproduced by the reviewer):
+    `LocalGitRepositoryTransport.__init__` only checks that the
+    repository ROOT itself is not a symlink -- it never checks whether
+    `.git`'s own INTERNAL storage directories are symlinked elsewhere.
+    If `.git/objects` were a symlink to a directory outside the
+    registered repository root, every blob/tree/commit object
+    `commit_files` writes (via `git hash-object -w`) would land at that
+    EXTERNAL location instead -- a real, reproduced escape of the
+    admitted identity's own local-commit-only EFFECT_REACH boundary
+    (writes are supposed to stay within the registered repository, not
+    merely within whatever `.git` happens to reference). Rejects
+    admission outright if `.git/objects` or `.git/refs` is a symlink
+    for ANY registered repository, mirroring the same
+    no-symlinks-followed discipline `LocalGitRepositoryTransport`
+    itself already applies to the repository root."""
+    for name, registered in transport._repositories.items():  # noqa: SLF001 -- genuine safety enforcement; see docstring
+        git_dir = registered.root / ".git"
+        for internal in ("objects", "refs"):
+            if (git_dir / internal).is_symlink():
+                raise RepositoryConstructionQualificationError(
+                    f"_reject_symlinked_git_storage_for_every_registered_repository: "
+                    f"{name}'s .git/{internal} is a symlink, escaping the registered repository root"
+                )
+
+
 def gen1_wrap_repository_construction_facility(transport, state_store, authority_store) -> RepositoryFacility:
     """Thin constructor around real `tenfold.repository_facility.
     RepositoryFacility` -- never re-derived.
@@ -191,6 +217,7 @@ def gen1_wrap_repository_construction_facility(transport, state_store, authority
             f"gen1_wrap_repository_construction_facility: transport must be a real LocalGitRepositoryTransport "
             f"(local-commit-only, per this identity's own admitted scope) -- got {type(transport).__name__}"
         )
+    _reject_symlinked_git_storage_for_every_registered_repository(transport)
     _neutralize_hooks_for_every_registered_repository(transport)
     return RepositoryFacility(transport, state_store, authority_store)
 
@@ -260,23 +287,31 @@ def tree_files_at(rig: DisposableRepositoryConstructionRig, sha: str) -> frozens
     return frozenset(output)
 
 
-def tree_entries_at(rig: DisposableRepositoryConstructionRig, sha: str) -> frozenset[tuple[str, str]]:
+def tree_entries_at(rig: DisposableRepositoryConstructionRig, sha: str) -> frozenset[tuple[str, str, str]]:
     """Review finding (PR #84, round 8, reproduced by the reviewer):
     `tree_files_at` alone compares only PATH NAMES, not content -- a
     commit that corrupts an existing file's content while keeping the
     same path SET (e.g. silently rewriting `README.md` while adding the
     requested new file) would still pass a names-only comparison. This
-    returns `(path, blob_sha)` pairs (via real `git ls-tree -r`, which
-    reports each entry's own blob object hash) so callers can compare
-    the COMPLETE tree -- paths AND content -- against the expected
-    parent-plus-patch tree."""
+    returns `(path, mode, blob_sha)` triples (via real `git ls-tree -r`,
+    which reports each entry's own mode and blob object hash) so
+    callers can compare the COMPLETE tree -- paths, content, AND mode
+    -- against the expected parent-plus-patch tree.
+
+    MODE FINDING (review finding, PR #84, round 10, P1, reproduced by
+    the reviewer): the original two-element `(path, blob_sha)` tuple
+    discarded each entry's MODE -- a commit that changed an existing
+    file's mode (e.g. `README.md` from `100644` to `100755`, an
+    executable-bit flip) while keeping the same path and blob would
+    still compare equal under a names-and-content-only check. Mode is
+    now included so a mode-only change is genuinely detected too."""
     output = subprocess.run(["git", "-C", str(rig.repo_root), "ls-tree", "-r", sha], check=True, capture_output=True, text=True).stdout.splitlines()
-    entries: set[tuple[str, str]] = set()
+    entries: set[tuple[str, str, str]] = set()
     for line in output:
         # "<mode> <type> <blob-sha>\t<path>"
         meta, path = line.split("\t", 1)
-        blob_sha = meta.split()[2]
-        entries.add((path, blob_sha))
+        mode, _entry_type, blob_sha = meta.split()
+        entries.add((path, mode, blob_sha))
     return frozenset(entries)
 
 
@@ -918,7 +953,11 @@ class RepositoryConstructionPropertyQualificationHarness:
         requested_content_landed = head_moved and self.rig.transport.read_file(self.rig.repository, "ack.txt", real_head_after_crash) == b"ack"
         if requested_content_landed:
             ack_blob_sha = subprocess.run(["git", "-C", str(self.rig.repo_root), "hash-object", "--stdin"], input="ack", check=True, capture_output=True, text=True).stdout.strip()
-            expected_tree = tree_entries_at(self.rig, self.rig.initial_sha) | {("ack.txt", ack_blob_sha)}
+            # "100644": ack.txt is a NEW path, absent from initial_sha's
+            # own tree -- LocalGitRepositoryTransport._mode_for_path
+            # returns "100644" for any path with no existing tree entry
+            # (only an EXISTING path's own mode is ever preserved).
+            expected_tree = tree_entries_at(self.rig, self.rig.initial_sha) | {("ack.txt", "100644", ack_blob_sha)}
             complete_tree_matches = tree_entries_at(self.rig, real_head_after_crash) == expected_tree
         else:
             complete_tree_matches = False
