@@ -1042,6 +1042,7 @@ _ALL_FACILITY_PROPERTIES = (
     "RECONCILIATION",
     "LATENCY_BOUNDS",
 )
+_ALL_FACILITY_PROPERTIES_SET = frozenset(_ALL_FACILITY_PROPERTIES)
 
 
 def independent_check_repository_construction_identity_admitted(
@@ -1081,12 +1082,20 @@ def independent_check_repository_construction_identity_admitted(
         return False
     if contract.get("effect_class") != admitted_effect_class:
         return False
+    # Round-3 review finding (PR #84): checking only that every expected
+    # property is present and qualified does not reject an EXTRA,
+    # unexpected property key (e.g. a typo'd or bogus property name) --
+    # the real FacilityContract's own closed schema rejects unknown
+    # properties, so this must too, or Standing Gate B could accept an
+    # artifact the authoritative contract decoder would itself reject.
     states: dict[str, str] = {}
     for record in contract.get("property_qualifications", ()):
         prop = record.get("property")
         if prop in states:
             return False
         states[prop] = record.get("state")
+    if set(states.keys()) != _ALL_FACILITY_PROPERTIES_SET:
+        return False
     return all(states.get(prop) in ("QUALIFIED", "QUALIFIED_WITH_BOUND") for prop in _ALL_FACILITY_PROPERTIES)
 
 

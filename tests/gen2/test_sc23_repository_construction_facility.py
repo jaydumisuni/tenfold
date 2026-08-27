@@ -93,6 +93,44 @@ def test_sc23_wrapper_rejects_a_non_local_git_transport() -> None:
         gen1_wrap_repository_construction_facility(_FakeRemoteTransport(), None, None)
 
 
+def test_sc23_wrapper_neutralizes_hooks_for_a_caller_supplied_existing_repository(tmp_path) -> None:
+    """Review finding (PR #84, round 8, P1): hooks were only neutralized
+    for build_disposable_local_git_facility's own freshly-created repo
+    -- the generic wrapper (the advertised G2-28+ entry point) had no
+    such protection for a caller-supplied transport registered against
+    a DIFFERENT, pre-existing repository that could already carry a
+    real hook. The wrapper now genuinely neutralizes hooks for every
+    repository the given transport has registered."""
+    import subprocess
+
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    repo_root.mkdir()
+    subprocess.run(["git", "-C", str(repo_root), "init", "-b", "main"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "config", "user.name", "test"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "config", "user.email", "test@local.invalid"], check=True, capture_output=True)
+
+    # A real hook installed BEFORE the wrapper ever sees this repo --
+    # simulating a pre-existing, possibly-malicious hook.
+    hooks_dir = repo_root / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    marker_path = tmp_path / "existing-repo-hook-fired.txt"
+    (hooks_dir / "reference-transaction").write_text(f"#!/bin/sh\necho fired > \"{marker_path}\"\nexit 0\n", encoding="utf-8")
+    (hooks_dir / "reference-transaction").chmod(0o755)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    # The wrapper's own hook neutralization must have redirected
+    # core.hooksPath away from the default location before any real
+    # mutation could reach it.
+    hooks_path = subprocess.run(["git", "-C", str(repo_root), "config", "core.hooksPath"], check=True, capture_output=True, text=True).stdout.strip()
+    assert hooks_path != str(hooks_dir)
+    assert not marker_path.exists()
+
+
 # ============================================================================
 # The real adversarial property-qualification harness, one property at a
 # time, against the real disposable local git repository.
@@ -216,6 +254,39 @@ def test_sc23_reconciliation_and_commit_ack_semantics_survive_a_genuine_crash_be
     assert "mutation_landed=True" in result.detail
     assert "receipt_missing_after_crash=True" in result.detail
     assert "retry_rejected=True" in result.detail
+
+
+def test_sc23_tree_entries_at_detects_a_content_corrupted_file(rig) -> None:
+    """Review finding (PR #84, round 8, reproduced by the reviewer):
+    comparing PATH NAMES alone does not prove content is unchanged -- a
+    commit that silently corrupts README.md's content while adding a
+    requested file would still produce the same path set. tree_entries_at
+    (path + real blob hash) must distinguish a genuine tree from one
+    with unexpectedly-corrupted content at the same paths."""
+    from tenfold.gen2.repository_construction_facility import _run_git, tree_entries_at
+
+    genuine_tree = tree_entries_at(rig, rig.initial_sha)
+
+    # Simulate corruption: a real, separate commit that changes
+    # README.md's content at the same path.
+    _run_git(rig.repo_root, "checkout", "-b", "sc23/corruption-probe", rig.initial_sha)
+    (rig.repo_root / "README.md").write_text("corrupted\n", encoding="utf-8")
+    _run_git(rig.repo_root, "add", "README.md")
+    _run_git(rig.repo_root, "commit", "-m", "corrupt")
+    _run_git(rig.repo_root, "checkout", "main")
+    corrupted_sha = subprocess_check_output(rig, ["rev-parse", "sc23/corruption-probe"])
+
+    corrupted_tree = tree_entries_at(rig, corrupted_sha)
+    corrupted_paths = {path for path, _blob in corrupted_tree}
+    genuine_paths = {path for path, _blob in genuine_tree}
+    assert corrupted_paths == genuine_paths  # same path set...
+    assert corrupted_tree != genuine_tree  # ...but genuinely different content
+
+
+def subprocess_check_output(rig, args: list[str]) -> str:
+    import subprocess
+
+    return subprocess.run(["git", "-C", str(rig.repo_root), *args], check=True, capture_output=True, text=True).stdout.strip()
 
 
 def test_sc23_latency_bounds_is_checked_against_a_frozen_threshold_not_defined_post_hoc(rig) -> None:
@@ -355,6 +426,33 @@ def test_sc23_standing_gate_b_reconciliation_rejects_duplicate_property_records(
         # a naive dict comprehension) unqualified.
         "property_qualifications": [{"property": r.property.value, "state": r.state.value} for r in contract.property_qualifications]
         + [{"property": "LATENCY_BOUNDS", "state": "UNQUALIFIED"}],
+    }
+    verifier_result = independent_check_repository_construction_identity_admitted(
+        contract_dict,
+        admitted_facility_id=ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_ID,
+        admitted_facility_generation=ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_GENERATION,
+        admitted_adapter_boundary="REPOSITORY",
+        admitted_effect_class=ADMITTED_REPOSITORY_CONSTRUCTION_EFFECT_CLASS,
+    )
+    assert verifier_result is False
+
+
+def test_sc23_standing_gate_b_reconciliation_rejects_an_extra_unknown_property_record(rig) -> None:
+    """Review finding (PR #84, round 8): checking only that every
+    expected property is present and qualified does not reject an
+    EXTRA, unexpected property key -- the real FacilityContract's own
+    closed schema rejects unknown properties (missing/extra alike), so
+    the independent verifier must too."""
+    records = RepositoryConstructionPropertyQualificationHarness(rig).qualify_declared_scenarios()
+    contract = build_admitted_repository_construction_contract(records)
+    contract_dict = {
+        "facility_id": contract.facility_id,
+        "facility_generation": contract.facility_generation,
+        "io_class": contract.io_class.value,
+        "adapter_boundary": contract.adapter_boundary.value,
+        "effect_class": contract.effect_class,
+        "property_qualifications": [{"property": r.property.value, "state": r.state.value} for r in contract.property_qualifications]
+        + [{"property": "BOGUS", "state": "QUALIFIED"}],
     }
     verifier_result = independent_check_repository_construction_identity_admitted(
         contract_dict,

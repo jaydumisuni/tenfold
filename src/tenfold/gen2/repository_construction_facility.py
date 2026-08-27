@@ -96,6 +96,30 @@ ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_IDENTITY = _RepositoryConstructionFaci
 )
 
 
+def _neutralize_hooks_for_every_registered_repository(transport: LocalGitRepositoryTransport) -> None:
+    """Review finding (PR #84, round 8, reproduced-in-principle by the
+    reviewer): `build_disposable_local_git_facility` only neutralized
+    hooks for the ONE repository it itself freshly creates -- this
+    generic wrapper, the advertised reusable G2-28+ entry point, had no
+    such protection for a caller-supplied `LocalGitRepositoryTransport`
+    registered against a DIFFERENT, possibly pre-existing repository
+    (which could already carry a real, malicious/legacy
+    `reference-transaction` hook). Genuinely neutralizes hooks (the
+    same `core.hooksPath` redirect, real and durable, repo-local git
+    config) for EVERY repository the given transport has registered,
+    not only a disposable one this module happens to have built.
+    `LocalGitRepositoryTransport` exposes no public API for its
+    registered-repository roots (by design, matching its own minimal,
+    read/mutate-only interface) -- accessing `_repositories` here is a
+    deliberate, documented exception, justified by a genuine safety
+    requirement with no other real avenue, not mere convenience."""
+    for registered in transport._repositories.values():  # noqa: SLF001 -- genuine safety enforcement; see docstring
+        repo_root = registered.root
+        no_hooks_dir = repo_root / ".git" / "tenfold-gen2-no-hooks"
+        no_hooks_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "-C", str(repo_root), "config", "core.hooksPath", str(no_hooks_dir)], check=True, capture_output=True)
+
+
 def gen1_wrap_repository_construction_facility(transport, state_store, authority_store) -> RepositoryFacility:
     """Thin constructor around real `tenfold.repository_facility.
     RepositoryFacility` -- never re-derived.
@@ -145,6 +169,7 @@ def gen1_wrap_repository_construction_facility(transport, state_store, authority
             f"gen1_wrap_repository_construction_facility: transport must be a real LocalGitRepositoryTransport "
             f"(local-commit-only, per this identity's own admitted scope) -- got {type(transport).__name__}"
         )
+    _neutralize_hooks_for_every_registered_repository(transport)
     return RepositoryFacility(transport, state_store, authority_store)
 
 
@@ -211,6 +236,26 @@ def tree_files_at(rig: DisposableRepositoryConstructionRig, sha: str) -> frozens
     check while still being a genuine reconciliation failure."""
     output = subprocess.run(["git", "-C", str(rig.repo_root), "ls-tree", "-r", "--name-only", sha], check=True, capture_output=True, text=True).stdout.split()
     return frozenset(output)
+
+
+def tree_entries_at(rig: DisposableRepositoryConstructionRig, sha: str) -> frozenset[tuple[str, str]]:
+    """Review finding (PR #84, round 8, reproduced by the reviewer):
+    `tree_files_at` alone compares only PATH NAMES, not content -- a
+    commit that corrupts an existing file's content while keeping the
+    same path SET (e.g. silently rewriting `README.md` while adding the
+    requested new file) would still pass a names-only comparison. This
+    returns `(path, blob_sha)` pairs (via real `git ls-tree -r`, which
+    reports each entry's own blob object hash) so callers can compare
+    the COMPLETE tree -- paths AND content -- against the expected
+    parent-plus-patch tree."""
+    output = subprocess.run(["git", "-C", str(rig.repo_root), "ls-tree", "-r", sha], check=True, capture_output=True, text=True).stdout.splitlines()
+    entries: set[tuple[str, str]] = set()
+    for line in output:
+        # "<mode> <type> <blob-sha>\t<path>"
+        meta, path = line.split("\t", 1)
+        blob_sha = meta.split()[2]
+        entries.add((path, blob_sha))
+    return frozenset(entries)
 
 
 def build_disposable_local_git_facility(tmp_dir: Path) -> DisposableRepositoryConstructionRig:
@@ -839,9 +884,22 @@ class RepositoryConstructionPropertyQualificationHarness:
         # equals the requested parent-plus-patch -- an unexpected extra
         # file would pass a single-blob check. Compare the full tree
         # (README.md carried over from the parent, plus the newly
-        # committed ack.txt -- nothing else).
+        # committed ack.txt -- nothing else). Review finding (PR #84,
+        # round 8, reproduced by the reviewer): comparing PATH NAMES
+        # alone does not prove content is unchanged -- a commit that
+        # silently corrupts README.md's own content while adding the
+        # requested file would still produce the same path set. Compare
+        # the COMPLETE tree (path + blob hash) against the expected
+        # parent-plus-patch tree: the parent's own real tree entries
+        # (README.md's ORIGINAL blob, untouched) plus the new file's
+        # genuinely-computed blob hash.
         requested_content_landed = head_moved and self.rig.transport.read_file(self.rig.repository, "ack.txt", real_head_after_crash) == b"ack"
-        complete_tree_matches = requested_content_landed and tree_files_at(self.rig, real_head_after_crash) == frozenset({"README.md", "ack.txt"})
+        if requested_content_landed:
+            ack_blob_sha = subprocess.run(["git", "-C", str(self.rig.repo_root), "hash-object", "--stdin"], input="ack", check=True, capture_output=True, text=True).stdout.strip()
+            expected_tree = tree_entries_at(self.rig, self.rig.initial_sha) | {("ack.txt", ack_blob_sha)}
+            complete_tree_matches = tree_entries_at(self.rig, real_head_after_crash) == expected_tree
+        else:
+            complete_tree_matches = False
         mutation_landed = complete_tree_matches
         receipt_missing_after_crash = self.rig.facility.state.receipt("op-ack-commit") is None
 

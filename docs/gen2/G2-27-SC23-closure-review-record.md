@@ -451,6 +451,51 @@ verdict (see below) rather than a hardcoded stale expectation.
     reasoning disclosed in the review thread; 1 duplicate of an
     already-fixed finding. Full local re-verification: full test file
     and repository sweep re-run clean.
+12. Codex's own seventh pass (against the round-7 commit) found zero
+    findings, but a systematic post-merge check for unresolved threads
+    across ALL reviewers (not just the most recent) surfaced 3 more --
+    a `/comments` REST-endpoint query had missed them due to an
+    apparent pagination/timing inconsistency; the thread-level GraphQL
+    check caught what the flat comment list did not. All 3 genuine (2
+    P1, 1 P2), the first two reproduced-in-principle by the reviewer:
+    - **P1 ("Compare every blob when reconciling the commit")**: the
+      round-5 complete-tree fix compared only PATH NAMES, not content
+      -- a commit that also silently corrupted the existing
+      `README.md`'s content while writing the requested new file would
+      still produce the same path set and pass. **Fixed**: added
+      `tree_entries_at` (path + real git blob hash, via `git ls-tree`
+      without `--name-only`); the reconciliation scenario now compares
+      the complete tree -- paths AND content -- against the expected
+      parent-plus-patch tree (the parent's own real entries, `README.md`
+      untouched, plus the new file's genuinely-computed blob hash).
+    - **P1 ("Neutralize hooks for every wrapped repository")**: the
+      round-4 hook fix only neutralized hooks for
+      `build_disposable_local_git_facility`'s own freshly-created
+      repository -- the generic, reusable wrapper (the advertised
+      G2-28+ entry point) had no such protection for a caller-supplied
+      transport registered against a DIFFERENT, pre-existing
+      repository that could already carry a real hook. **Fixed**:
+      `gen1_wrap_repository_construction_facility` now genuinely
+      neutralizes hooks for every repository the given transport has
+      registered (via `LocalGitRepositoryTransport`'s private
+      `_repositories` -- a deliberate, documented exception to the
+      "no private-attribute access" discipline, justified by a genuine
+      safety requirement with no other real avenue since the class
+      exposes no public API for its registered roots). New permanent
+      test registers an EXISTING repository (not the disposable rig's
+      own) carrying a real pre-installed hook and confirms it is
+      genuinely neutralized by the wrapper alone.
+    - **P2 ("Reject extra property records in the verifier")**: the
+      duplicate-record fix (round 5) checked that every expected
+      property is present and qualified, but never rejected an EXTRA,
+      unexpected property key -- the real `FacilityContract`'s own
+      closed schema rejects unknown properties too. **Fixed**: the
+      verifier now requires the record key set to equal the expected
+      set exactly.
+
+    All 3 fixed genuinely in round 8, with new permanent tests for
+    each. Full local re-verification: full test file, `test_g2_27_self_construction.py`,
+    full mutation suite, and full repository sweep re-run clean.
 
 ## Real, honest end-to-end result
 
