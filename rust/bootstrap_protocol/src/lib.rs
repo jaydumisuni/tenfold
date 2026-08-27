@@ -186,9 +186,9 @@ impl DetectorBinding {
                 return Err(err(format!("DetectorBinding: {field} must be non-empty")));
             }
         }
-        if self.input_refs.is_empty() {
+        if self.input_refs.is_empty() || self.input_refs.iter().any(|r| r.trim().is_empty()) {
             return Err(err(format!(
-                "DetectorBinding {:?}: input_refs must be non-empty -- evidence must cite what it genuinely examined, not merely assert a conclusion",
+                "DetectorBinding {:?}: input_refs must be non-empty and every entry must be non-blank -- evidence must cite what it genuinely examined, not merely assert a conclusion",
                 self.detector_id
             )));
         }
@@ -419,14 +419,22 @@ pub struct BootstrapCorpusV1 {
     pub facility_result: FacilityResultV1,
     pub assurance_result: proof_graph::AssuranceBindingClaim,
     pub chronicle_event: chronicle::ChronicleEntry,
-    /// The corpus's own independently-known "ground truth" for the
-    /// evidence packet's claimed `dispatch_digest` -- the same role
-    /// `campaign_identity.generation`/`lease.epoch` already play for the
-    /// generation check.
-    pub real_dispatch_digest: String,
-    /// The corpus's own independently-known detector-admission registry:
-    /// detector_id -> the real domains that detector is admitted for.
-    pub admitted_detectors: HashMap<String, Vec<String>>,
+}
+
+/// The frozen, code-owned admitted-detector registry (review finding,
+/// PR #83: a corpus-supplied registry is not independent ground truth --
+/// a forged corpus could add its own detector to a self-supplied
+/// allowlist alongside a forged packet). Real ground truth must live
+/// outside the document being checked, exactly like every other
+/// independently-known value this crate compares packet claims against.
+/// `validate_bootstrap_corpus` uses this registry directly (never a
+/// corpus field); the standalone `check_evidence_packet_detector_bindings`
+/// still accepts a caller-supplied registry for callers with their own
+/// independently-known admission source.
+pub fn admitted_detector_registry() -> HashMap<String, Vec<String>> {
+    let mut registry = HashMap::new();
+    registry.insert("g2-19-corpus-detector-1".to_string(), vec!["g2-19-corpus-domain-1".to_string()]);
+    registry
 }
 
 fn validate_lease(lease: &dispatch_lease::WriteLease) -> Result<(), BootstrapProtocolError> {
@@ -467,8 +475,16 @@ pub fn validate_bootstrap_corpus(corpus: &BootstrapCorpusV1) -> Result<(), Boots
     // Provenance and detector/tool/input bindings -- the two thirds of
     // the "evidence_packet" row's own claim this crate now genuinely
     // builds (previously honestly deferred, G2-19 round-2 finding).
-    check_evidence_packet_provenance(&corpus.evidence_packet, &corpus.real_dispatch_digest)?;
-    check_evidence_packet_detector_bindings(&corpus.evidence_packet, &corpus.admitted_detectors)?;
+    // Review finding (PR #83): the ground truth each check compares
+    // against must be independently sourced, not a corpus field a
+    // forger controls alongside the packet itself. The real dispatch
+    // digest comes from `task_packet` -- a genuinely different family
+    // (sealed by the dispatch authority before evidence collection),
+    // the same role campaign_identity.generation/lease.epoch already
+    // play above. The admitted-detector registry comes from the frozen,
+    // code-owned `admitted_detector_registry()`, never a corpus field.
+    check_evidence_packet_provenance(&corpus.evidence_packet, &corpus.task_packet.dispatch_digest)?;
+    check_evidence_packet_detector_bindings(&corpus.evidence_packet, &admitted_detector_registry())?;
     validate_lease(&corpus.lease)?;
     check_facility_result_matches_request(&corpus.facility_request, &corpus.facility_result)?;
     if !corpus.assurance_result.reconciled() {
@@ -622,12 +638,17 @@ mod tests {
     }
 
     fn detector_binding() -> DetectorBinding {
-        DetectorBinding { detector_id: "g2-19-detector-1".into(), admitted_domain: "g2-19-domain-1".into(), tool_version: "v1".into(), input_refs: vec!["input-ref-1".into()] }
+        // Matches admitted_detector_registry()'s own frozen entry, so
+        // evidence_packet()'s embedded binding satisfies both the
+        // standalone-function tests (using admitted_detectors() below)
+        // and the corpus-level tests (using the frozen production
+        // registry directly) without needing two divergent fixtures.
+        DetectorBinding { detector_id: "g2-19-corpus-detector-1".into(), admitted_domain: "g2-19-corpus-domain-1".into(), tool_version: "v1".into(), input_refs: vec!["input-ref-1".into()] }
     }
 
     fn admitted_detectors() -> HashMap<String, Vec<String>> {
         let mut map = HashMap::new();
-        map.insert("g2-19-detector-1".to_string(), vec!["g2-19-domain-1".to_string()]);
+        map.insert("g2-19-corpus-detector-1".to_string(), vec!["g2-19-corpus-domain-1".to_string()]);
         map
     }
 
@@ -726,8 +747,6 @@ mod tests {
             facility_result: result,
             assurance_result: reconciled_assurance_claim(),
             chronicle_event: real_chronicle_entry(),
-            real_dispatch_digest: "digest-1".into(),
-            admitted_detectors: admitted_detectors(),
         }
     }
 
@@ -874,8 +893,11 @@ mod tests {
 
     #[test]
     fn corpus_rejects_evidence_packet_with_unprovenanced_dispatch_digest() {
+        // Ground truth is now task_packet.dispatch_digest (review finding,
+        // PR #83) -- tamper the evidence_packet's own claim so it
+        // disagrees with the corpus's real, independently-sourced digest.
         let mut c = valid_corpus();
-        c.real_dispatch_digest = "some-other-digest".into();
+        c.evidence_packet.dispatch_digest = "some-other-digest".into();
         assert!(validate_bootstrap_corpus(&c).is_err());
     }
 

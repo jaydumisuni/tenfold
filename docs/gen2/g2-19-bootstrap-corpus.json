@@ -63,10 +63,6 @@
       }
     ]
   },
-  "real_dispatch_digest": "g2-19-corpus-dispatch-digest",
-  "admitted_detectors": {
-    "g2-19-corpus-detector-1": ["g2-19-corpus-domain-1"]
-  },
   "lease": {
     "lease_id": "g2-19-corpus-lease-1",
     "campaign_id": "tenfold-gen2-0-construction",

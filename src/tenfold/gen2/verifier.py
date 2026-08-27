@@ -1219,15 +1219,24 @@ def independent_check_evidence_packet_detector_bindings(packet: dict, admitted_d
     only when the packet attaches at least one detector binding, every
     binding names a detector present in `admitted_detectors`, that
     detector's claimed domain is genuinely one of its real admitted
-    domains, and every binding cites at least one non-empty input_ref."""
+    domains, every required string field (detector_id, admitted_domain,
+    tool_version) is genuinely non-blank, and every binding cites at
+    least one non-blank input_ref. Round-2 review finding (PR #83): the
+    original version never read `tool_version` at all, so a binding with
+    `tool_version=""` returned True here while the real
+    `DetectorBinding.validate()` rejects it -- a genuine Standing Gate B
+    reconciliation mismatch."""
     bindings = packet.get("detector_bindings", ())
     if not bindings:
         return False
     for binding in bindings:
         detector_id = binding.get("detector_id", "")
         admitted_domain = binding.get("admitted_domain", "")
+        tool_version = binding.get("tool_version", "")
         input_refs = binding.get("input_refs", ())
-        if not detector_id or not admitted_domain or not input_refs:
+        if not all(isinstance(value, str) and value.strip() for value in (detector_id, admitted_domain, tool_version)):
+            return False
+        if not input_refs or any(not isinstance(ref, str) or not ref.strip() for ref in input_refs):
             return False
         if detector_id not in admitted_detectors:
             return False

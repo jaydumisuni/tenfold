@@ -157,10 +157,10 @@ class DetectorBinding:
         ):
             if not value or not value.strip():
                 raise BootstrapProtocolError(f"DetectorBinding: {field_name} must be non-empty")
-        if not self.input_refs:
+        if not self.input_refs or any(not ref or not ref.strip() for ref in self.input_refs):
             raise BootstrapProtocolError(
-                f"DetectorBinding {self.detector_id!r}: input_refs must be non-empty -- evidence must cite "
-                "what it genuinely examined, not merely assert a conclusion"
+                f"DetectorBinding {self.detector_id!r}: input_refs must be non-empty and every entry must be "
+                "non-blank -- evidence must cite what it genuinely examined, not merely assert a conclusion"
             )
 
 
@@ -274,6 +274,24 @@ def check_evidence_packet_detector_bindings(packet: EvidencePacketV1, *, admitte
                 f"EvidencePacketV1 {packet.packet_id!r}: detector {binding.detector_id!r} is not admitted for domain "
                 f"{binding.admitted_domain!r} (its real admitted domains: {sorted(admitted_detectors[binding.detector_id])})"
             )
+
+
+#: The frozen, code-owned admitted-detector registry (review finding,
+#: PR #83: a corpus-supplied registry is not independent ground truth --
+#: a forged corpus could add its own detector to a self-supplied
+#: allowlist). Real ground truth must live outside the document being
+#: checked, exactly like every other independently-known value this
+#: module compares packet claims against -- the same principle
+#: `check_evidence_packet_generation_current` already established by
+#: taking its "current" values from the caller, never the packet.
+#: `validate_bootstrap_corpus` uses this registry directly (never a
+#: corpus field); the standalone `check_evidence_packet_detector_bindings`
+#: still accepts a caller-supplied registry for callers with their own
+#: independently-known admission source (mirrors the standalone
+#: generation check's own caller-supplied current-generation pattern).
+ADMITTED_DETECTORS: dict[str, frozenset[str]] = {
+    "g2-19-corpus-detector-1": frozenset({"g2-19-corpus-domain-1"}),
+}
 
 
 # ============================================================================
@@ -440,8 +458,18 @@ def validate_bootstrap_corpus(corpus: dict) -> None:
     # "evidence_packet" row's own claim this milestone now genuinely
     # builds (previously honestly deferred, G2-19 round-2 finding, closed
     # as SC-16 following G2-27's own independent SS20 verification).
-    check_evidence_packet_provenance(evidence_packet, real_dispatch_digest=corpus["real_dispatch_digest"])
-    check_evidence_packet_detector_bindings(evidence_packet, admitted_detectors={k: frozenset(v) for k, v in corpus["admitted_detectors"].items()})
+    # Review finding (PR #83): the "ground truth" each check compares
+    # against must be independently sourced, not merely another
+    # corpus-supplied field a forger controls alongside the packet
+    # itself. The real dispatch digest comes from `task_packet` -- a
+    # genuinely different family (TaskPacketV1, sealed by the dispatch
+    # authority before evidence collection), the same role
+    # `campaign_identity.generation`/`lease.epoch` already play for the
+    # generation check above. The admitted-detector registry comes from
+    # the frozen, code-owned `ADMITTED_DETECTORS` constant, never a
+    # corpus field.
+    check_evidence_packet_provenance(evidence_packet, real_dispatch_digest=tp["dispatch_digest"])
+    check_evidence_packet_detector_bindings(evidence_packet, admitted_detectors=ADMITTED_DETECTORS)
 
     _validate_lease_dict(corpus["lease"])
 
