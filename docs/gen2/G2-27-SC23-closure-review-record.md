@@ -496,6 +496,38 @@ verdict (see below) rather than a hardcoded stale expectation.
     All 3 fixed genuinely in round 8, with new permanent tests for
     each. Full local re-verification: full test file, `test_g2_27_self_construction.py`,
     full mutation suite, and full repository sweep re-run clean.
+13. Codex's request for a ninth pass hit the reviewer's own external
+    usage-limit quota (the same failure mode already seen once on PR
+    #83); CodeRabbit was requested instead (the same, user-endorsed
+    substitution precedent), and its fresh pass against the round-8
+    commit found 1 further genuine finding, reproduced-in-principle by
+    the reviewer:
+    - **P1 ("Use a unique hook directory for hook neutralization",
+      CWE-59)**: the round-8 hook-neutralization fix used a FIXED,
+      predictable path (`.git/tenfold-gen2-no-hooks`) with
+      `mkdir(parents=True, exist_ok=True)` -- which silently FOLLOWS a
+      pre-existing symlink planted at that exact path rather than
+      failing. If that symlink pointed at a directory carrying a real
+      `reference-transaction` hook, `core.hooksPath` would end up
+      pointing AT the attacker-controlled hook, and it would fire,
+      defeating the entire neutralization this function exists to
+      provide. **Fixed**: neutralization now uses `tempfile.mkdtemp`
+      under the repository's own real, symlink-checked `.git`
+      directory to create a genuinely fresh, unpredictably-named
+      directory on every call (so there is no fixed path for a
+      pre-planted symlink to occupy), and applies the `core.hooksPath`
+      redirect through `LocalGitRepositoryTransport._run` rather than a
+      second, ad-hoc `subprocess.run` call. New permanent test plants a
+      symlink at the old fixed path pointing at a directory with a real
+      hook, confirms the wrapper's neutralization does not resolve to
+      it, and confirms a real ref update genuinely does not fire the
+      planted hook.
+
+    1 genuine finding fixed in round 9, with a new permanent regression
+    test. Full local re-verification: full test file,
+    `test_g2_27_self_construction.py`, full mutation suite, and full
+    repository sweep (1323 passed, only the 9 known pre-existing
+    Windows-only failures, zero regressions) re-run clean.
 
 ## Real, honest end-to-end result
 

@@ -131,6 +131,57 @@ def test_sc23_wrapper_neutralizes_hooks_for_a_caller_supplied_existing_repositor
     assert not marker_path.exists()
 
 
+def test_sc23_wrapper_hook_neutralization_does_not_follow_a_preexisting_symlink(tmp_path) -> None:
+    """Review finding (PR #84, round 9, P1, reproduced by the reviewer):
+    the original hook-neutralization used a FIXED, predictable path
+    (.git/tenfold-gen2-no-hooks) with mkdir(..., exist_ok=True), which
+    silently follows a pre-existing symlink planted at that exact path
+    -- if the symlink target contained a real hook, core.hooksPath
+    would point at attacker-controlled, un-neutralized hooks. Neutral-
+    ization now uses tempfile.mkdtemp for a genuinely fresh,
+    unpredictably-named directory every call, so a symlink pre-planted
+    at the old fixed name is never touched at all."""
+    import subprocess
+
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    repo_root.mkdir()
+    subprocess.run(["git", "-C", str(repo_root), "init", "-b", "main"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "config", "user.name", "test"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "config", "user.email", "test@local.invalid"], check=True, capture_output=True)
+    (repo_root / "README.md").write_text("existing repo\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_root), "add", "README.md"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "commit", "-qm", "initial"], check=True, capture_output=True)
+
+    # Plant a symlink at the OLD fixed neutralization path, pointing at
+    # a directory that carries a real, malicious hook.
+    payload_dir = tmp_path / "payload-hooks"
+    payload_dir.mkdir()
+    marker_path = tmp_path / "existing-repo-hook-fired.txt"
+    (payload_dir / "reference-transaction").write_text(f"#!/bin/sh\necho fired > \"{marker_path}\"\nexit 0\n", encoding="utf-8")
+    (payload_dir / "reference-transaction").chmod(0o755)
+    fixed_path = repo_root / ".git" / "tenfold-gen2-no-hooks"
+    fixed_path.symlink_to(payload_dir, target_is_directory=True)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    hooks_path = subprocess.run(["git", "-C", str(repo_root), "config", "core.hooksPath"], check=True, capture_output=True, text=True).stdout.strip()
+    assert hooks_path != str(payload_dir)
+    assert hooks_path != str(fixed_path)
+
+    # Force a real ref update (fires reference-transaction if hooks are
+    # still active) to confirm the planted hook genuinely never runs.
+    subprocess.run(
+        ["git", "-C", str(repo_root), "update-ref", "refs/heads/probe", "HEAD"],
+        check=True,
+        capture_output=True,
+    )
+    assert not marker_path.exists()
+
+
 # ============================================================================
 # The real adversarial property-qualification harness, one property at a
 # time, against the real disposable local git repository.

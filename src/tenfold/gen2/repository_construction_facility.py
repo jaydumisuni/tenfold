@@ -112,12 +112,34 @@ def _neutralize_hooks_for_every_registered_repository(transport: LocalGitReposit
     registered-repository roots (by design, matching its own minimal,
     read/mutate-only interface) -- accessing `_repositories` here is a
     deliberate, documented exception, justified by a genuine safety
-    requirement with no other real avenue, not mere convenience."""
-    for registered in transport._repositories.values():  # noqa: SLF001 -- genuine safety enforcement; see docstring
+    requirement with no other real avenue, not mere convenience.
+
+    SYMLINK FINDING (review finding, PR #84, round 9, reproduced by the
+    reviewer): the original fixed-name `.git/tenfold-gen2-no-hooks`
+    directory used `mkdir(parents=True, exist_ok=True)`, which silently
+    FOLLOWS a pre-existing symlink planted at that exact, predictable
+    path rather than failing -- if `.git/tenfold-gen2-no-hooks` were
+    already a symlink to a directory containing a real
+    `reference-transaction` hook, `git config core.hooksPath` would
+    point AT that attacker-controlled hook, and the hook WOULD fire,
+    defeating the entire neutralization this function exists to
+    provide. Fixed by never using a predictable, fixed name at all:
+    `tempfile.mkdtemp` under the repository's own real (symlink-
+    checked) `.git` directory creates a genuinely fresh,
+    unpredictably-named directory every call, so there is no fixed
+    path for a pre-planted symlink to occupy; the redirect is then
+    applied through `LocalGitRepositoryTransport._run` (real,
+    argv-list `subprocess.run`, no shell) rather than a second, ad-hoc
+    `subprocess.run` call."""
+    for name, registered in transport._repositories.items():  # noqa: SLF001 -- genuine safety enforcement; see docstring
         repo_root = registered.root
-        no_hooks_dir = repo_root / ".git" / "tenfold-gen2-no-hooks"
-        no_hooks_dir.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["git", "-C", str(repo_root), "config", "core.hooksPath", str(no_hooks_dir)], check=True, capture_output=True)
+        git_dir = repo_root / ".git"
+        if git_dir.is_symlink() or not git_dir.is_dir():
+            raise RepositoryConstructionQualificationError(
+                f"_neutralize_hooks_for_every_registered_repository: {repo_root} has no real, non-symlink .git directory"
+            )
+        no_hooks_dir = Path(tempfile.mkdtemp(prefix="tenfold-gen2-no-hooks-", dir=str(git_dir)))
+        transport._run(name, "config", "core.hooksPath", str(no_hooks_dir))  # noqa: SLF001 -- see docstring
 
 
 def gen1_wrap_repository_construction_facility(transport, state_store, authority_store) -> RepositoryFacility:
