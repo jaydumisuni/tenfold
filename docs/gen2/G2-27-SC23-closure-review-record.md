@@ -259,6 +259,39 @@ verdict (see below) rather than a hardcoded stale expectation.
    re-verification after the fixes: Rust workspace clean, mutation
    suite 110 total/0 survived/5 pending (unchanged), full `pytest`
    sweep clean.
+7. A fresh Codex re-review against the round-2 fix commit found 3
+   further genuine findings (2 P1, 1 P2), each a sharper follow-up on
+   the round-2 fix itself:
+   - **P1 ("Reconcile the requested commit rather than any moved
+     head")**: the round-2 crash-injection fix proved SOME head
+     movement occurred, not that the SPECIFIC requested content
+     landed -- a wrong tree, or an unrelated writer's mutation, would
+     have passed the same check. Fixed: now reads back the real
+     committed file content at the new head and compares it against
+     the exact requested bytes.
+   - **P1 ("Exercise enumeration through the admitted Facility")**:
+     Gen1's real `RepositoryFacility` exposes NO enumeration operation
+     at all, and neither does `LocalGitRepositoryTransport` -- so
+     qualifying `ENUMERATION_COMPLETENESS` via raw, ad-hoc `git
+     for-each-ref` calls bypassed the admitted Facility entirely; a
+     real production caller could never have enumerated its own
+     mutation domain this way. Fixed: added `list_branches`, a real,
+     disclosed, Gen2-owned enumeration capability for this identity
+     (operating through the same real transport-bound repository,
+     never a re-derivation of Gen1's own logic), and the scenario now
+     uses it as the qualified observation path instead of an ad-hoc
+     bypass.
+   - **P2 ("Verify recovered writer state before the takeover
+     commit")**: the restart check inspected the durable writer AFTER
+     the new owner's own commit had already re-created the row, so it
+     proved only that the new mutation happened, not that owner-a's
+     pre-crash claim was genuinely recovered. Fixed: now inspects the
+     exact persisted owner immediately after restart, before any new
+     mutation, and confirms it is genuinely owner-a's own claim.
+
+   All 3 fixed genuinely in round 3. Full local re-verification:
+   `pytest tests/gen2/test_sc23_repository_construction_facility.py`
+   and the full mutation suite/repository sweep re-run clean.
 
 ## Real, honest end-to-end result
 

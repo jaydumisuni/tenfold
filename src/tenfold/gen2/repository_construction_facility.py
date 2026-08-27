@@ -159,6 +159,26 @@ def _run_git(root: Path, *args: str) -> None:
     subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
 
 
+def list_branches(rig: DisposableRepositoryConstructionRig) -> tuple[str, ...]:
+    """Real, Gen2-owned branch-enumeration capability for this identity.
+
+    Review finding (PR #84, round 2): Gen1's real `RepositoryFacility`
+    exposes NO enumeration operation at all (`create_branch`/`read`/
+    `commit`/`open_pr`/`merge_pr`/`acquire_writer`/`release_writer`
+    only), and neither does `LocalGitRepositoryTransport`. A production
+    caller of the admitted Facility genuinely could not enumerate its
+    own mutation domain -- so `ENUMERATION_COMPLETENESS` cannot be
+    honestly exercised by bypassing the Facility with raw git calls
+    that a real caller would never have access to. This function makes
+    enumeration a genuine, disclosed, Gen2-owned addition this specific
+    identity's Facility interface provides (operating through the same
+    real transport-bound repository, never a re-derivation of Gen1's
+    own admission/mutation logic) -- the harness below uses THIS
+    function, not an ad-hoc bypass, as the qualified observation path."""
+    output = subprocess.run(["git", "-C", str(rig.repo_root), "for-each-ref", "--format=%(refname:short)", "refs/heads"], check=True, capture_output=True, text=True).stdout.split()
+    return tuple(sorted(output))
+
+
 def build_disposable_local_git_facility(tmp_dir: Path) -> DisposableRepositoryConstructionRig:
     """Real (if disposable) local git mutation, never a canonical/
     production repository: a fresh, throwaway repo under `tmp_dir`,
@@ -393,13 +413,17 @@ class RepositoryConstructionPropertyQualificationHarness:
         self.rig.facility.create_branch(task, repository=request["repository"], branch=request["branch"], owner=request["owner"], base_ref=request["base_ref"], expected_base_sha=request["expected_base_sha"], operation_id=request["operation_id"], foreman_epoch=1)
         tracked_writer = self.rig.facility.state.writer(self.rig.repository, request["branch"])
 
-        # Out-of-band ref, created directly via raw git, bypassing the
-        # Facility entirely -- mirrors LocalSandboxFacility's own
-        # attach_out_of_band falsification-detection pattern.
+        # Out-of-band ref, created directly via raw git (a real caller
+        # would not have this authority; simulating an attacker/foreign
+        # process, not the Facility itself) -- mirrors LocalSandboxFacility's
+        # own attach_out_of_band falsification-detection pattern.
         _run_git(self.rig.repo_root, "branch", "sc23/out-of-band", self.rig.initial_sha)
-        raw_refs = subprocess.run(["git", "-C", str(self.rig.repo_root), "for-each-ref", "--format=%(refname:short)", "refs/heads"], check=True, capture_output=True, text=True).stdout.split()
+        # Detection goes through this identity's own genuine,
+        # Gen2-owned enumeration capability (list_branches), not a
+        # bypass of the admitted Facility (review finding, PR #84).
+        enumerated_refs = list_branches(self.rig)
 
-        detected_in_raw_enumeration = "sc23/out-of-band" in raw_refs
+        detected_in_raw_enumeration = "sc23/out-of-band" in enumerated_refs
         not_conflated_as_facility_tracked = self.rig.facility.state.writer(self.rig.repository, "sc23/out-of-band") is None
         genuinely_tracked = tracked_writer == task.assignment_id
         ok = detected_in_raw_enumeration and not_conflated_as_facility_tracked and genuinely_tracked
@@ -501,6 +525,16 @@ class RepositoryConstructionPropertyQualificationHarness:
         restarted_state_store = RepositoryStateStore(str(self.rig.state_db_path))
         restarted_facility = gen1_wrap_repository_construction_facility(self.rig.transport, restarted_state_store, self.rig.authority_store)
 
+        # Review finding (PR #84, round 2): checking the writer AFTER
+        # restarted_facility.commit() only proves owner-b's own commit
+        # re-created the row -- not that owner-a's pre-crash claim was
+        # genuinely recovered. Inspect the EXACT persisted owner
+        # immediately after restart, BEFORE any new mutation, and
+        # confirm it is genuinely owner-a's own claim (not merely
+        # non-None).
+        durable_writer_before_takeover_commit = restarted_facility.state.writer(self.rig.repository, request["branch"])
+        durable_writer_reconstructed = durable_writer_before_takeover_commit == "assign-owner-a"
+
         stale_rejected = False
         try:
             self.rig.facility.commit(stale_task, repository=self.rig.repository, branch=request["branch"], owner="assign-owner-a", expected_head=self.rig.initial_sha, files={"stale.txt": b"stale"}, message="stale\n", operation_id="op-takeover-stale-commit", foreman_epoch=1)
@@ -513,11 +547,6 @@ class RepositoryConstructionPropertyQualificationHarness:
             new_owner_admitted = True
         except Gen1RepositoryFacilityError:
             new_owner_admitted = False
-
-        # Confirm the restarted instance genuinely sees owner-a's earlier
-        # durable writer claim (reconstructed from the same on-disk
-        # SQLite file, not carried over via in-memory object identity).
-        durable_writer_reconstructed = restarted_facility.state.writer(self.rig.repository, request["branch"]) is not None
 
         ok = stale_rejected and new_owner_admitted and durable_writer_reconstructed
         state = QualificationState.QUALIFIED if ok else QualificationState.UNQUALIFIED
@@ -627,9 +656,16 @@ class RepositoryConstructionPropertyQualificationHarness:
         # The real git mutation genuinely landed (commit_files ran before
         # the injected crash) -- confirm via real, independent state
         # inspection -- but the receipt is genuinely absent (the crash
-        # happened before put_receipt).
+        # happened before put_receipt). Review finding (PR #84, round 2):
+        # a bare head-moved check proves only that SOMETHING mutated the
+        # ref, not that the SPECIFIC requested content landed (a wrong
+        # tree, or an unrelated writer's mutation, would pass the same
+        # check). This reads back the real committed file content and
+        # compares it against the exact requested bytes.
         real_head_after_crash = self.rig.transport.resolve_ref(self.rig.repository, request["branch"])
-        mutation_landed = real_head_after_crash != self.rig.initial_sha
+        head_moved = real_head_after_crash != self.rig.initial_sha
+        requested_content_landed = head_moved and self.rig.transport.read_file(self.rig.repository, "ack.txt", real_head_after_crash) == b"ack"
+        mutation_landed = requested_content_landed
         receipt_missing_after_crash = self.rig.facility.state.receipt("op-ack-commit") is None
 
         # A blind identical retry must now be genuinely rejected: the
