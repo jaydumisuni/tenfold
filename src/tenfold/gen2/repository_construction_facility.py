@@ -124,7 +124,27 @@ def gen1_wrap_repository_construction_facility(transport, state_store, authority
     not exist yet; building one is explicitly out of this closure's
     scope (see `docs/gen2/G2-27-SC23-closure-review-record.md`, "Does
     not enable"). This is disclosed here so a future G2-28 author
-    starts from this function, not a re-derivation of it."""
+    starts from this function, not a re-derivation of it.
+
+    TRANSPORT BOUNDARY (review finding, PR #84, round 6, P1): the
+    returned `RepositoryFacility`'s public `open_pr`/`merge_pr` methods
+    delegate directly to whatever `transport` is supplied -- Gen1's own
+    `RepositoryFacility` class has no opinion about which transport it
+    is given. Without a genuine check here, a future caller could
+    supply a remote-capable transport and perform real push/PR/merge
+    effects while still claiming the local-commit-only admitted
+    identity, silently breaking that identity's own scope guarantee.
+    This is now genuinely enforced: `transport` MUST be a real
+    `LocalGitRepositoryTransport` instance, whose own
+    `open_pull_request`/`merge_pull_request` already, unconditionally
+    raise `LocalGitTransportError` by design -- so this identity's
+    local-commit-only scope is enforced at the ONE point in code where
+    it actually can be, not merely documented."""
+    if not isinstance(transport, LocalGitRepositoryTransport):
+        raise RepositoryConstructionQualificationError(
+            f"gen1_wrap_repository_construction_facility: transport must be a real LocalGitRepositoryTransport "
+            f"(local-commit-only, per this identity's own admitted scope) -- got {type(transport).__name__}"
+        )
     return RepositoryFacility(transport, state_store, authority_store)
 
 

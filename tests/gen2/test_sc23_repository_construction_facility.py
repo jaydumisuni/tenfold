@@ -46,8 +46,10 @@ from tenfold.gen2.mutation_suite import FixtureStatus
 from tenfold.gen2.repository_construction_facility import (
     ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_IDENTITY,
     RepositoryConstructionPropertyQualificationHarness,
+    RepositoryConstructionQualificationError,
     build_admitted_repository_construction_contract,
     build_disposable_local_git_facility,
+    gen1_wrap_repository_construction_facility,
 )
 from tenfold.gen2.self_construction import _qualify_sc23_repository_construction_facility
 from tenfold.gen2.verifier import independent_check_repository_construction_identity_admitted
@@ -69,6 +71,26 @@ def test_sc23_admitted_identity_matches_the_facility_module_owned_constants() ->
     assert identity.facility_generation == ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_GENERATION
     assert identity.adapter_boundary == FacilityAdapterBoundary.REPOSITORY
     assert identity.effect_class == ADMITTED_REPOSITORY_CONSTRUCTION_EFFECT_CLASS
+
+
+def test_sc23_wrapper_rejects_a_non_local_git_transport() -> None:
+    """Review finding (PR #84, round 6, P1): the wrapped RepositoryFacility's
+    public open_pr/merge_pr delegate directly to whatever transport is
+    supplied -- without a genuine check, a future caller could supply a
+    remote-capable transport and perform real push/PR/merge effects
+    while still claiming the local-commit-only admitted identity. The
+    wrapper now genuinely rejects any transport that is not a real
+    LocalGitRepositoryTransport instance."""
+
+    class _FakeRemoteTransport:
+        def open_pull_request(self, *args, **kwargs):
+            return ("pr", 1)
+
+        def merge_pull_request(self, *args, **kwargs):
+            return "merged"
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        gen1_wrap_repository_construction_facility(_FakeRemoteTransport(), None, None)
 
 
 # ============================================================================

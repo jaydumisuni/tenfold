@@ -398,6 +398,59 @@ verdict (see below) rather than a hardcoded stale expectation.
     Both fixed genuinely in round 6. Full local re-verification: Rust
     workspace clean (25 facility tests, up from 24), full test file
     and repository sweep re-run clean.
+11. A separate, automatically-triggered CodeRabbit review (fired on
+    the round-5 push itself, independent of the explicit round-6
+    request above) surfaced 2 further P1 findings:
+    - **P1 ("Enforce the local-commit transport boundary")**: the
+      wrapped `RepositoryFacility`'s public `open_pr`/`merge_pr`
+      delegate directly to whatever `transport` is supplied --
+      `gen1_wrap_repository_construction_facility` placed no actual
+      constraint on it, so a future caller could supply a remote-
+      capable transport and perform real push/PR/merge effects while
+      still claiming the local-commit-only admitted identity, silently
+      breaking that identity's own scope guarantee (previously only
+      documented, never enforced in code). **Fixed**: the wrapper now
+      genuinely requires `transport` to be a real
+      `LocalGitRepositoryTransport` instance, whose own
+      `open_pull_request`/`merge_pull_request` already,
+      unconditionally raise by design -- enforcing local-commit-only
+      at the one point in code where it actually can be. New permanent
+      test confirms a non-`LocalGitRepositoryTransport` is genuinely
+      rejected.
+    - **P1 ("Fence the Facility generation during mutation")**:
+      argued that `FacilityContract.facility_generation` is never
+      checked during real mutation admission, so a "stale" Facility
+      instance could keep committing after a hypothetical facility-
+      generation rotation. **Investigated, not a genuine gap relative
+      to this property's own established meaning**: G2-14's own
+      original `GENERATION_ENFORCEMENT` scenario
+      (`LocalSandboxFacility.run_stale_generation_scenario`,
+      `docs/gen2/G2-14-review-record.md`) tests a LIVE, per-write
+      fencing counter (`LocalSandboxFacility.generation`, bumped via
+      `bump_generation()`) -- never `FacilityContract.facility_generation`,
+      which is a static, code-level identity-versioning field with no
+      existing live-rotation mechanism anywhere in this codebase (Gen1
+      or Gen2). SC-23's own `run_generation_enforcement_scenario`
+      already exercises the genuine analog of that live counter for a
+      repository-construction identity -- `campaign_generation`, which
+      Gen1's real `validate_live_task` genuinely, dynamically checks
+      per dispatch -- matching established precedent exactly. Building
+      a NEW facility-credential-rotation fencing mechanism (which
+      would need a live rotation subsystem that doesn't exist anywhere
+      else in this codebase either) is out of this closure's scope;
+      this reasoning was replied into the thread rather than silently
+      dismissed.
+    - The already-fixed git-version portability finding (round 6, see
+      above) also had a separate, older thread from this same
+      auto-triggered review -- replied citing the existing fix and
+      resolved, no new code needed.
+
+    1 genuine finding fixed in round 7 (with a new permanent test);
+    1 investigated and determined not to describe a genuine gap
+    against this property's own established meaning, with the
+    reasoning disclosed in the review thread; 1 duplicate of an
+    already-fixed finding. Full local re-verification: full test file
+    and repository sweep re-run clean.
 
 ## Real, honest end-to-end result
 
