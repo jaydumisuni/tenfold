@@ -1197,6 +1197,54 @@ def independent_check_evidence_packet_generation_current(packet: dict, current_c
     return True
 
 
+def independent_check_evidence_packet_provenance(packet: dict, real_dispatch_digest: str) -> bool:
+    """Independent re-derivation of the `"evidence_packet"` Trust Table
+    row's own provenance check (G2-00 SS4.1: "generation, provenance,
+    detector/tool/input bindings"; SC-16 closure), operating on a raw
+    dict rather than importing `tenfold.gen2.bootstrap_protocol`'s own
+    types -- an independent implementation written from the same Trust
+    Table row text, not a call into the artifact it reconciles against.
+    Returns True only when the packet's claimed `dispatch_digest`
+    genuinely matches the caller's independently-known real value."""
+    if not packet.get("dispatch_digest", "").strip():
+        return False
+    return packet["dispatch_digest"] == real_dispatch_digest
+
+
+def independent_check_evidence_packet_detector_bindings(packet: dict, admitted_detectors: dict) -> bool:
+    """Independent re-derivation of the `"evidence_packet"` Trust Table
+    row's own detector/tool/input-bindings check (G2-00 SS4.1; SC-16
+    closure), operating on raw dicts rather than importing `tenfold.gen2.
+    bootstrap_protocol`'s own `DetectorBinding` dataclass. Returns True
+    only when the packet attaches at least one detector binding, every
+    binding names a detector present in `admitted_detectors`, that
+    detector's claimed domain is genuinely one of its real admitted
+    domains, every required string field (detector_id, admitted_domain,
+    tool_version) is genuinely non-blank, and every binding cites at
+    least one non-blank input_ref. Round-2 review finding (PR #83): the
+    original version never read `tool_version` at all, so a binding with
+    `tool_version=""` returned True here while the real
+    `DetectorBinding.validate()` rejects it -- a genuine Standing Gate B
+    reconciliation mismatch."""
+    bindings = packet.get("detector_bindings", ())
+    if not bindings:
+        return False
+    for binding in bindings:
+        detector_id = binding.get("detector_id", "")
+        admitted_domain = binding.get("admitted_domain", "")
+        tool_version = binding.get("tool_version", "")
+        input_refs = binding.get("input_refs", ())
+        if not all(isinstance(value, str) and value.strip() for value in (detector_id, admitted_domain, tool_version)):
+            return False
+        if not input_refs or any(not isinstance(ref, str) or not ref.strip() for ref in input_refs):
+            return False
+        if detector_id not in admitted_detectors:
+            return False
+        if admitted_domain not in admitted_detectors[detector_id]:
+            return False
+    return True
+
+
 def independent_check_valid_authority_owner_count(active_owners: tuple[str, ...]) -> bool:
     """Independent re-derivation of G2-21's own acceptance clause,
     verbatim: "ValidAuthorityOwnerCount = 1; no dual issuer." Operating

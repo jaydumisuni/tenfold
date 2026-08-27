@@ -70,6 +70,14 @@ def rust_check_evidence_packet_generation_current(packet: dict, current_campaign
     )
 
 
+def rust_check_evidence_packet_provenance(packet: dict, real_dispatch_digest: str) -> None:
+    _run("evidence-packet-provenance", input_text=json.dumps({"packet": packet, "real_dispatch_digest": real_dispatch_digest}))
+
+
+def rust_check_evidence_packet_detector_bindings(packet: dict, admitted_detectors: dict) -> None:
+    _run("evidence-packet-detector-bindings", input_text=json.dumps({"packet": packet, "admitted_detectors": admitted_detectors}))
+
+
 def rust_check_facility_result_matches_request(request: dict, result: dict) -> None:
     _run("facility-result-matches-request", input_text=json.dumps({"request": request, "result": result}))
 

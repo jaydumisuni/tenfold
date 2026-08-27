@@ -219,25 +219,28 @@ def test_g2_27_sc23_repository_construction_facility_is_genuinely_unqualified() 
     assert "REAL_MUTATING" in result.evidence
 
 
-def test_g2_27_sc16_evidence_admission_is_genuinely_unqualified() -> None:
-    """The second real gap this milestone's rigor discovered: the
-    "evidence_packet" Trust Table row has remained honestly
-    fixture_qualified: false since G2-19 (provenance and detector/tool/
-    input bindings were never built)."""
+def test_g2_27_sc16_evidence_admission_is_genuinely_qualified() -> None:
+    """The second real gap this milestone's rigor discovered -- the
+    "evidence_packet" Trust Table row remained honestly
+    fixture_qualified: false from G2-19 through G2-27's own closure
+    (provenance and detector/tool/input bindings were not yet built) --
+    has since been genuinely closed (SC-16 closure, a G2-19 extension
+    following G2-27's own independent SS20 verification): the row now
+    genuinely completes all three independently_checks and is admitted."""
     import tenfold.gen2.self_construction as sc
 
     result = sc._qualify_sc16_evidence_and_proof_graph()
     assert result.condition_id == "SC-16"
-    assert result.qualified is False
+    assert result.qualified is True
     assert "evidence_packet" in result.evidence
 
 
-def test_g2_27_the_other_23_conditions_are_genuinely_qualified(tmp_path) -> None:
+def test_g2_27_the_other_24_conditions_are_genuinely_qualified(tmp_path) -> None:
     import tenfold.gen2.self_construction as sc
 
     results = sc.derive_condition_qualifications(tmp_path)
     unqualified_ids = {r.condition_id for r in results if not r.qualified}
-    assert unqualified_ids == {"SC-16", "SC-23"}
+    assert unqualified_ids == {"SC-23"}
 
 
 # ============================================================================
@@ -255,17 +258,18 @@ def test_g2_27_derive_self_construction_capability_never_raises(tmp_path) -> Non
 
 def test_g2_27_derive_self_construction_capability_is_genuinely_incapable_on_the_real_live_codebase(tmp_path) -> None:
     """The genuine, current-state, honestly-derived result: zero
-    undisclosed live-Gen1-authority dependencies, BUT two of the 25
-    conditions (SC-16 evidence admission, SC-23 repository construction
-    Facility) are genuinely, honestly unqualified -> SELF_CONSTRUCTION_
-    CAPABLE = False. This is the real answer this milestone's own
-    verification apparatus produces today (round-2 review finding,
-    Finding 1) -- not the presupposed True the round-1 construction
-    incorrectly concluded before per-condition qualification was
-    genuinely checked."""
+    undisclosed live-Gen1-authority dependencies, and (following SC-16's
+    own genuine closure, a G2-19 extension) only one of the 25 conditions
+    (SC-23, the repository construction Facility) remains genuinely,
+    honestly unqualified -> SELF_CONSTRUCTION_CAPABLE is still False, now
+    driven by SC-23 alone. This is the real answer this milestone's own
+    verification apparatus produces today -- not the presupposed True the
+    round-1 construction incorrectly concluded before per-condition
+    qualification was genuinely checked (round-2 review finding, Finding
+    1), and not the SC-16-inclusive False that held before SC-16 closure."""
     report = derive_self_construction_capability(work_dir=tmp_path)
     assert report.undisclosed_findings == ()
-    assert {q.condition_id for q in report.unqualified_conditions} == {"SC-16", "SC-23"}
+    assert {q.condition_id for q in report.unqualified_conditions} == {"SC-23"}
     assert report.self_construction_capable is False
 
 
@@ -390,11 +394,12 @@ def test_g2_27_execute_self_construction_gate_end_to_end(tmp_path) -> None:
     """The genuine, final, combined verdict G2-27's own Acceptance names
     ("Independent verifier + external assurance conclude
     SELF_CONSTRUCTION_CAPABLE"): the internal verifier already, honestly
-    reports False (SC-16/SC-23), so the combined verdict is False
-    regardless of the external-assurance verdict -- confirming the
-    round-2 fix genuinely propagates the honest internal answer through
-    to the gate's own authoritative result, not merely reports it inside
-    a nested `report` field a caller could overlook."""
+    reports False (SC-23 alone, following SC-16's own genuine closure),
+    so the combined verdict is False regardless of the external-assurance
+    verdict -- confirming the round-2 fix genuinely propagates the
+    honest internal answer through to the gate's own authoritative
+    result, not merely reports it inside a nested `report` field a
+    caller could overlook."""
     result = execute_self_construction_gate(work_dir=tmp_path)
     assert result.report.self_construction_capable is False
     assert result.self_construction_capable is False

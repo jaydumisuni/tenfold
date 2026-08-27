@@ -306,12 +306,14 @@ def _qualify_sc15_hazard_disposition() -> ConditionQualificationResult:
 
 
 def _qualify_sc16_evidence_and_proof_graph() -> ConditionQualificationResult:
-    # Round-2 review finding (Finding 1): the prior version never
-    # checked this at all. "evidence_packet"'s own Trust Table row has
-    # remained honestly `fixture_qualified: false` since G2-19
-    # (provenance and detector/tool/input bindings were never built,
-    # only the generation-currency third) -- this condition is genuinely
-    # NOT yet fully owned by Gen2, and this check honestly reports that.
+    # Round-2 review finding (Finding 1): the prior version never checked
+    # this at all. "evidence_packet"'s own Trust Table row remained
+    # honestly `fixture_qualified: false` from G2-19 through G2-27's own
+    # closure (provenance and detector/tool/input bindings were not yet
+    # built, only the generation-currency third) -- SC-16 closure
+    # genuinely completed all three checks (G2-19 extension) and flipped
+    # the row to `fixture_qualified: true`, so this condition now
+    # genuinely qualifies.
     ok, evidence = _check_trust_table_admits("evidence_packet", "external_assurance")
     return ConditionQualificationResult("SC-16", ok, evidence)
 

@@ -18,12 +18,14 @@ milestone does not duplicate their schemas -- it binds them into one
 frozen, versioned corpus (`docs/gen2/g2-19-bootstrap-corpus.json`, loaded
 and independently validated by both real Rust and real Python below).
 Three families are genuinely new: RuntimeIdentity, TaskPacketV1, and
-FacilityRequestV1/FacilityResultV1. EvidencePacketV1 builds the
-generation-currency third of the pre-existing `"evidence_packet"` Trust
-Table row's claim (seeded at G2-03); provenance and detector/tool/input
-bindings remain unbuilt, so that row honestly remains
-`fixture_qualified: false` (round-2 review finding: do not overclaim by
-activating a row before every check it promises genuinely exists).
+FacilityRequestV1/FacilityResultV1. EvidencePacketV1 originally built
+only the generation-currency third of the pre-existing
+`"evidence_packet"` Trust Table row's claim (seeded at G2-03); provenance
+and detector/tool/input bindings were honestly left unbuilt (round-2
+review finding: do not overclaim by activating a row before every check
+it promises genuinely exists) until SC-16 closure (following G2-27's own
+independent SS20 verification), which genuinely completes all three and
+flips the row to `fixture_qualified: true`.
 Every differential test below compares the real Python re-derivation
 (`tenfold.gen2.bootstrap_protocol`) against the real compiled Rust
 re-derivation (via `tenfold.gen2.bootstrap_protocol_bridge`'s CLI
@@ -33,6 +35,7 @@ bridge), never a second hand-authored Python stand-in for either side.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -40,25 +43,34 @@ import pytest
 from tenfold.gen2.bootstrap_protocol import (
     PROTOCOL_VERSION,
     BootstrapProtocolError,
+    DetectorBinding,
     EvidencePacketV1,
     FacilityRequestV1,
     FacilityResultV1,
     RuntimeIdentity,
     RuntimeKind,
     TaskPacketV1,
+    check_evidence_packet_detector_bindings,
     check_evidence_packet_generation_current,
+    check_evidence_packet_provenance,
     check_facility_result_matches_request,
     validate_bootstrap_corpus,
     verify_chronicle_entry_self_digest,
 )
 from tenfold.gen2.bootstrap_protocol_bridge import (
     BootstrapProtocolCliError,
+    rust_check_evidence_packet_detector_bindings,
     rust_check_evidence_packet_generation_current,
+    rust_check_evidence_packet_provenance,
     rust_check_facility_result_matches_request,
     rust_validate_bootstrap_corpus,
     rust_validate_task_packet,
 )
-from tenfold.gen2.verifier import independent_check_evidence_packet_generation_current
+from tenfold.gen2.verifier import (
+    independent_check_evidence_packet_detector_bindings,
+    independent_check_evidence_packet_generation_current,
+    independent_check_evidence_packet_provenance,
+)
 from tenfold.gen2.mutation_fixtures import build_initial_mutation_suite
 from tenfold.gen2.mutation_suite import FixtureStatus
 from tenfold.gen2.state_model import (
@@ -130,6 +142,14 @@ def _task_packet(**overrides) -> TaskPacketV1:
     return TaskPacketV1(**{**raw, "scope": tuple(raw["scope"]), "capabilities": tuple(raw["capabilities"]), "permissions": tuple(raw["permissions"]), "evidence_obligations": tuple(raw["evidence_obligations"]), "stop_conditions": tuple(raw["stop_conditions"])})
 
 
+def _detector_binding_dict() -> dict:
+    return {"detector_id": "detector-1", "admitted_domain": "domain-1", "tool_version": "v1", "input_refs": ["input-ref-1"]}
+
+
+def _admitted_detectors() -> dict:
+    return {"detector-1": ["domain-1"]}
+
+
 def _evidence_packet_dict(campaign_generation: int = 1, dispatch_epoch: int = 1) -> dict:
     return {
         "packet_id": "packet-1",
@@ -149,12 +169,24 @@ def _evidence_packet_dict(campaign_generation: int = 1, dispatch_epoch: int = 1)
         "anomalies": [],
         "questions": [],
         "dispatch_epoch": dispatch_epoch,
+        "detector_bindings": [_detector_binding_dict()],
     }
 
 
 def _evidence_packet(campaign_generation: int = 1, dispatch_epoch: int = 1) -> EvidencePacketV1:
     raw = _evidence_packet_dict(campaign_generation, dispatch_epoch)
-    return EvidencePacketV1(**{**raw, "observations": (), "artifacts": (), "results": (), "limitations": (), "anomalies": (), "questions": ()})
+    return EvidencePacketV1(
+        **{
+            **raw,
+            "observations": (),
+            "artifacts": (),
+            "results": (),
+            "limitations": (),
+            "anomalies": (),
+            "questions": (),
+            "detector_bindings": (DetectorBinding(**{**_detector_binding_dict(), "input_refs": tuple(_detector_binding_dict()["input_refs"])}),),
+        }
+    )
 
 
 # ============================================================================
@@ -232,6 +264,70 @@ def test_g2_19_evidence_packet_stale_dispatch_epoch_rejected_in_python_and_rust(
         rust_check_evidence_packet_generation_current(_evidence_packet_dict(1, 1), 1, 2)
     with pytest.raises(BootstrapProtocolError):
         check_evidence_packet_generation_current(_evidence_packet(1, 1), 1, 2)
+
+
+# ============================================================================
+# EvidencePacketV1 / provenance -- SC-16 closure, the provenance third of
+# the "evidence_packet" Trust Table row's own claim.
+# ============================================================================
+
+
+def test_g2_19_evidence_packet_provenance_matches_accepted_in_python_and_rust() -> None:
+    rust_check_evidence_packet_provenance(_evidence_packet_dict(), "digest-1")
+    check_evidence_packet_provenance(_evidence_packet(), real_dispatch_digest="digest-1")
+
+
+def test_g2_19_evidence_packet_unprovenanced_dispatch_digest_rejected_in_python_and_rust() -> None:
+    """The evidence_packet row's own required_negative_fixture, verbatim:
+    "an unprovenanced dispatch_digest.\""""
+    with pytest.raises(BootstrapProtocolCliError):
+        rust_check_evidence_packet_provenance(_evidence_packet_dict(), "some-other-digest")
+    with pytest.raises(BootstrapProtocolError):
+        check_evidence_packet_provenance(_evidence_packet(), real_dispatch_digest="some-other-digest")
+
+
+# ============================================================================
+# EvidencePacketV1 / detector bindings -- SC-16 closure, the
+# detector/tool/input-bindings third of the "evidence_packet" Trust Table
+# row's own claim.
+# ============================================================================
+
+
+def test_g2_19_evidence_packet_detector_bindings_accepted_in_python_and_rust() -> None:
+    rust_check_evidence_packet_detector_bindings(_evidence_packet_dict(), _admitted_detectors())
+    check_evidence_packet_detector_bindings(_evidence_packet(), admitted_detectors={k: frozenset(v) for k, v in _admitted_detectors().items()})
+
+
+def test_g2_19_evidence_packet_with_no_detector_bindings_rejected_in_python_and_rust() -> None:
+    """The evidence_packet row's own required_negative_fixture, verbatim:
+    "no detector_bindings attached.\""""
+    packet_dict = {**_evidence_packet_dict(), "detector_bindings": []}
+    with pytest.raises(BootstrapProtocolCliError):
+        rust_check_evidence_packet_detector_bindings(packet_dict, _admitted_detectors())
+
+    empty_bindings_packet = replace(_evidence_packet(), detector_bindings=())
+    with pytest.raises(BootstrapProtocolError):
+        check_evidence_packet_detector_bindings(empty_bindings_packet, admitted_detectors={k: frozenset(v) for k, v in _admitted_detectors().items()})
+
+
+def test_g2_19_evidence_packet_with_an_unadmitted_detector_rejected_in_python_and_rust() -> None:
+    packet_dict = {**_evidence_packet_dict(), "detector_bindings": [{**_detector_binding_dict(), "detector_id": "some-unregistered-detector"}]}
+    with pytest.raises(BootstrapProtocolCliError):
+        rust_check_evidence_packet_detector_bindings(packet_dict, _admitted_detectors())
+
+    unregistered_packet = replace(_evidence_packet(), detector_bindings=(DetectorBinding(detector_id="some-unregistered-detector", admitted_domain="domain-1", tool_version="v1", input_refs=("input-ref-1",)),))
+    with pytest.raises(BootstrapProtocolError):
+        check_evidence_packet_detector_bindings(unregistered_packet, admitted_detectors={k: frozenset(v) for k, v in _admitted_detectors().items()})
+
+
+def test_g2_19_evidence_packet_with_a_detector_outside_its_admitted_domain_rejected_in_python_and_rust() -> None:
+    packet_dict = {**_evidence_packet_dict(), "detector_bindings": [{**_detector_binding_dict(), "admitted_domain": "some-other-domain"}]}
+    with pytest.raises(BootstrapProtocolCliError):
+        rust_check_evidence_packet_detector_bindings(packet_dict, _admitted_detectors())
+
+    outside_domain_packet = replace(_evidence_packet(), detector_bindings=(DetectorBinding(detector_id="detector-1", admitted_domain="some-other-domain", tool_version="v1", input_refs=("input-ref-1",)),))
+    with pytest.raises(BootstrapProtocolError):
+        check_evidence_packet_detector_bindings(outside_domain_packet, admitted_detectors={k: frozenset(v) for k, v in _admitted_detectors().items()})
 
 
 # ============================================================================
@@ -383,7 +479,14 @@ def test_g2_19_corpus_genuinely_produced_via_real_chronicle_append() -> None:
 def test_g2_19_bootstrap_protocol_fixtures_are_genuinely_killed() -> None:
     suite = build_initial_mutation_suite()
     results = suite.run_all()
-    for fixture_id in ("MUT-G19-TASKPACKET-001", "MUT-G19-EVIDENCEGEN-001", "MUT-G19-FACILITYMISMATCH-001", "MUT-G19-CHRONICLETAMPER-001"):
+    for fixture_id in (
+        "MUT-G19-TASKPACKET-001",
+        "MUT-G19-EVIDENCEGEN-001",
+        "MUT-G19-EVIDENCEPROVENANCE-001",
+        "MUT-G19-EVIDENCEDETECTOR-001",
+        "MUT-G19-FACILITYMISMATCH-001",
+        "MUT-G19-CHRONICLETAMPER-001",
+    ):
         assert results[fixture_id] == FixtureStatus.KILLED
 
 
@@ -415,6 +518,36 @@ def test_g2_19_standing_gate_b_reconciliation_agrees_on_stale_generation() -> No
         check_evidence_packet_generation_current(_evidence_packet(1, 1), 2, 1)
     with pytest.raises(BootstrapProtocolCliError):
         rust_check_evidence_packet_generation_current(packet_dict, 2, 1)
+
+
+def test_g2_19_standing_gate_b_reconciliation_provenance_agrees_with_python_and_rust() -> None:
+    packet_dict = _evidence_packet_dict()
+
+    assert independent_check_evidence_packet_provenance(packet_dict, "digest-1") is True
+    check_evidence_packet_provenance(_evidence_packet(), real_dispatch_digest="digest-1")  # does not raise
+    rust_check_evidence_packet_provenance(packet_dict, "digest-1")  # does not raise
+
+    assert independent_check_evidence_packet_provenance(packet_dict, "some-other-digest") is False
+    with pytest.raises(BootstrapProtocolError):
+        check_evidence_packet_provenance(_evidence_packet(), real_dispatch_digest="some-other-digest")
+    with pytest.raises(BootstrapProtocolCliError):
+        rust_check_evidence_packet_provenance(packet_dict, "some-other-digest")
+
+
+def test_g2_19_standing_gate_b_reconciliation_detector_bindings_agrees_with_python_and_rust() -> None:
+    packet_dict = _evidence_packet_dict()
+    admitted = _admitted_detectors()
+
+    assert independent_check_evidence_packet_detector_bindings(packet_dict, admitted) is True
+    check_evidence_packet_detector_bindings(_evidence_packet(), admitted_detectors={k: frozenset(v) for k, v in admitted.items()})  # does not raise
+    rust_check_evidence_packet_detector_bindings(packet_dict, admitted)  # does not raise
+
+    unbound_dict = {**packet_dict, "detector_bindings": []}
+    assert independent_check_evidence_packet_detector_bindings(unbound_dict, admitted) is False
+    with pytest.raises(BootstrapProtocolError):
+        check_evidence_packet_detector_bindings(replace(_evidence_packet(), detector_bindings=()), admitted_detectors={k: frozenset(v) for k, v in admitted.items()})
+    with pytest.raises(BootstrapProtocolCliError):
+        rust_check_evidence_packet_detector_bindings(unbound_dict, admitted)
 
 
 # ============================================================================

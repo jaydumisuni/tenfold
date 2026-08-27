@@ -3,34 +3,31 @@
 //! `tenfold.bootstrap.v1` checks for differential testing against Gen-2's
 //! own Python-side re-derivation.
 //!
-//! `validate-task-packet` and `facility-result-matches-request` check the
-//! relevant Trust Table admission first (G2-00 §4.1): `"task_packet"`,
-//! `"facility_request_result"`, both genuinely `fixture_qualified`.
-//! `validate-corpus` checks Trust Table admission of `"task_packet"`,
-//! `"facility_request_result"`, and `"bootstrap_protocol_corpus"` (also
-//! genuinely qualified), but deliberately not `"evidence_packet"` --
-//! round-2 review finding (G2-19): that row's own claim ("generation,
-//! provenance, detector/tool/input bindings") is only a third built, so
-//! it honestly remains `fixture_qualified: false`; requiring its
-//! admission here would either overclaim or make every corpus fail
-//! closed for a reason unrelated to the corpus's own genuine validity.
-//! `evidence-packet-generation-current` therefore calls the free
-//! (non-admission-gated) `check_evidence_packet_generation_current`
-//! directly -- exactly the capability this crate genuinely built.
+//! Every subcommand checks the relevant Trust Table admission first
+//! (G2-00 §4.1): `"task_packet"`, `"facility_request_result"`,
+//! `"bootstrap_protocol_corpus"`, and `"evidence_packet"` are all
+//! genuinely `fixture_qualified` -- `"evidence_packet"` originally
+//! honestly remained `fixture_qualified: false` from G2-03 through G2-19
+//! (only the generation third of its claim was built), closed as SC-16
+//! following G2-27's own independent SS20 verification: provenance and
+//! detector/tool/input bindings are now genuinely built too.
 //!
 //! Subcommands (each prints one line: ACCEPT/JSON on success (exit 0), or
 //! "ERROR: <message>" (exit 1); a usage error exits 2):
 //!
 //! - `validate-task-packet` — reads a `TaskPacketV1` JSON object from stdin, prints ACCEPT/ERROR.
 //! - `evidence-packet-generation-current` — reads `{"packet": EvidencePacketV1, "current_campaign_generation": u64, "current_dispatch_epoch": u64}` from stdin, prints ACCEPT/ERROR.
+//! - `evidence-packet-provenance` — reads `{"packet": EvidencePacketV1, "real_dispatch_digest": String}` from stdin, prints ACCEPT/ERROR.
+//! - `evidence-packet-detector-bindings` — reads `{"packet": EvidencePacketV1, "admitted_detectors": {String: [String]}}` from stdin, prints ACCEPT/ERROR.
 //! - `facility-result-matches-request` — reads `{"request": FacilityRequestV1, "result": FacilityResultV1}` from stdin, prints ACCEPT/ERROR.
 //! - `validate-corpus` — reads a `BootstrapCorpusV1` JSON object from stdin, prints ACCEPT/ERROR.
 
 use bootstrap_protocol::{
-    admit_check_facility_result_matches_request, admit_validate_bootstrap_corpus, admit_validate_task_packet, check_evidence_packet_generation_current, BootstrapCorpusV1, EvidencePacketV1,
-    FacilityRequestV1, FacilityResultV1, TaskPacketV1,
+    admit_check_evidence_packet_detector_bindings, admit_check_evidence_packet_generation_current, admit_check_evidence_packet_provenance, admit_check_facility_result_matches_request,
+    admit_validate_bootstrap_corpus, admit_validate_task_packet, BootstrapCorpusV1, EvidencePacketV1, FacilityRequestV1, FacilityResultV1, TaskPacketV1,
 };
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::io::Read;
 use std::process::ExitCode;
 
@@ -66,6 +63,20 @@ struct EvidenceGenerationRequest {
 struct FacilityMatchRequest {
     request: FacilityRequestV1,
     result: FacilityResultV1,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EvidenceProvenanceRequest {
+    packet: EvidencePacketV1,
+    real_dispatch_digest: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EvidenceDetectorBindingsRequest {
+    packet: EvidencePacketV1,
+    admitted_detectors: HashMap<String, Vec<String>>,
 }
 
 fn main() -> ExitCode {
@@ -110,7 +121,53 @@ fn main() -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            match check_evidence_packet_generation_current(&request.packet, request.current_campaign_generation, request.current_dispatch_epoch) {
+            match admit_check_evidence_packet_generation_current(&admitted_table(), &request.packet, request.current_campaign_generation, request.current_dispatch_epoch) {
+                Ok(()) => {
+                    println!("ACCEPT");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    println!("ERROR: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        "evidence-packet-provenance" => {
+            let buf = match read_stdin() {
+                Ok(b) => b,
+                Err(code) => return code,
+            };
+            let request: EvidenceProvenanceRequest = match serde_json::from_str(&buf) {
+                Ok(v) => v,
+                Err(e) => {
+                    println!("ERROR: {e}");
+                    return ExitCode::from(1);
+                }
+            };
+            match admit_check_evidence_packet_provenance(&admitted_table(), &request.packet, &request.real_dispatch_digest) {
+                Ok(()) => {
+                    println!("ACCEPT");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    println!("ERROR: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        "evidence-packet-detector-bindings" => {
+            let buf = match read_stdin() {
+                Ok(b) => b,
+                Err(code) => return code,
+            };
+            let request: EvidenceDetectorBindingsRequest = match serde_json::from_str(&buf) {
+                Ok(v) => v,
+                Err(e) => {
+                    println!("ERROR: {e}");
+                    return ExitCode::from(1);
+                }
+            };
+            match admit_check_evidence_packet_detector_bindings(&admitted_table(), &request.packet, &request.admitted_detectors) {
                 Ok(()) => {
                     println!("ACCEPT");
                     ExitCode::SUCCESS
