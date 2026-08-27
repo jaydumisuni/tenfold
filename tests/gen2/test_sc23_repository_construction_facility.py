@@ -312,6 +312,38 @@ def test_sc23_standing_gate_b_reconciliation_agrees_on_a_mismatched_identity(rig
         check_critical_gate(other)  # agrees with the verifier
 
 
+def test_sc23_standing_gate_b_reconciliation_rejects_duplicate_property_records(rig) -> None:
+    """Review finding (PR #84, round 5): a naive {property: state} dict
+    comprehension silently keeps the LAST record for a duplicate
+    property key -- reversing an UNQUALIFIED/QUALIFIED duplicate pair's
+    order would flip the verifier's own result, while the real
+    FacilityContract.validate() rejects duplicate property declarations
+    outright. The independent verifier must now genuinely agree by
+    also rejecting duplicates, not merely take the last one."""
+    records = RepositoryConstructionPropertyQualificationHarness(rig).qualify_declared_scenarios()
+    contract = build_admitted_repository_construction_contract(records)
+    contract_dict = {
+        "facility_id": contract.facility_id,
+        "facility_generation": contract.facility_generation,
+        "io_class": contract.io_class.value,
+        "adapter_boundary": contract.adapter_boundary.value,
+        "effect_class": contract.effect_class,
+        # A genuine duplicate: two records for LATENCY_BOUNDS, the
+        # first genuinely qualified, the second (later, so it would win
+        # a naive dict comprehension) unqualified.
+        "property_qualifications": [{"property": r.property.value, "state": r.state.value} for r in contract.property_qualifications]
+        + [{"property": "LATENCY_BOUNDS", "state": "UNQUALIFIED"}],
+    }
+    verifier_result = independent_check_repository_construction_identity_admitted(
+        contract_dict,
+        admitted_facility_id=ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_ID,
+        admitted_facility_generation=ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_GENERATION,
+        admitted_adapter_boundary="REPOSITORY",
+        admitted_effect_class=ADMITTED_REPOSITORY_CONSTRUCTION_EFFECT_CLASS,
+    )
+    assert verifier_result is False
+
+
 # ============================================================================
 # Mutation fixtures.
 # ============================================================================

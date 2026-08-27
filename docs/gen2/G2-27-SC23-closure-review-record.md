@@ -329,6 +329,51 @@ verdict (see below) rather than a hardcoded stale expectation.
    -- added to `_ADJUDICATED_EXCEPTIONS`, confirmed 0 undisclosed.
    Full local re-verification: mutation suite unchanged (110/0/5),
    full test file and repository sweep re-run clean.
+9. A fifth Codex pass, against the round-4 fix commit, found 4 further
+   genuine findings (2 P1, 2 P2):
+   - **P1 ("Require the repository-specific Trust Table admission")**:
+     the `"repository_construction_facility"` row added at SC-23
+     closure was never actually consulted by
+     `admit_validate_facility_contract`/
+     `admit_can_emit_authoritative_non_occurrence` (Rust) -- only the
+     generic `"facility_declaration"` row was checked, so a caller
+     could supply a table where that generic row is qualified but the
+     repository-specific row is missing or unqualified, and
+     `REAL_MUTATING` admission would still succeed. **Fixed**: both
+     functions now genuinely require the repository-specific row too,
+     whenever the contract's `io_class` is `REAL_MUTATING`. New
+     permanent Rust test constructs a table with only
+     `"facility_declaration"` present and confirms admission still
+     fails for the fully-qualified admitted identity.
+   - **P1 ("Reconcile the complete requested commit tree")**: even
+     after the round-4 fix (checking one requested file's content), an
+     unexpected EXTRA file committed alongside the requested one would
+     still pass -- the check never verified the COMPLETE resulting
+     tree. **Fixed**: added `tree_files_at`, a real, Gen2-owned
+     tree-enumeration capability (same rationale as `list_branches`),
+     and the reconciliation scenario now compares the complete tree
+     (`README.md` carried over plus the newly committed file, nothing
+     else) rather than one blob's content alone.
+   - **P2 ("Verify receipt recovery during takeover")**: the round-4
+     receipt-recovery fix compared only `.result`, so a recovered
+     receipt with a corrupted `request_digest` (breaking its own
+     duplicate/conflicting-request detection) would still pass.
+     **Fixed**: the genuine pre-crash receipt is now captured before
+     the crash and compared field-for-field (`operation_id`/
+     `request_digest`/`result_digest`/`result`) against the recovered
+     copy.
+   - **P2 ("Reject duplicate property records in the verifier")**: a
+     dict-comprehension in `independent_check_repository_construction_identity_admitted`
+     silently kept the LAST record for a duplicate property key,
+     letting record order flip the verifier's own conclusion, while
+     the real `FacilityContract.validate()` rejects duplicates
+     outright. **Fixed**: the verifier now genuinely rejects any
+     contract containing a duplicate property record.
+
+   All 4 fixed genuinely in round 5, with new permanent tests for
+   each (Rust and Python). Full local re-verification: Rust workspace
+   clean (`cargo build`/`test`/`clippy`), full test file and repository
+   sweep re-run clean.
 
 ## Real, honest end-to-end result
 

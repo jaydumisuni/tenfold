@@ -181,6 +181,17 @@ def list_branches(rig: DisposableRepositoryConstructionRig) -> tuple[str, ...]:
     return tuple(sorted(output))
 
 
+def tree_files_at(rig: DisposableRepositoryConstructionRig, sha: str) -> frozenset[str]:
+    """Real, Gen2-owned tree-enumeration capability -- same rationale as
+    `list_branches` (review finding, PR #84, round 5): checking a
+    single requested blob's content does not prove the COMPLETE
+    resulting tree equals the requested parent-plus-patch; an
+    unexpected extra file (or a missing one) would pass a single-blob
+    check while still being a genuine reconciliation failure."""
+    output = subprocess.run(["git", "-C", str(rig.repo_root), "ls-tree", "-r", "--name-only", sha], check=True, capture_output=True, text=True).stdout.split()
+    return frozenset(output)
+
+
 def build_disposable_local_git_facility(tmp_dir: Path) -> DisposableRepositoryConstructionRig:
     """Real (if disposable) local git mutation, never a canonical/
     production repository: a fresh, throwaway repo under `tmp_dir`,
@@ -594,6 +605,10 @@ class RepositoryConstructionPropertyQualificationHarness:
         binding = repository_request_binding("create_branch", **request)
         task_a = _dispatch(self.rig, assignment_id="assign-owner-a", attempt=1, campaign_generation=1, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=resource, request_binding=binding)
         self.rig.facility.create_branch(task_a, repository=request["repository"], branch=request["branch"], owner=request["owner"], base_ref=request["base_ref"], expected_base_sha=request["expected_base_sha"], operation_id=request["operation_id"], foreman_epoch=1)
+        # The genuine, pre-crash receipt -- captured now, before any
+        # restart, so the recovered copy can be compared against it
+        # field-for-field (review finding, PR #84, round 5).
+        original_pre_crash_receipt = self.rig.facility.state.receipt("op-takeover")
         # owner-a "crashes" here -- never releases the writer/lease.
 
         # A stale dispatch from owner-a, still carrying the old epoch,
@@ -633,16 +648,18 @@ class RepositoryConstructionPropertyQualificationHarness:
         durable_writer_before_takeover_commit = restarted_facility.state.writer(self.rig.repository, request["branch"])
         durable_writer_reconstructed = durable_writer_before_takeover_commit == "assign-owner-a"
 
-        # Review finding (PR #84, round 4): the writer check alone
+        # Review finding (PR #84, round 4/5): the writer check alone
         # proves ownership survived, but not that the RECEIPTS table
         # (which provides duplicate-key/conflicting-request detection
         # across restarts, via _idempotent) also survived -- losing
-        # receipts would let a reused operation_id execute a different
-        # request post-restart undetected. Inspect the exact pre-crash
-        # receipt for owner-a's original create_branch operation,
-        # BEFORE any new mutation.
+        # receipts, or recovering one with a corrupted request_digest,
+        # would let a reused operation_id execute a DIFFERENT request
+        # post-restart undetected. Compare the recovered receipt
+        # against the genuine pre-crash receipt field-for-field
+        # (operation_id/request_digest/result_digest/result), not just
+        # `.result` alone.
         durable_receipt_before_takeover_commit = restarted_facility.state.receipt("op-takeover")
-        durable_receipt_reconstructed = durable_receipt_before_takeover_commit is not None and durable_receipt_before_takeover_commit.result == self.rig.initial_sha
+        durable_receipt_reconstructed = durable_receipt_before_takeover_commit == original_pre_crash_receipt and original_pre_crash_receipt is not None
 
         stale_rejected = False
         try:
@@ -773,8 +790,15 @@ class RepositoryConstructionPropertyQualificationHarness:
         # compares it against the exact requested bytes.
         real_head_after_crash = self.rig.transport.resolve_ref(self.rig.repository, request["branch"])
         head_moved = real_head_after_crash != self.rig.initial_sha
+        # Review finding (PR #84, round 5): checking one requested
+        # blob's content does not prove the COMPLETE resulting tree
+        # equals the requested parent-plus-patch -- an unexpected extra
+        # file would pass a single-blob check. Compare the full tree
+        # (README.md carried over from the parent, plus the newly
+        # committed ack.txt -- nothing else).
         requested_content_landed = head_moved and self.rig.transport.read_file(self.rig.repository, "ack.txt", real_head_after_crash) == b"ack"
-        mutation_landed = requested_content_landed
+        complete_tree_matches = requested_content_landed and tree_files_at(self.rig, real_head_after_crash) == frozenset({"README.md", "ack.txt"})
+        mutation_landed = complete_tree_matches
         receipt_missing_after_crash = self.rig.facility.state.receipt("op-ack-commit") is None
 
         # A blind identical retry must now be genuinely rejected: the

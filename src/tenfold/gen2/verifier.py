@@ -1059,9 +1059,18 @@ def independent_check_repository_construction_identity_admitted(
     `"REAL_MUTATING"` at all (the gate never applies), OR the contract's
     `facility_id`/`facility_generation`/`adapter_boundary`/`effect_class`
     exactly match the caller-supplied admitted identity AND every one of
-    the 11 `FacilityProperty` values has a record in
+    the 11 `FacilityProperty` values has EXACTLY ONE record in
     `property_qualifications` whose `state` is `"QUALIFIED"` or
-    `"QUALIFIED_WITH_BOUND"`."""
+    `"QUALIFIED_WITH_BOUND"`.
+
+    Round-2 review finding (PR #84): a naive dict-comprehension building
+    `{property: state}` silently keeps the LAST record for a duplicate
+    property key -- reversing an UNQUALIFIED/QUALIFIED duplicate pair's
+    order would flip this function's own result, while the real
+    `FacilityContract.validate()` (both Python and Rust) rejects
+    duplicate property declarations outright. This now genuinely
+    rejects any contract with a duplicate property record, matching
+    that real behavior."""
     if contract.get("io_class") != "REAL_MUTATING":
         return True
     if contract.get("facility_id") != admitted_facility_id:
@@ -1072,7 +1081,12 @@ def independent_check_repository_construction_identity_admitted(
         return False
     if contract.get("effect_class") != admitted_effect_class:
         return False
-    states = {record.get("property"): record.get("state") for record in contract.get("property_qualifications", ())}
+    states: dict[str, str] = {}
+    for record in contract.get("property_qualifications", ()):
+        prop = record.get("property")
+        if prop in states:
+            return False
+        states[prop] = record.get("state")
     return all(states.get(prop) in ("QUALIFIED", "QUALIFIED_WITH_BOUND") for prop in _ALL_FACILITY_PROPERTIES)
 
 

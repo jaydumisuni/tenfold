@@ -283,14 +283,31 @@ pub fn check_critical_gate(contract: &FacilityContract) -> Result<(), FacilityEr
 // `fixture_qualified: true` claim genuine, not a new/duplicate row.
 // ============================================================================
 
+/// Review finding (PR #84, round 5): the `"repository_construction_facility"`
+/// Trust Table row (added at SC-23 closure) was never actually consulted
+/// by this function -- only the generic `"facility_declaration"` row was
+/// admitted, so a caller could supply a table where that generic row is
+/// qualified but the repository-specific row is missing or unqualified,
+/// and REAL_MUTATING admission would still succeed. Now genuinely
+/// requires the repository-specific row too, whenever the contract's
+/// `io_class` is `REAL_MUTATING`.
+fn admit_repository_construction_row_if_applicable(table: &trust_table::TrustTable, contract: &FacilityContract) -> Result<(), FacilityError> {
+    if contract.io_class == FacilityIOClass::REAL_MUTATING {
+        table.admit("repository_construction_facility").map_err(|e| err(e.to_string()))?;
+    }
+    Ok(())
+}
+
 pub fn admit_validate_facility_contract(table: &trust_table::TrustTable, contract: &FacilityContract) -> Result<(), FacilityError> {
     table.admit("facility_declaration").map_err(|e| err(e.to_string()))?;
+    admit_repository_construction_row_if_applicable(table, contract)?;
     contract.validate()?;
     check_critical_gate(contract)
 }
 
 pub fn admit_can_emit_authoritative_non_occurrence(table: &trust_table::TrustTable, contract: &FacilityContract) -> Result<bool, FacilityError> {
     table.admit("facility_declaration").map_err(|e| err(e.to_string()))?;
+    admit_repository_construction_row_if_applicable(table, contract)?;
     contract.can_emit_authoritative_non_occurrence()
 }
 
@@ -493,6 +510,31 @@ mod tests {
     fn admit_validate_facility_contract_succeeds_for_a_valid_read_only_contract() {
         let c = contract(FacilityIOClass::READ_ONLY, all_qualified_records());
         admit_validate_facility_contract(&admitted_table(), &c).unwrap();
+    }
+
+    #[test]
+    fn admit_validate_facility_contract_fails_closed_when_repository_construction_row_is_missing() {
+        // Review finding (PR #84, round 5): admission previously only
+        // checked the generic "facility_declaration" row -- a table
+        // where that row is qualified but "repository_construction_facility"
+        // is missing (or unqualified) must still be genuinely rejected
+        // for the REAL_MUTATING admitted identity, even though every
+        // property is genuinely qualified and the identity matches.
+        let mut table = trust_table::TrustTable::new();
+        table
+            .extend(trust_table::TrustTableRow {
+                artifact_identity: "facility_declaration".into(),
+                independently_checks: vec!["nothing authoritative before qualification".into()],
+                trusts_only: "individually qualified properties only".into(),
+                trust_bounded_reason: "reason".into(),
+                authority_generation: 1,
+                required_negative_fixture: "unqualified property".into(),
+                failure_result: "non-authoritative".into(),
+                fixture_qualified: true,
+            })
+            .expect("well-formed, non-duplicate row");
+        let c = admitted_repository_construction_contract();
+        assert!(admit_validate_facility_contract(&table, &c).is_err());
     }
 
     #[test]
