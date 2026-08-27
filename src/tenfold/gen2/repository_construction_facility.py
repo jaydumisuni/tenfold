@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -517,6 +518,12 @@ class RepositoryConstructionPropertyQualificationHarness:
         # Facility's own real create_branch call against THIS rig's
         # repository (which has core.hooksPath redirected at
         # construction time) does not trigger it.
+        if not self._git_supports_reference_transaction_hook():
+            raise RepositoryConstructionQualificationError(
+                "the installed git toolchain does not support the reference-transaction hook (needs Git >= 2.28) -- "
+                "cannot genuinely qualify EFFECT_REACH's hook-neutralization control on this environment; this is a "
+                "real toolchain limitation, not evidence that neutralization is broken or unnecessary"
+            )
         hook_mechanism_confirmed_real = self._probe_reference_transaction_hook_fires_without_neutralization()
         hooks_neutralized_on_admitted_repository = self._probe_reference_transaction_hook_does_not_fire_on_rig()
 
@@ -538,6 +545,23 @@ class RepositoryConstructionPropertyQualificationHarness:
         hook_path.write_text(self._REFERENCE_TRANSACTION_HOOK_SCRIPT, encoding="utf-8")
         hook_path.chmod(0o755)
         _ = marker_path  # documents intent; the marker path is passed via MARKER_PATH env at invocation time
+
+    @staticmethod
+    def _git_supports_reference_transaction_hook() -> bool:
+        """Review finding (PR #84, round 6, CodeRabbit): the
+        `reference-transaction` hook was only added in real Git 2.28
+        (2020). On an older git toolchain the hook mechanism genuinely
+        does not exist, so the positive-control probe would correctly
+        never fire -- an environment/toolchain limitation, not evidence
+        that neutralization is broken. Detected explicitly so
+        `run_effect_reach_scenario` can raise a clear, honest error
+        instead of silently reporting a wrong-reason UNQUALIFIED."""
+        output = subprocess.run(["git", "--version"], check=True, capture_output=True, text=True).stdout.strip()
+        match = re.search(r"(\d+)\.(\d+)\.(\d+)", output)
+        if not match:
+            return False
+        major, minor, _patch = (int(x) for x in match.groups())
+        return (major, minor) >= (2, 28)
 
     def _probe_reference_transaction_hook_fires_without_neutralization(self) -> bool:
         """Positive control: a genuinely separate, throwaway repository

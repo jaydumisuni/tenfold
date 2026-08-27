@@ -538,6 +538,18 @@ mod tests {
     }
 
     #[test]
+    fn admit_validate_facility_contract_succeeds_for_the_admitted_repository_construction_identity() {
+        // CodeRabbit nitpick (PR #84, round 6): a dedicated positive
+        // end-to-end test -- the fully-qualified admitted identity,
+        // against the real initial_trust_table() (both
+        // "facility_declaration" and "repository_construction_facility"
+        // genuinely qualified), must pass admission -- catches wiring
+        // or validation regressions the negative fixtures alone cannot.
+        let c = admitted_repository_construction_contract();
+        admit_validate_facility_contract(&trust_table::initial_trust_table(), &c).unwrap();
+    }
+
+    #[test]
     fn admit_validate_facility_contract_rejects_real_mutating_even_when_otherwise_valid() {
         let c = contract(FacilityIOClass::REAL_MUTATING, all_qualified_records());
         assert!(admit_validate_facility_contract(&admitted_table(), &c).is_err());

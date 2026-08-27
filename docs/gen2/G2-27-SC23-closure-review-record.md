@@ -374,6 +374,30 @@ verdict (see below) rather than a hardcoded stale expectation.
    each (Rust and Python). Full local re-verification: Rust workspace
    clean (`cargo build`/`test`/`clippy`), full test file and repository
    sweep re-run clean.
+10. A sixth Codex pass, against the round-5 fix commit, found **zero**
+    findings for the first time -- Codex's own review posted no inline
+    comments (reacting with its "no suggestions" acknowledgment
+    instead of a findings list). A final CodeRabbit pass on the same
+    commit found 1 genuine, if minor, item and 1 trivial nitpick:
+    - **Portability finding**: `_probe_reference_transaction_hook_fires_without_neutralization`
+      assumed the local git toolchain supports the
+      `reference-transaction` hook (added in real Git 2.28, 2020)
+      without checking -- on an older git, the positive control would
+      correctly never fire, but the scenario would have reported a
+      wrong-reason `UNQUALIFIED` (implying broken neutralization,
+      not a toolchain limitation). Fixed: `run_effect_reach_scenario`
+      now explicitly detects git version support and raises a clear,
+      honest `RepositoryConstructionQualificationError` naming the
+      real toolchain limitation, rather than silently mis-attributing
+      the cause.
+    - **Nitpick**: no dedicated end-to-end positive admission test
+      existed for the fully-qualified admitted identity against the
+      real `initial_trust_table()`. Added
+      `admit_validate_facility_contract_succeeds_for_the_admitted_repository_construction_identity`.
+
+    Both fixed genuinely in round 6. Full local re-verification: Rust
+    workspace clean (25 facility tests, up from 24), full test file
+    and repository sweep re-run clean.
 
 ## Real, honest end-to-end result
 
