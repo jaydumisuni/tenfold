@@ -1,0 +1,41 @@
+{
+  "schema": "tenfold.workspace-authority-binding.v1",
+  "observed_date": "2026-08-22",
+  "repository": "jaydumisuni/pete",
+  "pull_request": 19,
+  "base_branch": "main",
+  "base_sha": "8fb5364320ac72b266153770947122664a09e03a",
+  "head_branch": "phase14-systems-pete-surface-20260818",
+  "head_sha": "b1f351e9808807f8df89b5db03efd681dd5ccf79",
+  "draft": true,
+  "mergeable": true,
+  "unresolved_review_threads": 0,
+  "changed_paths": [
+    "docs/PHASE14_SYSTEMS_PETE_SURFACE_ACCEPTANCE_CHECKLIST.md",
+    "scripts/start-invocation-server.mjs",
+    "src/invocation/admin-snapshot.js",
+    "src/invocation/server.js",
+    "test/admin-snapshot-mcp.test.js",
+    "test/admin-snapshot.test.js",
+    "test/invocation.test.js",
+    "test/start-invocation-server.test.js"
+  ],
+  "earned_evidence": [
+    "previous_runtime_and_generation6_evidence_fenced_after_candidate_move",
+    "external_review_detected_shared_bearer_owner_snapshot_authorization_gap",
+    "pete_admin_snapshot_now_requires_authenticated_hunter_owner_context_plus_independent_owner_capability",
+    "shared_transport_bearer_alone_is_insufficient_for_admin_snapshot",
+    "employee_unauthenticated_wrong_capability_and_hidden_input_regressions_committed",
+    "production_starter_consumes_hunter_managed_transport_and_admin_capability_files"
+  ],
+  "pending_evidence": [
+    "generation7_corrected_head_source_regression",
+    "cross_repository_integration",
+    "final_exact_head_regression",
+    "playwright_owner_ui",
+    "independent_sergeant_review",
+    "external_review_reconciliation",
+    "phase14_reconciliation"
+  ],
+  "ship_authorized": false
+}
