@@ -571,6 +571,65 @@ verdict (see below) rather than a hardcoded stale expectation.
     each. Full local re-verification: full test file,
     `test_g2_27_self_construction.py`, full mutation suite, and full
     repository sweep re-run clean.
+15. Both reviewers responded to the round-10 fix commit -- CodeRabbit's
+    automatic pass completed this time, and Codex (retried) also
+    responded -- converging independently on the SAME underlying gap
+    (nested Git-storage symlinks), plus Codex surfaced one further,
+    separate finding. 3 genuine findings total, all P1, all reproduced
+    by at least one reviewer:
+    - **P1 ("Reject symlinks below Git storage directories" / "Reject
+      nested Git-storage symlinks", found independently by both
+      Codex and CodeRabbit)**: the round-10 fix checked only whether
+      `.git/objects` and `.git/refs` THEMSELVES were symlinks --
+      leaving a symlinked DESCENDANT unguarded. Codex reproduced
+      registering a repository whose `.git/refs/heads` (a child of a
+      genuine, non-symlinked `.git/refs`) was a symlink to an external
+      directory, then a real `create_branch` writing the new ref file
+      there. CodeRabbit independently reproduced the same class of gap
+      two ways: a symlinked `.git/refs/heads` following `git
+      update-ref`, and a symlinked object fan-out directory
+      (`.git/objects/<2-char-prefix>`) following `git hash-object -w`.
+      **Fixed**: a new `_find_symlink_beneath` helper walks the
+      COMPLETE `objects` and `refs` subtrees with `os.walk(...,
+      followlinks=False)` (never descending into a symlink it finds,
+      so a symlink cycle cannot cause unbounded recursion) and rejects
+      admission if ANY entry anywhere beneath either one is a symlink
+      -- superseding the round-10 top-level-only check (which is now
+      subsumed as this helper's first, cheapest case). Two new
+      permanent tests reproduce the reviewers' own exact scenarios
+      (`.git/refs/heads` symlinked, `.git/objects/<prefix>` symlinked)
+      and confirm the wrapper now refuses to admit either repository.
+    - **P1 ("Persist the reconciled terminal result", Codex)**: the
+      round-2/round-8 reconciliation scenario genuinely diagnosed a
+      crash-before-receipt-persisted (confirmed the mutation landed,
+      confirmed the receipt was missing) but never PERSISTED a
+      reconstructed receipt -- so `op-ack-commit` remained permanently
+      "unseen" to `RepositoryFacility._idempotent`. The existing
+      "blind retry rejected" check only exercised a retry using the
+      STALE original `expected_head`, which `commit()`'s own
+      pre-check rejects before `_idempotent` is ever consulted --
+      proving nothing about duplicate-key protection. The reviewer
+      showed that reusing `op-ack-commit` with the repository's
+      CURRENT head (passing that pre-check) and DIFFERENT files would
+      find no prior receipt and be silently allowed to perform a
+      genuine second commit under the same operation_id. **Fixed**:
+      after confirming the mutation landed and the receipt is
+      missing, the scenario now reconstructs the EXACT receipt
+      `_idempotent` itself would have persisted for the original
+      request (same `stable_digest` scheme `RepositoryFacility`
+      itself uses -- genuine reuse via `from tenfold.facility import
+      stable_digest`, never a re-derived digest scheme) and persists
+      it through the real state store. A new check then genuinely
+      attempts the exact violation the reviewer described (same
+      operation_id, current head, different files) and confirms
+      `RepositoryFacility` itself now rejects it (`FacilityError`,
+      "repository operation id reused with different request") and
+      that the real head is unchanged by the rejected attempt.
+
+    All 3 genuinely fixed in round 11, with new permanent tests for
+    each. Full local re-verification: full test file (34/34),
+    `test_g2_27_self_construction.py`, full mutation suite, and full
+    repository sweep re-run clean.
 
 ## Real, honest end-to-end result
 

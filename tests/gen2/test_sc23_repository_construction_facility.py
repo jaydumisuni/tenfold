@@ -297,14 +297,27 @@ def test_sc23_reconciliation_and_commit_ack_semantics_survive_a_genuine_crash_be
     """Review finding (PR #84): merely discarding commit()'s return
     value never simulates a lost ACK, since the receipt is already
     persisted by the time commit() returns. This genuinely injects a
-    crash between the real git mutation and receipt persistence."""
+    crash between the real git mutation and receipt persistence.
+
+    Review finding (PR #84, round 11, P1, reproduced by the reviewer):
+    diagnosing the crash is not the same as CLOSING it -- without
+    persisting a reconstructed receipt, a later call reusing the same
+    operation_id with the repository's now-current head and DIFFERENT
+    files would find no prior receipt and be silently allowed to
+    perform a genuine second commit. This now also confirms the
+    receipt is genuinely reconstructed/persisted and that duplicate-key
+    protection is functionally restored (a real attempted violation is
+    rejected, and the real head is unchanged by the rejected attempt)."""
     result = RepositoryConstructionPropertyQualificationHarness(rig).run_reconciliation_and_ack_semantics_scenario()
     assert result.property == FacilityProperty.RECONCILIATION
     assert result.state == QualificationState.QUALIFIED
     assert "crashed=True" in result.detail
     assert "mutation_landed=True" in result.detail
     assert "receipt_missing_after_crash=True" in result.detail
+    assert "durable_receipt_reconstructed=True" in result.detail
     assert "retry_rejected=True" in result.detail
+    assert "duplicate_key_rejected=True" in result.detail
+    assert "head_unchanged_after_duplicate_key_attempt=True" in result.detail
 
 
 def test_sc23_tree_entries_at_detects_a_content_corrupted_file(rig) -> None:
@@ -392,6 +405,76 @@ def test_sc23_wrapper_rejects_a_registered_repository_with_symlinked_git_objects
     real_objects.rename(real_objects_backup)
     real_objects_backup.rename(external_objects)
     (repo_root / ".git" / "objects").symlink_to(external_objects, target_is_directory=True)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    with pytest.raises(RepositoryConstructionQualificationError):
+        gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+
+def test_sc23_wrapper_rejects_a_nested_symlink_under_git_refs_heads(tmp_path) -> None:
+    """Review finding (PR #84, round 11, P1, reproduced independently by
+    two reviewers): checking only whether .git/refs ITSELF is a symlink
+    still admits a repository with a symlinked DESCENDANT -- both
+    reviewers reproduced `git update-ref` following a symlinked
+    .git/refs/heads and landing the new ref file in the external
+    target. The wrapper now walks the complete refs subtree and rejects
+    admission if ANY entry beneath it is a symlink."""
+    import subprocess
+
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    repo_root.mkdir()
+    subprocess.run(["git", "-C", str(repo_root), "init", "-b", "main"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "config", "user.name", "test"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "config", "user.email", "test@local.invalid"], check=True, capture_output=True)
+    (repo_root / "README.md").write_text("existing repo\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_root), "add", "README.md"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "commit", "-qm", "initial"], check=True, capture_output=True)
+
+    # .git/refs itself stays a real directory -- only its "heads" child
+    # (a descendant) is redirected outside repo_root.
+    external_heads = tmp_path / "external-refs-heads"
+    real_heads = repo_root / ".git" / "refs" / "heads"
+    real_heads_backup = tmp_path / "heads-backup"
+    real_heads.rename(real_heads_backup)
+    real_heads_backup.rename(external_heads)
+    (repo_root / ".git" / "refs" / "heads").symlink_to(external_heads, target_is_directory=True)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    with pytest.raises(RepositoryConstructionQualificationError):
+        gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+
+def test_sc23_wrapper_rejects_a_nested_symlink_under_git_objects_fanout(tmp_path) -> None:
+    """Review finding (PR #84, round 11, P1, reproduced independently by
+    two reviewers): checking only whether .git/objects ITSELF is a
+    symlink still admits a repository with a symlinked object fan-out
+    DESCENDANT (.git/objects/<2-char-prefix>) -- both reviewers
+    reproduced `git hash-object -w` following such a symlink and
+    landing the new loose object in the external target. The wrapper
+    now walks the complete objects subtree and rejects admission if ANY
+    entry beneath it is a symlink."""
+    import subprocess
+
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    repo_root.mkdir()
+    subprocess.run(["git", "-C", str(repo_root), "init", "-b", "main"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "config", "user.name", "test"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "config", "user.email", "test@local.invalid"], check=True, capture_output=True)
+    (repo_root / "README.md").write_text("existing repo\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_root), "add", "README.md"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "commit", "-qm", "initial"], check=True, capture_output=True)
+
+    # .git/objects itself stays a real directory -- only one fan-out
+    # prefix directory (a descendant) is redirected outside repo_root.
+    external_fanout = tmp_path / "external-object-fanout"
+    external_fanout.mkdir()
+    (repo_root / ".git" / "objects" / "ab").symlink_to(external_fanout, target_is_directory=True)
 
     transport = LocalGitRepositoryTransport({"existing": repo_root})
     with pytest.raises(RepositoryConstructionQualificationError):

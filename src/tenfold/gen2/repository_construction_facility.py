@@ -49,12 +49,14 @@ from hashlib import sha256
 from pathlib import Path
 
 from tenfold.contracts import NodeState, TaskPacket
+from tenfold.facility import stable_digest
 from tenfold.local_git_transport import LocalGitRepositoryTransport, LocalGitTransportError
 from tenfold.ownership import WriteLease
 from tenfold.persistence import AssignmentRef, CampaignSnapshot
 from tenfold.repository_facility import (
     FacilityError as Gen1RepositoryFacilityError,
     RepositoryFacility,
+    RepositoryReceipt,
     RepositoryStateStore,
     repository_ref_resource,
     repository_request_binding,
@@ -142,6 +144,26 @@ def _neutralize_hooks_for_every_registered_repository(transport: LocalGitReposit
         transport._run(name, "config", "core.hooksPath", str(no_hooks_dir))  # noqa: SLF001 -- see docstring
 
 
+def _find_symlink_beneath(root: Path) -> Path | None:
+    """Walks `root` with `os.walk(..., followlinks=False)` (never
+    descending into a symlinked subdirectory, so this always terminates
+    even under a symlink cycle) and returns the first symlinked entry
+    (file OR directory) found anywhere beneath it, or `None` if none
+    exists. `root` itself is checked first, separately, since
+    `os.walk` never reports its own starting path."""
+    if not root.exists():
+        return None
+    if root.is_symlink():
+        return root
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        base = Path(dirpath)
+        for entry_name in (*dirnames, *filenames):
+            candidate = base / entry_name
+            if candidate.is_symlink():
+                return candidate
+    return None
+
+
 def _reject_symlinked_git_storage_for_every_registered_repository(transport: LocalGitRepositoryTransport) -> None:
     """Review finding (PR #84, round 10, P1, reproduced by the reviewer):
     `LocalGitRepositoryTransport.__init__` only checks that the
@@ -153,18 +175,32 @@ def _reject_symlinked_git_storage_for_every_registered_repository(transport: Loc
     EXTERNAL location instead -- a real, reproduced escape of the
     admitted identity's own local-commit-only EFFECT_REACH boundary
     (writes are supposed to stay within the registered repository, not
-    merely within whatever `.git` happens to reference). Rejects
-    admission outright if `.git/objects` or `.git/refs` is a symlink
-    for ANY registered repository, mirroring the same
-    no-symlinks-followed discipline `LocalGitRepositoryTransport`
-    itself already applies to the repository root."""
+    merely within whatever `.git` happens to reference).
+
+    NESTED-SYMLINK FINDING (review finding, PR #84, round 11, P1,
+    reproduced independently by two reviewers): checking only whether
+    `.git/objects` and `.git/refs` THEMSELVES are symlinks still admits
+    a repository with a symlinked DESCENDANT further down -- both
+    reviewers reproduced `git update-ref` following a symlinked
+    `.git/refs/heads` and `git hash-object -w` following a symlinked
+    object fan-out directory (`.git/objects/<2-char-prefix>`), each
+    landing the real write outside the registered repository despite
+    `.git/objects`/`.git/refs` themselves being genuine, non-symlinked
+    directories. `_find_symlink_beneath` now walks the COMPLETE
+    `objects` and `refs` subtrees (never following a symlink it finds,
+    so a cycle cannot cause unbounded recursion) and rejects admission
+    if ANY entry anywhere beneath either one is a symlink, for ANY
+    registered repository -- mirroring the same no-symlinks-followed
+    discipline `LocalGitRepositoryTransport` itself already applies to
+    the repository root."""
     for name, registered in transport._repositories.items():  # noqa: SLF001 -- genuine safety enforcement; see docstring
         git_dir = registered.root / ".git"
         for internal in ("objects", "refs"):
-            if (git_dir / internal).is_symlink():
+            found = _find_symlink_beneath(git_dir / internal)
+            if found is not None:
                 raise RepositoryConstructionQualificationError(
                     f"_reject_symlinked_git_storage_for_every_registered_repository: "
-                    f"{name}'s .git/{internal} is a symlink, escaping the registered repository root"
+                    f"{name}'s .git/{internal} contains a symlink ({found}), escaping the registered repository root"
                 )
 
 
@@ -964,6 +1000,37 @@ class RepositoryConstructionPropertyQualificationHarness:
         mutation_landed = complete_tree_matches
         receipt_missing_after_crash = self.rig.facility.state.receipt("op-ack-commit") is None
 
+        # Review finding (PR #84, round 11, P1, reproduced by the
+        # reviewer): confirming the mutation landed and the receipt is
+        # missing genuinely diagnoses the crash -- but WITHOUT actually
+        # persisting a reconstructed receipt, `op-ack-commit` remains
+        # permanently "unseen" to `_idempotent`. A later call reusing
+        # the SAME operation_id with the repository's now-CURRENT
+        # `expected_head` (which passes `commit`'s own pre-check, unlike
+        # the stale-head retry below) and DIFFERENT files would find no
+        # prior receipt at all and be treated as a brand-new operation
+        # -- silently performing a genuine second commit under the same
+        # operation_id, defeating duplicate-key protection. Reconciling
+        # now means genuinely closing that hole: reconstruct the exact
+        # receipt `_idempotent` itself would have persisted for the
+        # ORIGINAL crashed request (same digest scheme, same real
+        # landed result), and persist it via the real state store --
+        # never a re-derived/simulated digest scheme, the same
+        # `stable_digest` `RepositoryFacility._idempotent` itself calls.
+        if mutation_landed and receipt_missing_after_crash:
+            reconstructed_request_digest = stable_digest({"op": "commit", **commit_request})
+            reconstructed_result = str(real_head_after_crash)
+            reconstructed_receipt = RepositoryReceipt(
+                operation_id="op-ack-commit",
+                request_digest=reconstructed_request_digest,
+                result_digest=stable_digest(reconstructed_result),
+                result=reconstructed_result,
+            )
+            self.rig.facility.state.put_receipt(reconstructed_receipt)
+            durable_receipt_reconstructed = self.rig.facility.state.receipt("op-ack-commit") == reconstructed_receipt
+        else:
+            durable_receipt_reconstructed = False
+
         # A blind identical retry must now be genuinely rejected: the
         # real ref already moved, so the expected_head fence correctly
         # refuses it -- proving the caller cannot simply re-commit, and
@@ -977,9 +1044,43 @@ class RepositoryConstructionPropertyQualificationHarness:
         except Gen1RepositoryFacilityError:
             retry_rejected = True
 
-        reconciled = crashed and mutation_landed and receipt_missing_after_crash and retry_rejected
+        # Review finding (PR #84, round 11, P1): THIS is the genuine
+        # duplicate-key attack the reviewer reproduced -- a caller
+        # reusing "op-ack-commit" with the repository's CURRENT head
+        # (passing the pre-check the stale-head retry above never gets
+        # past) but DIFFERENT file content. Before the receipt
+        # reconstruction above, this would have found no prior receipt
+        # and been silently allowed, landing a genuine second commit.
+        # With the reconstructed receipt in place, its digest embeds
+        # the ORIGINAL request's fields (including the original
+        # expected_head and files) -- ANY different call under this
+        # operation_id, differing in expected_head, files, or both,
+        # produces a different digest and is genuinely rejected by
+        # `_idempotent` itself, not by this harness re-deriving the
+        # check.
+        duplicate_key_task = _dispatch(self.rig, assignment_id="assign-ack", attempt=4, campaign_generation=1, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=resource, request_binding=repository_request_binding("commit", operation_id="op-ack-commit", repository=self.rig.repository, branch=request["branch"], owner="assign-ack", expected_head=real_head_after_crash, files=_file_digests({"ack.txt": b"different-content-same-operation-id"}), message="ack\n"))
+        duplicate_key_rejected = False
+        try:
+            self.rig.facility.commit(duplicate_key_task, repository=self.rig.repository, branch=request["branch"], owner="assign-ack", expected_head=real_head_after_crash, files={"ack.txt": b"different-content-same-operation-id"}, message="ack\n", operation_id="op-ack-commit", foreman_epoch=1)
+        except Gen1RepositoryFacilityError:
+            duplicate_key_rejected = True
+        head_unchanged_after_duplicate_key_attempt = self.rig.transport.resolve_ref(self.rig.repository, request["branch"]) == real_head_after_crash
+
+        reconciled = (
+            crashed
+            and mutation_landed
+            and receipt_missing_after_crash
+            and durable_receipt_reconstructed
+            and retry_rejected
+            and duplicate_key_rejected
+            and head_unchanged_after_duplicate_key_attempt
+        )
         state = QualificationState.QUALIFIED if reconciled else QualificationState.UNQUALIFIED
-        detail = f"crashed={crashed} mutation_landed={mutation_landed} receipt_missing_after_crash={receipt_missing_after_crash} retry_rejected={retry_rejected}"
+        detail = (
+            f"crashed={crashed} mutation_landed={mutation_landed} receipt_missing_after_crash={receipt_missing_after_crash} "
+            f"durable_receipt_reconstructed={durable_receipt_reconstructed} retry_rejected={retry_rejected} "
+            f"duplicate_key_rejected={duplicate_key_rejected} head_unchanged_after_duplicate_key_attempt={head_unchanged_after_duplicate_key_attempt}"
+        )
         return RepositoryConstructionScenarioResult("reconciliation-genuine-crash-before-receipt-persisted", FacilityProperty.RECONCILIATION, state, ("real-mutation-landed-receipt-missing-after-injected-crash", "blind-retry-rejected-by-real-fence"), detail)
 
     def run_commit_ack_semantics_scenario(self) -> RepositoryConstructionScenarioResult:
