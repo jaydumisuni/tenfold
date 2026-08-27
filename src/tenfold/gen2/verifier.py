@@ -1029,6 +1029,53 @@ def independent_can_emit_authoritative_non_occurrence(property_states: dict[str,
     return state in ("QUALIFIED", "QUALIFIED_WITH_BOUND")
 
 
+_ALL_FACILITY_PROPERTIES = (
+    "IDEMPOTENCY",
+    "DUPLICATE_KEY_BEHAVIOR",
+    "COMMIT_ACK_SEMANTICS",
+    "NON_OCCURRENCE_SIGNAL",
+    "ENUMERATION_COMPLETENESS",
+    "OBSERVATION_SEMANTICS",
+    "EFFECT_REACH",
+    "RECOVERY_TAKEOVER",
+    "GENERATION_ENFORCEMENT",
+    "RECONCILIATION",
+    "LATENCY_BOUNDS",
+)
+
+
+def independent_check_repository_construction_identity_admitted(
+    contract: dict,
+    *,
+    admitted_facility_id: str,
+    admitted_facility_generation: int,
+    admitted_adapter_boundary: str,
+    admitted_effect_class: str,
+) -> bool:
+    """Independent re-derivation of the SC-23 critical-gate narrowing
+    (G2-00 SS9.1; SC-23 closure), operating on a raw dict rather than
+    importing `tenfold.gen2.facility`'s own `FacilityContract`/
+    `check_critical_gate`. True only when `io_class` is not
+    `"REAL_MUTATING"` at all (the gate never applies), OR the contract's
+    `facility_id`/`facility_generation`/`adapter_boundary`/`effect_class`
+    exactly match the caller-supplied admitted identity AND every one of
+    the 11 `FacilityProperty` values has a record in
+    `property_qualifications` whose `state` is `"QUALIFIED"` or
+    `"QUALIFIED_WITH_BOUND"`."""
+    if contract.get("io_class") != "REAL_MUTATING":
+        return True
+    if contract.get("facility_id") != admitted_facility_id:
+        return False
+    if contract.get("facility_generation") != admitted_facility_generation:
+        return False
+    if contract.get("adapter_boundary") != admitted_adapter_boundary:
+        return False
+    if contract.get("effect_class") != admitted_effect_class:
+        return False
+    states = {record.get("property"): record.get("state") for record in contract.get("property_qualifications", ())}
+    return all(states.get(prop) in ("QUALIFIED", "QUALIFIED_WITH_BOUND") for prop in _ALL_FACILITY_PROPERTIES)
+
+
 _KNOWN_CAUSAL_EDGE_CLASSES = frozenset({"DIRECT_MUTATION", "ACTIVATES", "ASSUME_DELEGATE", "MINTS", "CREATES", "TRIGGERS"})
 
 

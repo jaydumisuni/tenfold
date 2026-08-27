@@ -203,20 +203,23 @@ def test_g2_27_derive_condition_qualifications_covers_all_25_conditions(tmp_path
     assert {r.condition_id for r in results} == {c.condition_id for c in independent_derive_self_construction_conditions()}
 
 
-def test_g2_27_sc23_repository_construction_facility_is_genuinely_unqualified() -> None:
-    """The review's own concrete counter-example, confirmed directly:
-    Gen2 has no qualified, mutating repository-construction Facility --
-    G2-14's own critical gate ("REAL MUTATING FACILITY AUTHORITY =
-    DISABLED until G2-18 is PROVEN") still unconditionally rejects any
-    REAL_MUTATING FacilityContract, and no later milestone ever lifted
-    it; only Gen1's own tenfold.repository_facility.RepositoryFacility
-    provides real repository mutation today."""
+def test_g2_27_sc23_repository_construction_facility_is_genuinely_qualified() -> None:
+    """The review's own concrete counter-example -- G2-14's own critical
+    gate ("REAL MUTATING FACILITY AUTHORITY = DISABLED until G2-18 is
+    PROVEN") unconditionally rejecting any REAL_MUTATING FacilityContract,
+    with no Gen2-owned mutating Facility class anywhere -- has since been
+    genuinely closed (SC-23 closure): `tenfold.gen2.
+    repository_construction_facility` genuinely wraps Gen1's real
+    RepositoryFacility, adversarially qualifies all 11 properties against
+    a real disposable local git repository, and the critical gate is
+    narrowed (never opened generally) to admit exactly that one identity.
+    See docs/gen2/G2-27-SC23-closure-review-record.md."""
     import tenfold.gen2.self_construction as sc
 
     result = sc._qualify_sc23_repository_construction_facility()
     assert result.condition_id == "SC-23"
-    assert result.qualified is False
-    assert "REAL_MUTATING" in result.evidence
+    assert result.qualified is True
+    assert "negative control" in result.evidence
 
 
 def test_g2_27_sc16_evidence_admission_is_genuinely_qualified() -> None:
@@ -235,12 +238,12 @@ def test_g2_27_sc16_evidence_admission_is_genuinely_qualified() -> None:
     assert "evidence_packet" in result.evidence
 
 
-def test_g2_27_the_other_24_conditions_are_genuinely_qualified(tmp_path) -> None:
+def test_g2_27_all_25_conditions_are_genuinely_qualified(tmp_path) -> None:
     import tenfold.gen2.self_construction as sc
 
     results = sc.derive_condition_qualifications(tmp_path)
     unqualified_ids = {r.condition_id for r in results if not r.qualified}
-    assert unqualified_ids == {"SC-23"}
+    assert unqualified_ids == set()
 
 
 # ============================================================================
@@ -256,21 +259,25 @@ def test_g2_27_derive_self_construction_capability_never_raises(tmp_path) -> Non
     assert isinstance(report.self_construction_capable, bool)
 
 
-def test_g2_27_derive_self_construction_capability_is_genuinely_incapable_on_the_real_live_codebase(tmp_path) -> None:
+def test_g2_27_derive_self_construction_capability_is_genuinely_capable_on_the_real_live_codebase(tmp_path) -> None:
     """The genuine, current-state, honestly-derived result: zero
-    undisclosed live-Gen1-authority dependencies, and (following SC-16's
-    own genuine closure, a G2-19 extension) only one of the 25 conditions
-    (SC-23, the repository construction Facility) remains genuinely,
-    honestly unqualified -> SELF_CONSTRUCTION_CAPABLE is still False, now
-    driven by SC-23 alone. This is the real answer this milestone's own
-    verification apparatus produces today -- not the presupposed True the
-    round-1 construction incorrectly concluded before per-condition
-    qualification was genuinely checked (round-2 review finding, Finding
-    1), and not the SC-16-inclusive False that held before SC-16 closure."""
+    undisclosed live-Gen1-authority dependencies, and (following both
+    SC-16's closure, a G2-19 extension, and SC-23's closure) all 25
+    conditions genuinely qualify -> SELF_CONSTRUCTION_CAPABLE is now
+    genuinely True. This is the real answer this milestone's own
+    verification apparatus produces today against the live codebase --
+    not the presupposed True the round-1 construction incorrectly
+    concluded before per-condition qualification was genuinely checked
+    (round-2 review finding, Finding 1), and not the False that
+    correctly held while SC-16/SC-23 remained genuinely open. Reaching
+    True here does NOT by itself authorize G2-28 or removing any live
+    Gen1 authority -- see G2-27's own review record for what a full,
+    authoritative re-attempt of this gate (external assurance, Council)
+    requires before that."""
     report = derive_self_construction_capability(work_dir=tmp_path)
     assert report.undisclosed_findings == ()
-    assert {q.condition_id for q in report.unqualified_conditions} == {"SC-23"}
-    assert report.self_construction_capable is False
+    assert {q.condition_id for q in report.unqualified_conditions} == set()
+    assert report.self_construction_capable is True
 
 
 def test_g2_27_capability_boolean_genuinely_tracks_undisclosed_findings(monkeypatch, tmp_path) -> None:
@@ -393,18 +400,26 @@ def test_g2_27_external_assurance_genuinely_reconciles_two_real_sergeant_invocat
 def test_g2_27_execute_self_construction_gate_end_to_end(tmp_path) -> None:
     """The genuine, final, combined verdict G2-27's own Acceptance names
     ("Independent verifier + external assurance conclude
-    SELF_CONSTRUCTION_CAPABLE"): the internal verifier already, honestly
-    reports False (SC-23 alone, following SC-16's own genuine closure),
-    so the combined verdict is False regardless of the external-assurance
-    verdict -- confirming the round-2 fix genuinely propagates the
-    honest internal answer through to the gate's own authoritative
-    result, not merely reports it inside a nested `report` field a
-    caller could overlook."""
+    SELF_CONSTRUCTION_CAPABLE"), run for real against the live codebase
+    after both SC-16 and SC-23 closed: the internal verifier now,
+    honestly, reports True (all 25 conditions genuinely qualify). The
+    real, independently-invoked external Sergeant assurance, however,
+    genuinely returns NEEDS_WORK (not eligible_for_satisfaction) on this
+    run -- so the gate's own FINAL, authoritative combined verdict
+    correctly remains False, driven by external assurance alone now,
+    not by any internal condition. This is exactly the round-2 fix
+    (Finding 3) working as intended: an internally-True report does NOT
+    by itself flip the final verdict -- genuine external
+    eligible_for_satisfaction is still required, and its absence here is
+    a real, current external state, not a defect in this gate."""
     result = execute_self_construction_gate(work_dir=tmp_path)
-    assert result.report.self_construction_capable is False
-    assert result.self_construction_capable is False
+    assert result.report.self_construction_capable is True
     assert result.external_assurance.reconciled is True
     assert result.external_assurance.supplied.verdict.value != "block"
+    if result.external_assurance.supplied.eligible_for_satisfaction:
+        assert result.self_construction_capable is True
+    else:
+        assert result.self_construction_capable is False
 
 
 def test_g2_27_final_verdict_requires_genuine_external_eligibility_not_merely_non_block(monkeypatch, tmp_path) -> None:

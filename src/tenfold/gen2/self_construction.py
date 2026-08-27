@@ -377,36 +377,73 @@ def _qualify_sc22_independent_verifier() -> ConditionQualificationResult:
 
 
 def _qualify_sc23_repository_construction_facility() -> ConditionQualificationResult:
-    """Round-2 review finding (Finding 1, the concrete counter-example
-    the review names): genuinely attempts to construct and validate a
-    real `REAL_MUTATING` `FacilityContract` against Gen2's own
-    `check_critical_gate` -- the same G2-14 critical gate a permanent
-    mutation fixture already proves cannot be bypassed even with every
-    property genuinely qualified ("REAL MUTATING FACILITY AUTHORITY =
-    DISABLED until G2-18 is PROVEN"). G2-18 has since reached PROVEN, but
-    no later milestone ever lifted this code-level gate, and no Gen2-
-    owned mutating repository-construction Facility class exists
-    anywhere in `tenfold.gen2` -- the only real, mutating
-    `RepositoryFacility` in this codebase is Gen1's own
-    `tenfold.repository_facility.RepositoryFacility`. This condition
-    therefore, honestly, does not qualify."""
-    records = tuple(
-        facility.PropertyQualificationRecord(p, facility.QualificationState.QUALIFIED, ("ev-1",), None) for p in facility.FacilityProperty
-    )
-    contract = facility.FacilityContract(
-        "g2-27-repository-construction-probe", 1, facility.FacilityIOClass.REAL_MUTATING, facility.FacilityAdapterBoundary.REPOSITORY,
-        "repository-construction", "authority@ref", records, ("ev-declaration",),
-    )
+    """SC-23 closure: genuinely builds `repository_construction_facility.
+    RepositoryConstructionPropertyQualificationHarness`'s real, disposable
+    local-git rig, runs the full adversarial corpus (every one of the 11
+    `FacilityProperty` values, each backed by a genuine scenario against
+    a real, throwaway local git repository -- never asserted), assembles
+    the ONE Trust-Table-admitted repository-construction `FacilityContract`
+    identity, and confirms it now genuinely passes the narrowed critical
+    gate. A negative control immediately follows: a differently-identified
+    `REAL_MUTATING` contract (otherwise identical, every property
+    genuinely qualified) must still be rejected -- proving the gate
+    genuinely narrowed to this one identity, not opened generally. Scope,
+    deliberately narrow: local-commit-only (create_branch/read/commit);
+    open_pr/merge_pr remain out of scope -- see
+    docs/gen2/G2-27-SC23-closure-review-record.md.
+
+    Round-1/round-2 history (G2-27's own review, before this closure):
+    genuinely attempted the same real `REAL_MUTATING` `FacilityContract`
+    validation and it was genuinely rejected -- G2-18 had reached PROVEN,
+    but no milestone had yet lifted this code-level gate, and no Gen2-
+    owned mutating repository-construction Facility class existed
+    anywhere in `tenfold.gen2`; only Gen1's own
+    `tenfold.repository_facility.RepositoryFacility` provided real
+    repository mutation. This function now genuinely closes that gap."""
+    import tempfile
+
+    from . import repository_construction_facility as rcf
+
+    with tempfile.TemporaryDirectory(prefix="tenfold-gen2-sc23-qualification-") as tmp:
+        rig = rcf.build_disposable_local_git_facility(Path(tmp))
+        harness = rcf.RepositoryConstructionPropertyQualificationHarness(rig)
+        records = harness.qualify_declared_scenarios()
+        contract = rcf.build_admitted_repository_construction_contract(records)
+
     try:
         facility.check_critical_gate(contract)
     except facility.RealMutatingFacilityAuthorityDisabled as e:
         return ConditionQualificationResult(
             "SC-23", False,
-            f"genuinely attempted a REAL_MUTATING FacilityContract validation and it was genuinely rejected: {e} "
-            "-- no Gen2-owned mutating repository-construction Facility exists; only Gen1's own "
-            "tenfold.repository_facility.RepositoryFacility provides real repository mutation today",
+            f"genuinely built and qualified the repository-construction FacilityContract but it was still "
+            f"rejected by the narrowed critical gate: {e} -- SC-23 remains genuinely unqualified",
         )
-    return ConditionQualificationResult("SC-23", True, "a real REAL_MUTATING FacilityContract genuinely passed the critical gate")
+
+    other = replace(contract, facility_id="some-other-real-mutating-facility")
+    try:
+        facility.check_critical_gate(other)
+    except facility.RealMutatingFacilityAuthorityDisabled:
+        pass
+    else:
+        return ConditionQualificationResult(
+            "SC-23", False,
+            "critical gate opened generally (a different REAL_MUTATING identity was wrongly admitted) -- "
+            "SC-23 closure regression, not genuine narrowing",
+        )
+
+    trust_ok, trust_evidence = _check_trust_table_admits("repository_construction_facility")
+    if not trust_ok:
+        return ConditionQualificationResult("SC-23", False, f"critical gate passed but Trust Table admission genuinely failed: {trust_evidence}")
+
+    property_states = {r.property: r.state for r in records}
+    return ConditionQualificationResult(
+        "SC-23", True,
+        "genuinely built, adversarially qualified (all 11 FacilityProperty values via "
+        "RepositoryConstructionPropertyQualificationHarness against a real disposable local git repository), "
+        f"and Trust-Table-admitted the ONE repository-construction FacilityContract identity; property states: "
+        f"{sorted(p.value + '=' + s.value for p, s in property_states.items())}; a differently-identified "
+        "REAL_MUTATING contract is still genuinely rejected (negative control)",
+    )
 
 
 def _qualify_sc24_recovery_takeover(work_dir: Path) -> ConditionQualificationResult:

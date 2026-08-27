@@ -74,6 +74,25 @@ NODE_ID = "gen2-sc23-scratch-node"
 REPOSITORY_NAME = "scratch"
 
 
+@dataclass(frozen=True)
+class _RepositoryConstructionFacilityIdentity:
+    facility_id: str
+    facility_generation: int
+    adapter_boundary: FacilityAdapterBoundary
+    effect_class: str
+
+
+#: Convenience grouping of the admitted-identity fields `tenfold.gen2.
+#: facility` owns (see the imports above) -- built from those constants,
+#: never a second, independent source of truth.
+ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_IDENTITY = _RepositoryConstructionFacilityIdentity(
+    facility_id=ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_ID,
+    facility_generation=ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_GENERATION,
+    adapter_boundary=FacilityAdapterBoundary.REPOSITORY,
+    effect_class=ADMITTED_REPOSITORY_CONSTRUCTION_EFFECT_CLASS,
+)
+
+
 def gen1_wrap_repository_construction_facility(transport, state_store, authority_store) -> RepositoryFacility:
     """Thin constructor around real `tenfold.repository_facility.
     RepositoryFacility` -- never re-derived."""
