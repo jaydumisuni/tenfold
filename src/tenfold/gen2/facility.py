@@ -172,11 +172,59 @@ class RealMutatingFacilityAuthorityDisabled(FacilityError):
     AUTHORITY = DISABLED.\""""
 
 
+#: SC-23 closure: the ONE genuinely-qualified, Trust-Table-admitted
+#: repository-construction Facility identity the critical gate admits.
+#: Scope is deliberately narrow: local-commit-only (create_branch/read/
+#: commit via Gen1's real RepositoryFacility + LocalGitRepositoryTransport
+#: against a real, disposable, throwaway local git repository) --
+#: open_pr/merge_pr remain permanently out of scope for this identity,
+#: mirroring LocalGitRepositoryTransport's own existing deliberate
+#: exclusion. Defined here (the critical gate's own owning module)
+#: rather than in `repository_construction_facility.py`, which imports
+#: it from here instead -- avoids a circular import while keeping the
+#: gate and the identity it admits co-located.
+ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_ID = "gen2-repository-construction-facility"
+ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_GENERATION = 1
+ADMITTED_REPOSITORY_CONSTRUCTION_EFFECT_CLASS = "repository-construction-local-commit"
+
+
+def _is_admitted_repository_construction_identity(contract: FacilityContract) -> bool:
+    return (
+        contract.facility_id == ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_ID
+        and contract.facility_generation == ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_GENERATION
+        and contract.adapter_boundary == FacilityAdapterBoundary.REPOSITORY
+        and contract.effect_class == ADMITTED_REPOSITORY_CONSTRUCTION_EFFECT_CLASS
+        and all(contract.is_property_qualified(p) for p in FacilityProperty)
+    )
+
+
 def check_critical_gate(contract: FacilityContract) -> None:
-    if contract.io_class == FacilityIOClass.REAL_MUTATING:
+    """G2-14 critical gate: "Until G2-18 is PROVEN: REAL MUTATING
+    FACILITY AUTHORITY = DISABLED. Allowed only read-only, synthetic/
+    mock, or disposable sandbox mutation with no canonical external
+    effect."
+
+    SC-23 closure narrows (never removes) this gate: REAL_MUTATING is
+    still rejected for every identity except the one specific,
+    genuinely-qualified repository-construction Facility identity above.
+    This is an identity-metadata match, not a cryptographic binding to
+    "this exact harness-tested code genuinely ran against a genuinely
+    disposable repo" -- that trust boundary is enforced at construction/
+    qualification time (the real adversarial harness, permanent tests,
+    adversarial review, and the Trust Table row's own admission), the
+    same trust model every other PropertyQualificationRecord/Trust Table
+    row in this codebase already uses. G2-00 SS9.1's own warning still
+    holds: a Facility declaration has no constitutional authority merely
+    because the adapter/provider says it is true -- this gate does not
+    accept ANY caller-declared REAL_MUTATING contract with self-claimed
+    QUALIFIED properties; only this one pre-agreed identity, with every
+    one of the 11 properties genuinely declared qualified.
+    """
+    if contract.io_class == FacilityIOClass.REAL_MUTATING and not _is_admitted_repository_construction_identity(contract):
         raise RealMutatingFacilityAuthorityDisabled(
             f"FacilityContract {contract.facility_id}: REAL_MUTATING io_class is disabled until G2-18 is PROVEN "
-            "(G2-14 critical gate) -- only READ_ONLY/SYNTHETIC_MOCK/DISPOSABLE_SANDBOX are permitted"
+            "(G2-14 critical gate) -- only READ_ONLY/SYNTHETIC_MOCK/DISPOSABLE_SANDBOX are permitted, or the one "
+            "genuinely-qualified repository-construction Facility identity (SC-23 closure)"
         )
 
 

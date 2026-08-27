@@ -67,6 +67,7 @@ from . import (
     proof_transfer,
     recovery_qualification,
     recovery_takeover,
+    repository_construction_facility,
     root_authority,
     runtime_obligation,
     state_model,
@@ -476,8 +477,17 @@ def derive_condition_qualifications(work_dir: Path) -> tuple[ConditionQualificat
 #: live construction-decision authority -- matching G2-00 SS20's own
 #: allowlist ("frozen Gen1 reference... WRAPPED worker/task/evidence
 #: contracts") generalized to the same class of component.
+#: `tenfold.repository_facility` added at SC-23 closure: Gen1's own
+#: real, mutating repository-construction Facility, genuinely wrapped
+#: (not re-derived) by `tenfold.gen2.repository_construction_facility`
+#: -- exactly the class of live Gen1 execution authority this scan
+#: exists to track. `tenfold.local_git_transport` is deliberately NOT
+#: added: it is mechanical git execution with no permission/authority
+#: logic of its own (entirely gated by `RepositoryFacility`'s own
+#: callers), the same class as `tenfold.durability`/`tenfold.contracts`
+#: -- a disclosed classification, not an oversight.
 GEN1_LIVE_AUTHORITY_MODULES = frozenset(
-    {"tenfold.foreman", "tenfold.ownership", "tenfold.recovery", "tenfold.facility", "tenfold.scheduler", "tenfold.workers", "tenfold.workforce"}
+    {"tenfold.foreman", "tenfold.ownership", "tenfold.recovery", "tenfold.facility", "tenfold.scheduler", "tenfold.workers", "tenfold.workforce", "tenfold.repository_facility"}
 )
 
 #: A reference to a `GEN1_LIVE_AUTHORITY_MODULES` import is genuinely
@@ -544,6 +554,65 @@ _ADJUDICATED_EXCEPTIONS: dict[tuple[str, str], str] = {
         "already-`_kill_check`-marked functions (_g2_11_lease_conflict_kill_check, _g2_11_fencing_kill_check) "
         "that genuinely exercise real Gen1 code; confirmed by direct inspection this is the function's ONLY "
         "use of any Gen1-authority-module name outside those already-disclosed nested kill_check functions"
+    ),
+    # SC-23 closure: repository_construction_facility.py genuinely wraps
+    # (never re-derives) Gen1's real, already-built, production-grade
+    # tenfold.repository_facility.RepositoryFacility, per G2-00 SS15's
+    # "no invariant split across Python/Rust" -- the same reuse
+    # precedent already sanctioned for recovery_takeover.py's
+    # run_real_gen2_recovery_takeover above. Every function below
+    # operates ONLY inside a real, disposable, throwaway local git
+    # repository (created and destroyed per qualification run, never
+    # canonical/production state or a live production dispatch) -- the
+    # same disposable-qualification-context pattern already sanctioned
+    # for recovery_takeover.py's own _scenario_* functions above. See
+    # docs/gen2/G2-27-SC23-closure-review-record.md.
+    ("tenfold.gen2.repository_construction_facility", "gen1_wrap_repository_construction_facility"): (
+        "thin constructor around real tenfold.repository_facility.RepositoryFacility, never re-derived -- "
+        "SC-23 closure, docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
+    ("tenfold.gen2.repository_construction_facility", "build_disposable_local_git_facility"): (
+        "constructs the disposable local git repository + Gen1 RepositoryFacility rig used ONLY by this "
+        "module's own real adversarial qualification harness -- SC-23 closure, "
+        "docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
+    ("tenfold.gen2.repository_construction_facility", "_empty_snapshot"): (
+        "builds a disposable, in-memory CampaignSnapshot for the qualification harness's own authority-store "
+        "stand-in -- never live production campaign state -- SC-23 closure, "
+        "docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
+    ("tenfold.gen2.repository_construction_facility", "_dispatch"): (
+        "builds one genuinely-sealed dispatch (task/lease/assignment/snapshot) for the qualification harness's "
+        "own bounded scenarios, reusing Gen1's real fencing data shapes -- never a live production dispatch -- "
+        "SC-23 closure, docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
+    ("tenfold.gen2.repository_construction_facility", "run_duplicate_key_scenario"): (
+        "one of this module's own real, bounded, disposable-repository adversarial scenarios (G2-00 SS9.1's "
+        "corpus) -- SC-23 closure, docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
+    ("tenfold.gen2.repository_construction_facility", "run_idempotency_two_sided_scenario"): (
+        "same as run_duplicate_key_scenario -- SC-23 closure, docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
+    ("tenfold.gen2.repository_construction_facility", "run_stale_expected_head_non_occurrence_scenario"): (
+        "same as run_duplicate_key_scenario -- SC-23 closure, docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
+    ("tenfold.gen2.repository_construction_facility", "run_enumeration_falsification_scenario"): (
+        "same as run_duplicate_key_scenario -- SC-23 closure, docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
+    ("tenfold.gen2.repository_construction_facility", "run_observation_semantics_scenario"): (
+        "same as run_duplicate_key_scenario -- SC-23 closure, docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
+    ("tenfold.gen2.repository_construction_facility", "run_effect_reach_scenario"): (
+        "same as run_duplicate_key_scenario -- SC-23 closure, docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
+    ("tenfold.gen2.repository_construction_facility", "run_recovery_takeover_and_generation_enforcement_scenario"): (
+        "same as run_duplicate_key_scenario -- SC-23 closure, docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
+    ("tenfold.gen2.repository_construction_facility", "run_reconciliation_and_ack_semantics_scenario"): (
+        "same as run_duplicate_key_scenario -- SC-23 closure, docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
+    ("tenfold.gen2.repository_construction_facility", "run_latency_bounds_scenario"): (
+        "same as run_duplicate_key_scenario -- SC-23 closure, docs/gen2/G2-27-SC23-closure-review-record.md"
     ),
 }
 
@@ -647,6 +716,7 @@ _SCANNED_MODULES: dict[str, object] = {
     "proof_transfer": proof_transfer,
     "recovery_qualification": recovery_qualification,
     "recovery_takeover": recovery_takeover,
+    "repository_construction_facility": repository_construction_facility,
     "root_authority": root_authority,
     "runtime_obligation": runtime_obligation,
     "state_model": state_model,
