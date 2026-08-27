@@ -223,14 +223,53 @@ impl FacilityContract {
     }
 }
 
+/// SC-23 closure: the ONE genuinely-qualified, Trust-Table-admitted
+/// repository-construction Facility identity the critical gate admits.
+/// Scope is deliberately narrow: local-commit-only (create_branch/read/
+/// commit via Gen1's real RepositoryFacility + LocalGitRepositoryTransport
+/// against a real, disposable, throwaway local git repository) --
+/// open_pr/merge_pr remain permanently out of scope for this identity,
+/// mirroring LocalGitRepositoryTransport's own existing deliberate
+/// exclusion. Hardcoded here rather than imported from the Python side
+/// at runtime -- independently re-derived, matching how every other
+/// dual-owned check in this crate/codebase works.
+pub const ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_ID: &str = "gen2-repository-construction-facility";
+pub const ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_GENERATION: u64 = 1;
+pub const ADMITTED_REPOSITORY_CONSTRUCTION_EFFECT_CLASS: &str = "repository-construction-local-commit";
+
+fn is_admitted_repository_construction_identity(contract: &FacilityContract) -> bool {
+    contract.facility_id == ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_ID
+        && contract.facility_generation == ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_GENERATION
+        && contract.adapter_boundary == FacilityAdapterBoundary::REPOSITORY
+        && contract.effect_class == ADMITTED_REPOSITORY_CONSTRUCTION_EFFECT_CLASS
+        && ALL_FACILITY_PROPERTIES.iter().all(|p| contract.is_property_qualified(*p))
+}
+
 /// G2-14 critical gate: "Until G2-18 is PROVEN: REAL MUTATING FACILITY
 /// AUTHORITY = DISABLED. Allowed only read-only, synthetic/mock, or
 /// disposable sandbox mutation with no canonical external effect."
+///
+/// SC-23 closure narrows (never removes) this gate: REAL_MUTATING is
+/// still rejected for every identity except the one specific,
+/// genuinely-qualified repository-construction Facility identity above.
+/// This is an identity-metadata match, not a cryptographic binding to
+/// "this exact harness-tested code genuinely ran against a genuinely
+/// disposable repo" -- that trust boundary is enforced at construction/
+/// qualification time (the real adversarial harness, permanent tests,
+/// adversarial review, and the Trust Table row's own admission), the
+/// same trust model every other PropertyQualificationRecord/Trust Table
+/// row in this codebase already uses. G2-00 §9.1's own warning still
+/// holds: a Facility declaration has no constitutional authority merely
+/// because the adapter/provider says it is true -- this gate does not
+/// accept ANY caller-declared REAL_MUTATING contract with self-claimed
+/// QUALIFIED properties; only this one pre-agreed identity, with every
+/// one of the 11 properties genuinely declared qualified.
 pub fn check_critical_gate(contract: &FacilityContract) -> Result<(), FacilityError> {
-    if contract.io_class == FacilityIOClass::REAL_MUTATING {
+    if contract.io_class == FacilityIOClass::REAL_MUTATING && !is_admitted_repository_construction_identity(contract) {
         return Err(err(format!(
             "FacilityContract {}: REAL_MUTATING io_class is disabled until G2-18 is PROVEN (G2-14 critical gate) -- \
-             only READ_ONLY/SYNTHETIC_MOCK/DISPOSABLE_SANDBOX are permitted",
+             only READ_ONLY/SYNTHETIC_MOCK/DISPOSABLE_SANDBOX are permitted, or the one genuinely-qualified \
+             repository-construction Facility identity (SC-23 closure)",
             contract.facility_id
         )));
     }
@@ -386,6 +425,59 @@ mod tests {
             let c = contract(io_class, all_qualified_records());
             check_critical_gate(&c).unwrap();
         }
+    }
+
+    fn admitted_repository_construction_contract() -> FacilityContract {
+        FacilityContract {
+            facility_id: ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_ID.to_string(),
+            facility_generation: ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_GENERATION,
+            io_class: FacilityIOClass::REAL_MUTATING,
+            adapter_boundary: FacilityAdapterBoundary::REPOSITORY,
+            effect_class: ADMITTED_REPOSITORY_CONSTRUCTION_EFFECT_CLASS.to_string(),
+            authority_ref: "authority@ref".to_string(),
+            property_qualifications: all_qualified_records(),
+            evidence_refs: vec!["ev-declaration".to_string()],
+        }
+    }
+
+    // ---- critical gate: SC-23 closure narrowing ----
+
+    #[test]
+    fn critical_gate_admits_the_one_qualified_repository_construction_identity() {
+        check_critical_gate(&admitted_repository_construction_contract()).unwrap();
+    }
+
+    #[test]
+    fn critical_gate_still_rejects_real_mutating_with_a_different_facility_id() {
+        let c = FacilityContract { facility_id: "some-other-facility".to_string(), ..admitted_repository_construction_contract() };
+        assert!(check_critical_gate(&c).is_err());
+    }
+
+    #[test]
+    fn critical_gate_still_rejects_real_mutating_missing_even_one_qualified_property() {
+        let mut records = all_qualified_records();
+        records.retain(|r| r.property != FacilityProperty::LATENCY_BOUNDS);
+        records.push(unqualified_record(FacilityProperty::LATENCY_BOUNDS));
+        let c = FacilityContract { property_qualifications: records, ..admitted_repository_construction_contract() };
+        assert!(check_critical_gate(&c).is_err());
+    }
+
+    #[test]
+    fn critical_gate_still_rejects_real_mutating_with_wrong_adapter_boundary() {
+        let c = FacilityContract { adapter_boundary: FacilityAdapterBoundary::LOCAL_FACILITY, ..admitted_repository_construction_contract() };
+        assert!(check_critical_gate(&c).is_err());
+    }
+
+    #[test]
+    fn critical_gate_still_rejects_real_mutating_with_wrong_facility_generation() {
+        let c = FacilityContract { facility_generation: 2, ..admitted_repository_construction_contract() };
+        assert!(check_critical_gate(&c).is_err());
+    }
+
+    #[test]
+    fn critical_gate_still_rejects_real_mutating_with_wrong_effect_class() {
+        let c = FacilityContract { effect_class: "some-other-effect-class".to_string(), ..admitted_repository_construction_contract() };
+        assert!(check_critical_gate(&c).is_err());
     }
 
     // ---- Trust Table admission ----
