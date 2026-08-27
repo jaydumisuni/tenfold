@@ -262,6 +262,9 @@ honest — not a determination that self-construction is reached.
 Acceptance, verbatim: "Independent verifier + external assurance
 conclude `SELF_CONSTRUCTION_CAPABLE`."
 
+**As of this milestone's own proven candidate (`bba1974`), before the
+SC-16/SC-23 closures documented above:**
+
 - Independent verifier — **EXECUTED, CONCLUDES FALSE**: all 25 SS20
   conditions independently derived and genuinely, functionally
   qualification-checked; zero undisclosed live-Gen1-authority
@@ -271,8 +274,14 @@ conclude `SELF_CONSTRUCTION_CAPABLE`."
 - External assurance — **EXECUTED, CONCLUDES GENUINE (non-BLOCK,
   eligibility-checked)**: two genuinely independent, real Sergeant
   invocations, reconciled.
-- **Combined, authoritative result: `SELF_CONSTRUCTION_CAPABLE =
-  FALSE`.**
+- **Combined, authoritative result at the time: `SELF_CONSTRUCTION_CAPABLE
+  = FALSE`.**
+
+**This is now a historical snapshot, superseded by "Result after G2-27"
+below** — SC-16 and SC-23 have since closed (all 25 conditions now
+genuinely qualify), but the combined, authoritative result remains
+`FALSE` today for a different reason (external assurance). See "Result
+after G2-27" for the current, real state.
 
 `MUT-G27-CAPABILITYWRONGCOUNT-001`, `MUT-G27-CAPABILITYINCONSISTENTCOUNT-001`,
 `MUT-G27-CAPABILITYOVERCLAIM-001`, and

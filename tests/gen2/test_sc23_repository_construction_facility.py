@@ -123,26 +123,58 @@ def test_sc23_effect_reach_rejects_an_out_of_scope_commit_path(rig) -> None:
     assert result.state == QualificationState.QUALIFIED
 
 
-def test_sc23_recovery_takeover_and_generation_enforcement_reuse_real_gen1_fencing(rig) -> None:
-    result = RepositoryConstructionPropertyQualificationHarness(rig).run_recovery_takeover_and_generation_enforcement_scenario()
+def test_sc23_recovery_takeover_reuses_real_gen1_fencing_via_a_genuine_restart(rig) -> None:
+    """Review finding (PR #84): the takeover must genuinely reconstruct
+    durable state via a fresh RepositoryFacility/RepositoryStateStore
+    over the same on-disk SQLite file, not merely overwrite an
+    in-memory snapshot on the same live objects."""
+    result = RepositoryConstructionPropertyQualificationHarness(rig).run_recovery_takeover_scenario()
     assert result.property == FacilityProperty.RECOVERY_TAKEOVER
     assert result.state == QualificationState.QUALIFIED
     assert "new_owner_admitted=True" in result.detail
     assert "stale_rejected=True" in result.detail
+    assert "durable_writer_reconstructed=True" in result.detail
 
 
-def test_sc23_reconciliation_and_commit_ack_semantics_survive_a_lost_ack(rig) -> None:
+def test_sc23_generation_enforcement_exercises_a_genuine_generation_transition(rig) -> None:
+    """Review finding (PR #84, CodeRabbit): the recovery-takeover
+    scenario only ever advanced foreman_epoch, never campaign_generation
+    -- this is now a genuinely separate scenario advancing generation
+    specifically (epoch held fixed), proving GENERATION_ENFORCEMENT is
+    not merely a relabeled epoch-fencing result."""
+    result = RepositoryConstructionPropertyQualificationHarness(rig).run_generation_enforcement_scenario()
+    assert result.property == FacilityProperty.GENERATION_ENFORCEMENT
+    assert result.state == QualificationState.QUALIFIED
+    assert "stale_generation_rejected=True" in result.detail
+    assert "current_generation_admitted=True" in result.detail
+
+
+def test_sc23_reconciliation_and_commit_ack_semantics_survive_a_genuine_crash_before_receipt_persisted(rig) -> None:
+    """Review finding (PR #84): merely discarding commit()'s return
+    value never simulates a lost ACK, since the receipt is already
+    persisted by the time commit() returns. This genuinely injects a
+    crash between the real git mutation and receipt persistence."""
     result = RepositoryConstructionPropertyQualificationHarness(rig).run_reconciliation_and_ack_semantics_scenario()
     assert result.property == FacilityProperty.RECONCILIATION
     assert result.state == QualificationState.QUALIFIED
+    assert "crashed=True" in result.detail
+    assert "mutation_landed=True" in result.detail
+    assert "receipt_missing_after_crash=True" in result.detail
+    assert "retry_rejected=True" in result.detail
 
 
-def test_sc23_latency_bounds_is_a_genuinely_measured_bound_not_asserted(rig) -> None:
-    result = RepositoryConstructionPropertyQualificationHarness(rig).run_latency_bounds_scenario(iterations=3)
+def test_sc23_latency_bounds_is_checked_against_a_frozen_threshold_not_defined_post_hoc(rig) -> None:
+    """Review finding (PR #84): defining the bound as the observed
+    samples' own max means any finite duration always qualifies. The
+    bound is now a frozen, pre-declared constant a genuine measurement
+    can actually fail against."""
+    harness = RepositoryConstructionPropertyQualificationHarness(rig)
+    result = harness.run_latency_bounds_scenario(iterations=3)
     assert result.property == FacilityProperty.LATENCY_BOUNDS
     assert result.state == QualificationState.QUALIFIED_WITH_BOUND
     assert result.bound_description is not None
-    assert "measured, not asserted" in result.bound_description
+    assert f"<= {harness.LATENCY_BOUND_SECONDS}s" in result.bound_description
+    assert "within_bound=True" in result.detail
 
 
 # ============================================================================

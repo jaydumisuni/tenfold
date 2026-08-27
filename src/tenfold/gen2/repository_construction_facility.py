@@ -95,7 +95,33 @@ ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_IDENTITY = _RepositoryConstructionFaci
 
 def gen1_wrap_repository_construction_facility(transport, state_store, authority_store) -> RepositoryFacility:
     """Thin constructor around real `tenfold.repository_facility.
-    RepositoryFacility` -- never re-derived."""
+    RepositoryFacility` -- never re-derived.
+
+    SCOPE NOTE (review finding, PR #84, P1): this function's own
+    SIGNATURE requires no live Gen1 Foreman, campaign state, or
+    authority owner -- `transport`/`state_store`/`authority_store` are
+    all caller-injected. It is the genuine, reusable, Gen2-owned
+    production entry point: a future G2-28+ orchestrator supplying its
+    OWN Gen2-owned `CampaignAuthorityStore` implementation (matching
+    `_MutableAuthorityStore`'s Protocol, not this disposable
+    qualification-only stand-in) and a real repository transport would
+    use this SAME function, unmodified. `RepositoryFacility`'s own
+    internal admission logic still calls Gen1's real
+    `validate_live_task` -- an explicit, sanctioned reuse of the
+    qualified ALGORITHM (G2-00 SS15: "no invariant split across
+    Python/Rust"), the same precedent G2-25's
+    `run_real_gen2_recovery_takeover` established for
+    `tenfold.recovery.takeover()`; Gen2 owning the DECISION means Gen2
+    supplies and controls the authority DATA this algorithm operates
+    over, not that Gen2 must reimplement the algorithm itself.
+
+    Today, the ONLY caller in this codebase is
+    `build_disposable_local_git_facility` (SC-23's own qualification
+    rig) -- there is no G2-28 production caller yet because G2-28 does
+    not exist yet; building one is explicitly out of this closure's
+    scope (see `docs/gen2/G2-27-SC23-closure-review-record.md`, "Does
+    not enable"). This is disclosed here so a future G2-28 author
+    starts from this function, not a re-derivation of it."""
     return RepositoryFacility(transport, state_store, authority_store)
 
 
@@ -122,6 +148,11 @@ class DisposableRepositoryConstructionRig:
     repository: str
     initial_sha: str
     repo_root: Path
+    #: The real, on-disk SQLite receipts database path -- durable across
+    #: a fresh `RepositoryStateStore`/`RepositoryFacility` instance, so a
+    #: genuine takeover scenario can reconstruct state from disk rather
+    #: than merely reusing the same in-memory objects.
+    state_db_path: Path
 
 
 def _run_git(root: Path, *args: str) -> None:
@@ -144,12 +175,13 @@ def build_disposable_local_git_facility(tmp_dir: Path) -> DisposableRepositoryCo
     transport = LocalGitRepositoryTransport({REPOSITORY_NAME: repo_root})
     initial_sha = transport.resolve_ref(REPOSITORY_NAME, "main")
 
-    state_store = RepositoryStateStore(str(tmp_dir / "repo-state.db"))
+    state_db_path = tmp_dir / "repo-state.db"
+    state_store = RepositoryStateStore(str(state_db_path))
     snapshot = _empty_snapshot(campaign_generation=1, foreman_epoch=1)
     authority_store = _MutableAuthorityStore(snapshot)
 
     facility = gen1_wrap_repository_construction_facility(transport, state_store, authority_store)
-    return DisposableRepositoryConstructionRig(facility, transport, authority_store, REPOSITORY_NAME, initial_sha, repo_root)
+    return DisposableRepositoryConstructionRig(facility, transport, authority_store, REPOSITORY_NAME, initial_sha, repo_root, state_db_path)
 
 
 def _empty_snapshot(
@@ -423,7 +455,18 @@ class RepositoryConstructionPropertyQualificationHarness:
         state = QualificationState.QUALIFIED if rejected else QualificationState.UNQUALIFIED
         return RepositoryConstructionScenarioResult("effect-reach", FacilityProperty.EFFECT_REACH, state, ("out-of-scope-commit-path-rejected",), f"rejected={rejected}")
 
-    def run_recovery_takeover_and_generation_enforcement_scenario(self) -> RepositoryConstructionScenarioResult:
+    def run_recovery_takeover_scenario(self) -> RepositoryConstructionScenarioResult:
+        # Review finding (PR #84): the original version overwrote only
+        # the mutable in-memory snapshot while keeping the same
+        # RepositoryFacility/RepositoryStateStore/open SQLite connection
+        # alive -- never genuinely testing whether durable state
+        # (writers, receipts) survives and is correctly reconstructed
+        # across an actual restart. This constructs a GENUINELY FRESH
+        # RepositoryStateStore + RepositoryFacility for the new owner,
+        # pointing at the SAME on-disk SQLite file -- proving durable
+        # state is real and reconstructible independently of any
+        # in-memory object continuity, the way a real process restart
+        # would work.
         request = {"operation_id": "op-takeover", "repository": self.rig.repository, "branch": "sc23/takeover", "owner": "assign-owner-a", "base_ref": "main", "expected_base_sha": self.rig.initial_sha}
         resource = repository_ref_resource(self.rig.repository, request["branch"])
         binding = repository_request_binding("create_branch", **request)
@@ -434,7 +477,9 @@ class RepositoryConstructionPropertyQualificationHarness:
         # A stale dispatch from owner-a, still carrying the old epoch,
         # attempted against the CURRENT (already-advanced) authority
         # state must be genuinely rejected -- real Gen1 fencing, not
-        # re-derived.
+        # re-derived. Dispatched against the SAME (pre-restart) facility
+        # instance, since owner-a's own stale attempt predates any
+        # restart.
         stale_commit_request = {"operation_id": "op-takeover-stale-commit", "repository": self.rig.repository, "branch": request["branch"], "owner": "assign-owner-a", "expected_head": self.rig.initial_sha, "files": _file_digests({"stale.txt": b"stale"}), "message": "stale\n"}
         stale_binding = repository_request_binding("commit", **stale_commit_request)
         stale_task = TaskPacket(
@@ -444,13 +489,17 @@ class RepositoryConstructionPropertyQualificationHarness:
             foreman_epoch=1, lease_id="lease-assign-owner-a", lease_epoch=1, lease_generation=1, request_binding=stale_binding,
         ).sealed()
 
-        # Real takeover: advance the epoch, issue a fresh lease to a new
-        # owner over the SAME resource -- reusing owner-a's abandoned
-        # write. A genuinely different request (different owner, files,
-        # operation_id) needs its own independently-computed binding.
+        # Real takeover: a genuinely fresh RepositoryFacility/
+        # RepositoryStateStore for owner-b, backed by the same durable
+        # SQLite file -- simulating a real restart, not merely reusing
+        # the same in-memory objects. A genuinely different request
+        # (different owner, files, operation_id) needs its own
+        # independently-computed binding.
         takeover_commit_request = {"operation_id": "op-takeover-new-owner-commit", "repository": self.rig.repository, "branch": request["branch"], "owner": "assign-owner-b", "expected_head": self.rig.initial_sha, "files": _file_digests({"takeover.txt": b"takeover"}), "message": "takeover\n"}
         takeover_binding = repository_request_binding("commit", **takeover_commit_request)
         task_b = _dispatch(self.rig, assignment_id="assign-owner-b", attempt=1, campaign_generation=1, foreman_epoch=2, lease_epoch=2, lease_generation=1, resource=resource, request_binding=takeover_binding)
+        restarted_state_store = RepositoryStateStore(str(self.rig.state_db_path))
+        restarted_facility = gen1_wrap_repository_construction_facility(self.rig.transport, restarted_state_store, self.rig.authority_store)
 
         stale_rejected = False
         try:
@@ -460,35 +509,94 @@ class RepositoryConstructionPropertyQualificationHarness:
 
         new_owner_admitted = False
         try:
-            self.rig.facility.commit(task_b, repository=self.rig.repository, branch=request["branch"], owner="assign-owner-b", expected_head=self.rig.initial_sha, files={"takeover.txt": b"takeover"}, message="takeover\n", operation_id="op-takeover-new-owner-commit", foreman_epoch=2)
+            restarted_facility.commit(task_b, repository=self.rig.repository, branch=request["branch"], owner="assign-owner-b", expected_head=self.rig.initial_sha, files={"takeover.txt": b"takeover"}, message="takeover\n", operation_id="op-takeover-new-owner-commit", foreman_epoch=2)
             new_owner_admitted = True
         except Gen1RepositoryFacilityError:
             new_owner_admitted = False
 
-        ok = stale_rejected and new_owner_admitted
+        # Confirm the restarted instance genuinely sees owner-a's earlier
+        # durable writer claim (reconstructed from the same on-disk
+        # SQLite file, not carried over via in-memory object identity).
+        durable_writer_reconstructed = restarted_facility.state.writer(self.rig.repository, request["branch"]) is not None
+
+        ok = stale_rejected and new_owner_admitted and durable_writer_reconstructed
         state = QualificationState.QUALIFIED if ok else QualificationState.UNQUALIFIED
         return RepositoryConstructionScenarioResult(
-            "recovery-takeover-generation-enforcement",
+            "recovery-takeover-genuine-restart",
             FacilityProperty.RECOVERY_TAKEOVER,
             state,
-            ("stale-epoch-dispatch-rejected-after-takeover", "new-owner-admitted-under-new-epoch"),
-            f"stale_rejected={stale_rejected} new_owner_admitted={new_owner_admitted}",
+            ("stale-epoch-dispatch-rejected-after-takeover", "new-owner-admitted-under-new-epoch-via-a-genuinely-restarted-facility-instance", "durable-writer-state-reconstructed-from-disk"),
+            f"stale_rejected={stale_rejected} new_owner_admitted={new_owner_admitted} durable_writer_reconstructed={durable_writer_reconstructed}",
         )
 
     def run_generation_enforcement_scenario(self) -> RepositoryConstructionScenarioResult:
-        # Same real fencing mechanism the takeover scenario above
-        # exercises, isolated here as its own scenario/property per
-        # G2-00 SS9.1's own separate property naming.
-        result = self.run_recovery_takeover_and_generation_enforcement_scenario()
+        # Review finding (PR #84): the takeover scenario above only ever
+        # advances foreman_epoch/lease fields, never campaign_generation
+        # -- so it exercises epoch fencing, not generation fencing, even
+        # though Gen1's real validate_live_task checks them as two
+        # SEPARATE conditions ("task campaign generation is stale" vs.
+        # "stale Foreman epoch"). This genuinely advances
+        # campaign_generation specifically (epoch held fixed) and
+        # confirms a stale-generation dispatch is rejected while a
+        # current-generation one is admitted.
+        request = {"operation_id": "op-gen-enforce", "repository": self.rig.repository, "branch": "sc23/gen-enforce", "owner": "assign-gen-a", "base_ref": "main", "expected_base_sha": self.rig.initial_sha}
+        resource = repository_ref_resource(self.rig.repository, request["branch"])
+        binding = repository_request_binding("create_branch", **request)
+        task_a = _dispatch(self.rig, assignment_id="assign-gen-a", attempt=1, campaign_generation=1, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=resource, request_binding=binding)
+        self.rig.facility.create_branch(task_a, repository=request["repository"], branch=request["branch"], owner=request["owner"], base_ref=request["base_ref"], expected_base_sha=request["expected_base_sha"], operation_id=request["operation_id"], foreman_epoch=1)
+
+        # A stale-generation dispatch (still campaign_generation=1),
+        # sealed BEFORE the generation transition below, attempted
+        # against the CURRENT (already-advanced) authority state.
+        stale_gen_commit_request = {"operation_id": "op-gen-enforce-stale-commit", "repository": self.rig.repository, "branch": request["branch"], "owner": "assign-gen-a", "expected_head": self.rig.initial_sha, "files": _file_digests({"stale-gen.txt": b"stale"}), "message": "stale-gen\n"}
+        stale_gen_binding = repository_request_binding("commit", **stale_gen_commit_request)
+        stale_gen_task = TaskPacket(
+            task_id="task-stale-gen-owner-a", campaign_id=CAMPAIGN_ID, campaign_generation=1, node_id=NODE_ID, assignment_id="assign-gen-a", attempt=2,
+            objective="stale-generation-dispatch", scope=("",), capabilities=(RepositoryFacility.write_capability,), permissions=("write",),
+            evidence_obligations=(), stop_conditions=(), reporting_officer="sc23-closure", source_binding="gen2-sc23-scratch-source",
+            foreman_epoch=1, lease_id="lease-assign-gen-a", lease_epoch=1, lease_generation=1, request_binding=stale_gen_binding,
+        ).sealed()
+
+        # Real generation transition: campaign_generation advances to 2;
+        # foreman_epoch/lease_epoch held fixed at 1, so ONLY the
+        # generation fencing check (not epoch fencing) can be what
+        # rejects the stale task or admits the current one.
+        current_gen_commit_request = {"operation_id": "op-gen-enforce-current-commit", "repository": self.rig.repository, "branch": request["branch"], "owner": "assign-gen-b", "expected_head": self.rig.initial_sha, "files": _file_digests({"current-gen.txt": b"current"}), "message": "current-gen\n"}
+        current_gen_binding = repository_request_binding("commit", **current_gen_commit_request)
+        task_b = _dispatch(self.rig, assignment_id="assign-gen-b", attempt=1, campaign_generation=2, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=resource, request_binding=current_gen_binding)
+
+        stale_generation_rejected = False
+        try:
+            self.rig.facility.commit(stale_gen_task, repository=self.rig.repository, branch=request["branch"], owner="assign-gen-a", expected_head=self.rig.initial_sha, files={"stale-gen.txt": b"stale"}, message="stale-gen\n", operation_id="op-gen-enforce-stale-commit", foreman_epoch=1)
+        except Gen1RepositoryFacilityError:
+            stale_generation_rejected = True
+
+        current_generation_admitted = False
+        try:
+            self.rig.facility.commit(task_b, repository=self.rig.repository, branch=request["branch"], owner="assign-gen-b", expected_head=self.rig.initial_sha, files={"current-gen.txt": b"current"}, message="current-gen\n", operation_id="op-gen-enforce-current-commit", foreman_epoch=1)
+            current_generation_admitted = True
+        except Gen1RepositoryFacilityError:
+            current_generation_admitted = False
+
+        ok = stale_generation_rejected and current_generation_admitted
+        state = QualificationState.QUALIFIED if ok else QualificationState.UNQUALIFIED
         return RepositoryConstructionScenarioResult(
-            "generation-enforcement-reuses-recovery-takeover-mechanism",
+            "generation-enforcement-genuine-generation-transition",
             FacilityProperty.GENERATION_ENFORCEMENT,
-            result.state,
-            result.evidence_refs,
-            result.detail,
+            state,
+            ("stale-campaign-generation-dispatch-rejected", "current-campaign-generation-dispatch-admitted"),
+            f"stale_generation_rejected={stale_generation_rejected} current_generation_admitted={current_generation_admitted}",
         )
 
     def run_reconciliation_and_ack_semantics_scenario(self) -> RepositoryConstructionScenarioResult:
+        # Review finding (PR #84): merely discarding commit()'s return
+        # value does NOT simulate a lost ACK, since _idempotent() has
+        # already persisted the receipt before commit() returns -- the
+        # subsequent lookup was guaranteed to find it regardless of any
+        # real failure mode. This genuinely injects a crash in the real
+        # failure window RepositoryFacility._idempotent() actually has:
+        # after the real git mutation (commit_files, which moves the ref)
+        # but before the receipt is durably persisted (put_receipt).
         request = {"operation_id": "op-ack", "repository": self.rig.repository, "branch": "sc23/ack", "owner": "assign-ack", "base_ref": "main", "expected_base_sha": self.rig.initial_sha}
         binding = repository_request_binding("create_branch", **request)
         resource = repository_ref_resource(self.rig.repository, request["branch"])
@@ -498,21 +606,64 @@ class RepositoryConstructionPropertyQualificationHarness:
         commit_request = {"operation_id": "op-ack-commit", "repository": self.rig.repository, "branch": request["branch"], "owner": "assign-ack", "expected_head": self.rig.initial_sha, "files": _file_digests({"ack.txt": b"ack"}), "message": "ack\n"}
         commit_binding = repository_request_binding("commit", **commit_request)
         commit_task = _dispatch(self.rig, assignment_id="assign-ack", attempt=2, campaign_generation=1, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=resource, request_binding=commit_binding)
-        # Simulate a lost ACK: call commit() but discard the return
-        # value, then reconcile by directly checking real committed
-        # state (git HEAD + the receipts table) rather than trusting the
-        # deliberately-discarded response.
-        self.rig.facility.commit(commit_task, repository=self.rig.repository, branch=request["branch"], owner="assign-ack", expected_head=self.rig.initial_sha, files={"ack.txt": b"ack"}, message="ack\n", operation_id="op-ack-commit", foreman_epoch=1)
 
-        receipt = self.rig.facility.state.receipt("op-ack-commit")
-        real_head = self.rig.transport.resolve_ref(self.rig.repository, request["branch"])
-        reconciled = receipt is not None and receipt.result == real_head and real_head != self.rig.initial_sha
+        class _SimulatedCrashBeforeReceiptPersisted(RuntimeError):
+            pass
+
+        real_put_receipt = self.rig.facility.state.put_receipt
+
+        def _crash_before_persisting(receipt):
+            raise _SimulatedCrashBeforeReceiptPersisted("simulated crash after commit_files landed, before put_receipt")
+
+        self.rig.facility.state.put_receipt = _crash_before_persisting
+        crashed = False
+        try:
+            self.rig.facility.commit(commit_task, repository=self.rig.repository, branch=request["branch"], owner="assign-ack", expected_head=self.rig.initial_sha, files={"ack.txt": b"ack"}, message="ack\n", operation_id="op-ack-commit", foreman_epoch=1)
+        except _SimulatedCrashBeforeReceiptPersisted:
+            crashed = True
+        finally:
+            self.rig.facility.state.put_receipt = real_put_receipt
+
+        # The real git mutation genuinely landed (commit_files ran before
+        # the injected crash) -- confirm via real, independent state
+        # inspection -- but the receipt is genuinely absent (the crash
+        # happened before put_receipt).
+        real_head_after_crash = self.rig.transport.resolve_ref(self.rig.repository, request["branch"])
+        mutation_landed = real_head_after_crash != self.rig.initial_sha
+        receipt_missing_after_crash = self.rig.facility.state.receipt("op-ack-commit") is None
+
+        # A blind identical retry must now be genuinely rejected: the
+        # real ref already moved, so the expected_head fence correctly
+        # refuses it -- proving the caller cannot simply re-commit, and
+        # must reconcile via real, independent state inspection instead
+        # (which is exactly what mutation_landed/receipt_missing above
+        # just did).
+        retry_task = _dispatch(self.rig, assignment_id="assign-ack", attempt=3, campaign_generation=1, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=resource, request_binding=commit_binding)
+        retry_rejected = False
+        try:
+            self.rig.facility.commit(retry_task, repository=self.rig.repository, branch=request["branch"], owner="assign-ack", expected_head=self.rig.initial_sha, files={"ack.txt": b"ack"}, message="ack\n", operation_id="op-ack-commit", foreman_epoch=1)
+        except Gen1RepositoryFacilityError:
+            retry_rejected = True
+
+        reconciled = crashed and mutation_landed and receipt_missing_after_crash and retry_rejected
         state = QualificationState.QUALIFIED if reconciled else QualificationState.UNQUALIFIED
-        return RepositoryConstructionScenarioResult("reconciliation-lost-ack", FacilityProperty.RECONCILIATION, state, ("lost-ack-reconciled-via-real-receipt-and-git-head",), f"reconciled={reconciled}")
+        detail = f"crashed={crashed} mutation_landed={mutation_landed} receipt_missing_after_crash={receipt_missing_after_crash} retry_rejected={retry_rejected}"
+        return RepositoryConstructionScenarioResult("reconciliation-genuine-crash-before-receipt-persisted", FacilityProperty.RECONCILIATION, state, ("real-mutation-landed-receipt-missing-after-injected-crash", "blind-retry-rejected-by-real-fence"), detail)
 
     def run_commit_ack_semantics_scenario(self) -> RepositoryConstructionScenarioResult:
         result = self.run_reconciliation_and_ack_semantics_scenario()
         return RepositoryConstructionScenarioResult("commit-ack-semantics-reuses-reconciliation-mechanism", FacilityProperty.COMMIT_ACK_SEMANTICS, result.state, result.evidence_refs, result.detail)
+
+    #: Review finding (PR #84): the original version defined the bound
+    #: AFTER observing the samples (their own max), so any finite
+    #: duration -- including a severe regression -- always qualified.
+    #: This is the frozen, pre-declared acceptable bound: a genuine
+    #: measured excess FAILS qualification, it does not redefine the
+    #: bound to fit. Real local git create_branch against a disposable
+    #: repository is expected to complete in low milliseconds; 2.0s
+    #: leaves generous headroom for slow CI/disk while still being a
+    #: real, falsifiable ceiling.
+    LATENCY_BOUND_SECONDS = 2.0
 
     def run_latency_bounds_scenario(self, *, iterations: int = 5) -> RepositoryConstructionScenarioResult:
         durations: list[float] = []
@@ -526,19 +677,23 @@ class RepositoryConstructionPropertyQualificationHarness:
             self.rig.facility.create_branch(task, repository=request["repository"], branch=branch, owner=request["owner"], base_ref=request["base_ref"], expected_base_sha=request["expected_base_sha"], operation_id=request["operation_id"], foreman_epoch=1)
             durations.append(time.monotonic() - start)
         measured_max = max(durations)
-        bound_description = f"measured, not asserted: max {measured_max:.3f}s over {iterations} real local-git create_branch operations against a disposable repository"
-        return RepositoryConstructionScenarioResult("latency-bounds-measured", FacilityProperty.LATENCY_BOUNDS, QualificationState.QUALIFIED_WITH_BOUND, ("real-wall-clock-measurement-over-n-operations",), bound_description, bound_description=bound_description)
+        within_bound = measured_max <= self.LATENCY_BOUND_SECONDS
+        state = QualificationState.QUALIFIED_WITH_BOUND if within_bound else QualificationState.UNQUALIFIED
+        bound_description = f"frozen, pre-declared bound: <= {self.LATENCY_BOUND_SECONDS}s per real local-git create_branch operation" if within_bound else None
+        detail = f"measured_max={measured_max:.3f}s over {iterations} real operations; bound={self.LATENCY_BOUND_SECONDS}s; within_bound={within_bound}"
+        return RepositoryConstructionScenarioResult("latency-bounds-frozen-threshold", FacilityProperty.LATENCY_BOUNDS, state, ("real-wall-clock-measurement-against-a-frozen-bound",), detail, bound_description=bound_description)
 
     def qualify_declared_scenarios(self) -> tuple[PropertyQualificationRecord, ...]:
-        # Each underlying mutating scenario runs exactly once -- two of
-        # them (recovery-takeover/generation-enforcement, and
-        # reconciliation/commit-ack-semantics) each genuinely exercise
-        # ONE real mechanism that backs two separately-named SS9.1
-        # properties; re-invoking the same scenario a second time would
-        # replay real git/lease mutations against already-mutated state
-        # (e.g. a branch head that already moved), corrupting the
-        # second run rather than genuinely re-verifying anything.
-        takeover_result = self.run_recovery_takeover_and_generation_enforcement_scenario()
+        # Each underlying mutating scenario runs exactly once.
+        # RECONCILIATION/COMMIT_ACK_SEMANTICS genuinely share ONE real
+        # mechanism (a crash injected between the real git mutation and
+        # receipt persistence) -- re-invoking it a second time would
+        # replay real git/lease mutations against already-mutated state,
+        # corrupting the second run rather than genuinely re-verifying
+        # anything. RECOVERY_TAKEOVER and GENERATION_ENFORCEMENT are now
+        # each their own genuine scenario (review finding, PR #84: the
+        # original version only ever advanced epoch, never exercising
+        # generation fencing specifically).
         reconciliation_result = self.run_reconciliation_and_ack_semantics_scenario()
         results = (
             self.run_duplicate_key_scenario(),
@@ -548,8 +703,8 @@ class RepositoryConstructionPropertyQualificationHarness:
             self.run_enumeration_falsification_scenario(),
             self.run_observation_semantics_scenario(),
             self.run_effect_reach_scenario(),
-            takeover_result,
-            RepositoryConstructionScenarioResult("generation-enforcement-reuses-recovery-takeover-mechanism", FacilityProperty.GENERATION_ENFORCEMENT, takeover_result.state, takeover_result.evidence_refs, takeover_result.detail),
+            self.run_recovery_takeover_scenario(),
+            self.run_generation_enforcement_scenario(),
             reconciliation_result,
             self.run_latency_bounds_scenario(),
         )

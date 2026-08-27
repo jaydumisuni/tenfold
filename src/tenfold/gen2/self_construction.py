@@ -642,7 +642,10 @@ _ADJUDICATED_EXCEPTIONS: dict[tuple[str, str], str] = {
     ("tenfold.gen2.repository_construction_facility", "run_effect_reach_scenario"): (
         "same as run_duplicate_key_scenario -- SC-23 closure, docs/gen2/G2-27-SC23-closure-review-record.md"
     ),
-    ("tenfold.gen2.repository_construction_facility", "run_recovery_takeover_and_generation_enforcement_scenario"): (
+    ("tenfold.gen2.repository_construction_facility", "run_recovery_takeover_scenario"): (
+        "same as run_duplicate_key_scenario -- SC-23 closure, docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
+    ("tenfold.gen2.repository_construction_facility", "run_generation_enforcement_scenario"): (
         "same as run_duplicate_key_scenario -- SC-23 closure, docs/gen2/G2-27-SC23-closure-review-record.md"
     ),
     ("tenfold.gen2.repository_construction_facility", "run_reconciliation_and_ack_semantics_scenario"): (

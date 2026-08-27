@@ -189,6 +189,43 @@ ADMITTED_REPOSITORY_CONSTRUCTION_EFFECT_CLASS = "repository-construction-local-c
 
 
 def _is_admitted_repository_construction_identity(contract: FacilityContract) -> bool:
+    """SECURITY NOTE (review finding, PR #84, P1): this is an
+    identity-METADATA match against a `FacilityContract` -- plain,
+    freely-constructible dataclass fields, including
+    `property_qualifications`' own `evidence_refs` strings. It is NOT a
+    cryptographic binding proving the contract's properties were
+    genuinely produced by `repository_construction_facility.
+    RepositoryConstructionPropertyQualificationHarness`. Any caller in
+    the same process CAN construct a `FacilityContract` matching this
+    identity, mark every property `QUALIFIED` with arbitrary non-empty
+    `evidence_refs`, and this predicate returns `True`.
+
+    Genuine unforgeability is not achievable here purely in code: the
+    harness's own real evidence (after the PR #84 fix making
+    `LATENCY_BOUNDS` a frozen-threshold pass/fail rather than a
+    measured value) is deterministic, open-source, and public --
+    identical on every genuine run -- so a static digest of "genuine"
+    evidence would carry no more real assurance than the identity match
+    already does; anyone can read the harness's own source and
+    replicate its exact evidence strings. The real, load-bearing
+    enforcement boundary is therefore the SAME one every other
+    `PropertyQualificationRecord`/Trust Table row in this codebase
+    already relies on: construction-time code review (this predicate's
+    hardcoded constants can only change via a reviewed, merged PR),
+    the mutation fixtures that specifically test THIS gate's own logic
+    (`MUT-G14-REPOCONSTRUCT-*`), and disciplined callers.
+
+    Binding rule for any future caller (G2-28+ construction included):
+    a `FacilityContract` claiming this identity must ONLY ever be
+    constructed by genuinely, freshly running
+    `RepositoryConstructionPropertyQualificationHarness.
+    qualify_declared_scenarios()` in trusted, reviewed code (see
+    `repository_construction_facility.build_admitted_repository_construction_contract`).
+    NEVER deserialize or otherwise accept a `FacilityContract` claiming
+    this identity from external/untrusted input (network, user-supplied
+    JSON, another process) without independently re-running the real
+    harness -- this predicate cannot and does not distinguish a
+    genuine result from a hand-typed one."""
     return (
         contract.facility_id == ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_ID
         and contract.facility_generation == ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_GENERATION
