@@ -284,27 +284,30 @@ pending-specification, unchanged from the pre-existing baseline).
 
 **No live Gen1 execution authority is removed. Gen1 remains
 construction Foreman.** G2-27's own gate mechanism is genuinely,
-rigorously built and PROVEN, and it honestly concludes self-construction
-is not yet reached — specifically because:
+rigorously built and PROVEN, and it honestly concluded self-construction
+was not yet reached at the time of this milestone — specifically
+because:
 
-- **SC-16** (evidence admission, part of "evidence admission, Proof
-  Graph, deterministic falsification topology, assurance routing and
-  external assurance reconciliation"): the `"evidence_packet"` Trust
-  Table row's provenance and detector/tool/input-binding checks were
-  never built (G2-19's own disclosed partial construction, never
-  completed by any later milestone).
+- **SC-16** (evidence admission): the `"evidence_packet"` Trust Table
+  row's provenance and detector/tool/input-binding checks were never
+  built (G2-19's own disclosed partial construction, never completed by
+  any later milestone). **Since closed** — see
+  `docs/gen2/G2-19-SC16-closure-review-record.md` (PR #83, merged
+  `0b134d7`). Re-verified directly: `derive_condition_qualifications()`
+  now genuinely qualifies SC-16.
 - **SC-23** (qualified repository construction Facility): G2-14's own
   critical gate still unconditionally disables `REAL_MUTATING` Facility
   authority in both the Python and Rust sides; no Gen2-owned, qualified,
   mutating repository-construction Facility class exists anywhere in
-  `tenfold.gen2`.
+  `tenfold.gen2`. **Still open.**
 
 Per the roadmap's own design, `G2-28` ("Gen2 Self-Construction
 Campaign") requires exactly the capability this gate found absent —
 "Gen2 consumes approved remaining roadmap... using only Gen2 live
 execution authority." Proceeding to G2-28, or removing any live Gen1
 construction authority, is not authorized by this result and has not
-been done.
+been done. `self_construction_capable` remains `False`, now driven by
+SC-23 alone (directly re-verified after SC-16's closure).
 
 ## Does not enable
 
@@ -313,5 +316,6 @@ been done.
 - removal of any live Gen1 execution authority;
 - G2-28 construction, which explicitly requires the capability this
   gate found genuinely absent;
-- a future re-attempt of this gate before SC-16 and/or SC-23 are
-  genuinely closed by dedicated future construction work.
+- a future re-attempt of this gate before SC-23 is genuinely closed by
+  dedicated future construction work (SC-16 already closed, see
+  `docs/gen2/G2-19-SC16-closure-review-record.md`).
