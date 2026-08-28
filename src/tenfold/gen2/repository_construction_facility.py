@@ -192,10 +192,23 @@ def _reject_symlinked_git_storage_for_every_registered_repository(transport: Loc
     if ANY entry anywhere beneath either one is a symlink, for ANY
     registered repository -- mirroring the same no-symlinks-followed
     discipline `LocalGitRepositoryTransport` itself already applies to
-    the repository root."""
+    the repository root.
+
+    METADATA-PATH FINDING (review finding, PR #84, round 12, P1,
+    reproduced by the reviewer): `objects` and `refs` are not the only
+    Git-internal paths the admitted operations write to. The reviewer
+    reproduced `create_branch`'s own real `update-ref` call writing the
+    new branch's REFLOG entry through a symlinked `.git/logs/refs/heads`
+    into an external directory, and separately showed a symlinked
+    `.git/config` would let hook neutralization's own `git config
+    core.hooksPath` write land externally too. `logs` (a directory) and
+    `config` (a single file) are now scanned the same way -- `logs`
+    recursively via `_find_symlink_beneath` (which also correctly
+    rejects `config` itself being a symlink, its very first check,
+    without needing a directory walk)."""
     for name, registered in transport._repositories.items():  # noqa: SLF001 -- genuine safety enforcement; see docstring
         git_dir = registered.root / ".git"
-        for internal in ("objects", "refs"):
+        for internal in ("objects", "refs", "logs", "config"):
             found = _find_symlink_beneath(git_dir / internal)
             if found is not None:
                 raise RepositoryConstructionQualificationError(
@@ -349,6 +362,36 @@ def tree_entries_at(rig: DisposableRepositoryConstructionRig, sha: str) -> froze
         mode, _entry_type, blob_sha = meta.split()
         entries.add((path, mode, blob_sha))
     return frozenset(entries)
+
+
+def real_commit_parent(rig: DisposableRepositoryConstructionRig, sha: str) -> str | None:
+    """Review finding (PR #84, round 12, P1, reproduced by the
+    reviewer): a complete-tree match alone does not prove the landed
+    commit is genuinely a CHILD of the requested `expected_head` -- a
+    faulty (or adversarial) `commit_files` could replace the landed
+    commit with an unrelated ROOT commit (no parent, or the wrong
+    parent) that merely happens to carry the exact expected tree,
+    silently corrupting the branch's real history while still passing
+    a tree-only check. Returns the real first-parent SHA via `git
+    rev-parse <sha>^`, or `None` if `sha` has no parent (a root
+    commit) -- a reconciling caller must confirm this equals the
+    original `expected_head` before treating the mutation as genuinely
+    matching what was requested."""
+    result = subprocess.run(["git", "-C", str(rig.repo_root), "rev-parse", f"{sha}^"], capture_output=True, text=True)
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
+def real_commit_message(rig: DisposableRepositoryConstructionRig, sha: str) -> str:
+    """Companion to `real_commit_parent`: returns the EXACT, real commit
+    message stored in the commit object (via `git cat-file -p`, taking
+    everything after the header/body blank-line separator -- unlike
+    `git log --format=%B`, which appends its own extra trailing
+    newline not present in the stored object)."""
+    raw = subprocess.run(["git", "-C", str(rig.repo_root), "cat-file", "-p", sha], check=True, capture_output=True, text=True).stdout
+    _header, _separator, message = raw.partition("\n\n")
+    return message
 
 
 def build_disposable_local_git_facility(tmp_dir: Path) -> DisposableRepositoryConstructionRig:
@@ -997,7 +1040,25 @@ class RepositoryConstructionPropertyQualificationHarness:
             complete_tree_matches = tree_entries_at(self.rig, real_head_after_crash) == expected_tree
         else:
             complete_tree_matches = False
-        mutation_landed = complete_tree_matches
+        # Review finding (PR #84, round 12, P1, reproduced by the
+        # reviewer): a matching resulting TREE alone does not prove the
+        # landed commit is genuinely a child of the requested
+        # expected_head -- a faulty commit_files could replace the
+        # landed commit with an unrelated ROOT commit (no parent) that
+        # merely happens to carry the exact expected tree, still
+        # passing complete_tree_matches while silently corrupting the
+        # branch's real history. This also verifies the commit's real
+        # PARENT equals the original expected_head and its real
+        # MESSAGE equals the requested message before ever treating the
+        # mutation as genuinely matching what was requested.
+        if complete_tree_matches:
+            commit_lineage_matches = (
+                real_commit_parent(self.rig, real_head_after_crash) == self.rig.initial_sha
+                and real_commit_message(self.rig, real_head_after_crash) == commit_request["message"]
+            )
+        else:
+            commit_lineage_matches = False
+        mutation_landed = complete_tree_matches and commit_lineage_matches
         receipt_missing_after_crash = self.rig.facility.state.receipt("op-ack-commit") is None
 
         # Review finding (PR #84, round 11, P1, reproduced by the
@@ -1077,7 +1138,8 @@ class RepositoryConstructionPropertyQualificationHarness:
         )
         state = QualificationState.QUALIFIED if reconciled else QualificationState.UNQUALIFIED
         detail = (
-            f"crashed={crashed} mutation_landed={mutation_landed} receipt_missing_after_crash={receipt_missing_after_crash} "
+            f"crashed={crashed} mutation_landed={mutation_landed} commit_lineage_matches={commit_lineage_matches} "
+            f"receipt_missing_after_crash={receipt_missing_after_crash} "
             f"durable_receipt_reconstructed={durable_receipt_reconstructed} retry_rejected={retry_rejected} "
             f"duplicate_key_rejected={duplicate_key_rejected} head_unchanged_after_duplicate_key_attempt={head_unchanged_after_duplicate_key_attempt}"
         )

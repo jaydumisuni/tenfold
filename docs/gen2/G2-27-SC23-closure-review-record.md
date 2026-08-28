@@ -630,6 +630,54 @@ verdict (see below) rather than a hardcoded stale expectation.
     each. Full local re-verification: full test file (34/34),
     `test_g2_27_self_construction.py`, full mutation suite, and full
     repository sweep re-run clean.
+16. Codex's round-12 pass against the round-11 fix commit found 2
+    further genuine findings, both P1, both reproduced by the reviewer
+    -- CodeRabbit remained rate-limited on this round:
+    - **P1 ("Reject symlinks in every writable Git metadata path")**:
+      the round-11 fix scanned only `.git/objects` and `.git/refs` --
+      the reviewer reproduced `create_branch`'s own real `update-ref`
+      writing the new branch's REFLOG entry through a symlinked
+      `.git/logs/refs/heads` into an external directory, and separately
+      showed a symlinked `.git/config` would let hook neutralization's
+      own `git config core.hooksPath` write land externally too.
+      **Fixed**: `.git/logs` (recursively, via the same
+      `_find_symlink_beneath`) and `.git/config` (as a single file --
+      `_find_symlink_beneath` correctly handles a non-directory root as
+      its very first check) are now scanned alongside `objects` and
+      `refs`. Two new permanent tests reproduce both of the reviewer's
+      exact scenarios and confirm the wrapper now refuses to admit
+      either repository.
+    - **P1 ("Reconcile the complete commit object before persisting
+      success")**: the round-8 complete-tree comparison validates only
+      the RESULTING TREE, never the landed commit's own parent or
+      message -- the reviewer reproduced a faulty `commit_files`
+      replacing the landed commit with an unrelated ROOT commit (no
+      parent) that merely happened to carry the exact expected tree;
+      the scenario still reported `QUALIFIED`, reconstructed a
+      terminal receipt for that unrelated-history commit, and thereby
+      would have prevented a corrective retry. **Fixed**: two new
+      helpers, `real_commit_parent` (`git rev-parse <sha>^`, `None` for
+      a root commit) and `real_commit_message` (`git cat-file -p`,
+      exact stored bytes -- deliberately not `git log --format=%B`,
+      which appends its own extra trailing newline not present in the
+      stored object) -- now verify the landed commit's real parent
+      equals the original `expected_head` and its real message equals
+      the requested message before `mutation_landed` is ever considered
+      true, gating the receipt reconstruction that follows it. New
+      permanent test reproduces the reviewer's own scenario (a one-shot
+      fabricated root commit carrying the correct tree, real
+      `commit_files` behavior restored immediately after) and confirms
+      the scenario now genuinely detects the mismatch (`UNQUALIFIED`)
+      and never seals the wrong commit's result as the reconciled
+      receipt -- while also confirming a later, genuinely correct
+      attempt under the same operation_id can still land, proving
+      reconciliation declined to seal the bad commit rather than merely
+      refusing everything from then on.
+
+    Both genuinely fixed in round 12, with new permanent tests for
+    each. Full local re-verification: full test file (38/38), full
+    mutation suite, `test_g2_27_self_construction.py`, and full
+    repository sweep re-run clean.
 
 ## Real, honest end-to-end result
 

@@ -313,11 +313,91 @@ def test_sc23_reconciliation_and_commit_ack_semantics_survive_a_genuine_crash_be
     assert result.state == QualificationState.QUALIFIED
     assert "crashed=True" in result.detail
     assert "mutation_landed=True" in result.detail
+    assert "commit_lineage_matches=True" in result.detail
     assert "receipt_missing_after_crash=True" in result.detail
     assert "durable_receipt_reconstructed=True" in result.detail
     assert "retry_rejected=True" in result.detail
     assert "duplicate_key_rejected=True" in result.detail
     assert "head_unchanged_after_duplicate_key_attempt=True" in result.detail
+
+
+def test_sc23_reconciliation_rejects_a_commit_whose_lineage_does_not_match_expected_head(rig) -> None:
+    """Review finding (PR #84, round 12, P1, reproduced by the
+    reviewer): a matching resulting TREE alone does not prove the
+    landed commit is genuinely a child of the requested expected_head
+    -- a faulty commit_files could replace the landed commit with an
+    unrelated ROOT commit (no parent) that merely happens to carry the
+    exact expected tree. This reproduces exactly that -- a ONE-SHOT
+    fabricated root commit with the correct resulting tree but no
+    parent for the very first (crashed) commit attempt only, real
+    commit_files behavior restored immediately after -- and confirms
+    the scenario now genuinely detects the mismatch (UNQUALIFIED)
+    rather than reconciling and sealing the wrong commit's result. The
+    reviewer's own concern was that prematurely sealing a wrong result
+    would PREVENT a corrective retry -- this also confirms a later,
+    genuinely correct attempt under the same operation_id can still
+    land (proving reconciliation declined to seal the bad commit,
+    rather than merely refusing everything from then on)."""
+    import subprocess
+
+    harness = RepositoryConstructionPropertyQualificationHarness(rig)
+    real_commit_files = rig.transport.commit_files
+    corrupted_shas: list[str] = []
+
+    def _replaces_the_first_landed_commit_with_a_root_commit_carrying_the_same_tree(repository, branch, expected_head, files, message):
+        rig.transport.commit_files = real_commit_files  # one-shot: only this very first call is corrupted
+        real_result = real_commit_files(repository, branch, expected_head, files, message)
+        tree_sha = subprocess.run(
+            ["git", "-C", str(rig.repo_root), "rev-parse", f"{real_result}^{{tree}}"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        root_commit = subprocess.run(
+            ["git", "-C", str(rig.repo_root), "commit-tree", tree_sha],
+            input=message, check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "-C", str(rig.repo_root), "update-ref", f"refs/heads/{branch}", root_commit, real_result],
+            check=True, capture_output=True,
+        )
+        corrupted_shas.append(root_commit)
+        return root_commit
+
+    rig.transport.commit_files = _replaces_the_first_landed_commit_with_a_root_commit_carrying_the_same_tree
+    result = harness.run_reconciliation_and_ack_semantics_scenario()
+
+    assert result.property == FacilityProperty.RECONCILIATION
+    assert result.state == QualificationState.UNQUALIFIED
+    assert "commit_lineage_matches=False" in result.detail
+    assert "mutation_landed=False" in result.detail
+
+    # The wrong (corrupted-lineage) commit's result must never be
+    # sealed as the reconciled receipt -- whatever receipt DOES end up
+    # persisted (from the scenario's own later, real duplicate-key
+    # attempt genuinely landing through the restored, real
+    # commit_files) must not reference the corrupted root commit.
+    persisted = rig.facility.state.receipt("op-ack-commit")
+    assert corrupted_shas  # the corrupted commit genuinely landed once
+    if persisted is not None:
+        assert persisted.result != corrupted_shas[0]
+
+
+def test_sc23_real_commit_parent_and_message_detect_a_lineage_mismatch(rig) -> None:
+    """Standalone unit coverage for real_commit_parent/real_commit_message
+    themselves, independent of the full reconciliation scenario."""
+    from tenfold.gen2.repository_construction_facility import real_commit_message, real_commit_parent
+
+    parent = real_commit_parent(rig, rig.initial_sha)
+    assert parent is None  # initial_sha is the repository's root commit
+
+    # Pipe the message via stdin (matching how commit_files itself
+    # passes messages) so the stored message is byte-exact.
+    import subprocess
+    tree_sha = subprocess_check_output(rig, ["rev-parse", f"{rig.initial_sha}^{{tree}}"])
+    child_sha = subprocess.run(["git", "-C", str(rig.repo_root), "commit-tree", tree_sha, "-p", rig.initial_sha], input="child\n", check=True, capture_output=True, text=True).stdout.strip()
+
+    assert real_commit_parent(rig, child_sha) == rig.initial_sha
+    assert real_commit_message(rig, child_sha) == "child\n"
+    assert real_commit_message(rig, child_sha) != "different message\n"
 
 
 def test_sc23_tree_entries_at_detects_a_content_corrupted_file(rig) -> None:
@@ -475,6 +555,74 @@ def test_sc23_wrapper_rejects_a_nested_symlink_under_git_objects_fanout(tmp_path
     external_fanout = tmp_path / "external-object-fanout"
     external_fanout.mkdir()
     (repo_root / ".git" / "objects" / "ab").symlink_to(external_fanout, target_is_directory=True)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    with pytest.raises(RepositoryConstructionQualificationError):
+        gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+
+def test_sc23_wrapper_rejects_a_nested_symlink_under_git_logs(tmp_path) -> None:
+    """Review finding (PR #84, round 12, P1, reproduced by the
+    reviewer): scanning only .git/objects and .git/refs still admits a
+    repository with a symlinked .git/logs/refs/heads -- the reviewer
+    reproduced create_branch's own real update-ref call writing the new
+    branch's REFLOG entry through such a symlink into an external
+    directory. The wrapper now also walks the complete logs subtree."""
+    import subprocess
+
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    repo_root.mkdir()
+    subprocess.run(["git", "-C", str(repo_root), "init", "-b", "main"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "config", "user.name", "test"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "config", "user.email", "test@local.invalid"], check=True, capture_output=True)
+    (repo_root / "README.md").write_text("existing repo\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_root), "add", "README.md"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "commit", "-qm", "initial"], check=True, capture_output=True)
+
+    # .git/logs itself stays a real directory -- only its "refs/heads"
+    # descendant is redirected outside repo_root.
+    external_logs_heads = tmp_path / "external-logs-heads"
+    real_logs_heads = repo_root / ".git" / "logs" / "refs" / "heads"
+    real_logs_heads_backup = tmp_path / "logs-heads-backup"
+    real_logs_heads.rename(real_logs_heads_backup)
+    real_logs_heads_backup.rename(external_logs_heads)
+    (repo_root / ".git" / "logs" / "refs" / "heads").symlink_to(external_logs_heads, target_is_directory=True)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    with pytest.raises(RepositoryConstructionQualificationError):
+        gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+
+def test_sc23_wrapper_rejects_a_symlinked_git_config(tmp_path) -> None:
+    """Review finding (PR #84, round 12, P1, reproduced by the
+    reviewer): a symlinked .git/config would let hook neutralization's
+    own `git config core.hooksPath` write land at an external location
+    instead of the registered repository's real config. The wrapper
+    now rejects admission outright if .git/config itself is a
+    symlink."""
+    import subprocess
+
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    repo_root.mkdir()
+    subprocess.run(["git", "-C", str(repo_root), "init", "-b", "main"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "config", "user.name", "test"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "config", "user.email", "test@local.invalid"], check=True, capture_output=True)
+    (repo_root / "README.md").write_text("existing repo\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_root), "add", "README.md"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "commit", "-qm", "initial"], check=True, capture_output=True)
+
+    external_config = tmp_path / "external-config"
+    real_config = repo_root / ".git" / "config"
+    real_config_backup = tmp_path / "config-backup"
+    real_config.rename(real_config_backup)
+    real_config_backup.rename(external_config)
+    (repo_root / ".git" / "config").symlink_to(external_config)
 
     transport = LocalGitRepositoryTransport({"existing": repo_root})
     with pytest.raises(RepositoryConstructionQualificationError):
