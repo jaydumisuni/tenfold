@@ -98,7 +98,7 @@ ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_IDENTITY = _RepositoryConstructionFaci
 )
 
 
-def _neutralize_hooks_for_every_registered_repository(transport: LocalGitRepositoryTransport) -> dict[str, Path]:
+def _neutralize_hooks_for_every_registered_repository(transport: LocalGitRepositoryTransport) -> "dict[str, _EstablishedHooksNeutralization]":
     """Review finding (PR #84, round 8, reproduced-in-principle by the
     reviewer): `build_disposable_local_git_facility` only neutralized
     hooks for the ONE repository it itself freshly creates -- this
@@ -134,12 +134,12 @@ def _neutralize_hooks_for_every_registered_repository(transport: LocalGitReposit
     argv-list `subprocess.run`, no shell) rather than a second, ad-hoc
     `subprocess.run` call.
 
-    Returns the `{name: no_hooks_dir}` mapping it established, so a
-    caller (see `_hooks_neutralization_still_intact`) can later confirm
-    -- CHEAPLY, no subprocess spawn -- that neutralization is still in
-    place before paying for a fresh `mkdtemp` + `git config` call
-    again."""
-    established: dict[str, Path] = {}
+    Returns the `{name: _EstablishedHooksNeutralization}` mapping it
+    established, so a caller (see `_hooks_neutralization_still_intact`)
+    can later confirm -- CHEAPLY, no subprocess spawn -- that
+    neutralization is still in place before paying for a fresh
+    `mkdtemp` + `git config` call again."""
+    established: dict[str, _EstablishedHooksNeutralization] = {}
     for name, registered in transport._repositories.items():  # noqa: SLF001 -- genuine safety enforcement; see docstring
         repo_root = registered.root
         git_dir = repo_root / ".git"
@@ -149,11 +149,23 @@ def _neutralize_hooks_for_every_registered_repository(transport: LocalGitReposit
             )
         no_hooks_dir = Path(tempfile.mkdtemp(prefix="tenfold-gen2-no-hooks-", dir=str(git_dir)))
         transport._run(name, "config", "core.hooksPath", str(no_hooks_dir))  # noqa: SLF001 -- see docstring
-        established[name] = no_hooks_dir
+        config_path = git_dir / "config"
+        established[name] = _EstablishedHooksNeutralization(no_hooks_dir, config_path.read_text(encoding="utf-8", errors="strict"))
     return established
 
 
-def _hooks_neutralization_still_intact(transport: LocalGitRepositoryTransport, established: dict[str, Path]) -> bool:
+@dataclass(frozen=True)
+class _EstablishedHooksNeutralization:
+    no_hooks_dir: Path
+    #: The COMPLETE, exact byte content of `.git/config` immediately
+    #: after `git config core.hooksPath <no_hooks_dir>` wrote it --
+    #: see `_hooks_neutralization_still_intact`'s own docstring for
+    #: why exact-content comparison, not substring matching or
+    #: git-config-semantics parsing, is what this actually needs.
+    config_snapshot: str
+
+
+def _hooks_neutralization_still_intact(transport: LocalGitRepositoryTransport, established: "dict[str, _EstablishedHooksNeutralization]") -> bool:
     """Performance finding (PR #86, round 14): re-running the full
     `_neutralize_hooks_for_every_registered_repository` (a fresh
     `mkdtemp` plus a real `git config` subprocess spawn, per
@@ -173,18 +185,50 @@ def _hooks_neutralization_still_intact(transport: LocalGitRepositoryTransport, e
     again -- preserving the exact same security property (hooks
     genuinely neutralized before every mutation) at a fraction of the
     cost in the overwhelmingly common case where nothing changed
-    between mutations."""
+    between mutations.
+
+    SUBSTRING-MATCH FINDING (review finding, PR #86, round 15, P1,
+    reproduced independently by both reviewers): the original version
+    of this check searched for `no_hooks_dir`'s own path text as a
+    SUBSTRING of `.git/config`'s raw content -- which is fooled by
+    anything that keeps the trusted text present WITHOUT it being the
+    actual EFFECTIVE value git uses. Codex reproduced `git config
+    --add core.hooksPath <malicious>` (git's own `--add` APPENDS a
+    second `hooksPath` entry rather than replacing the first; git uses
+    the LAST one) still containing the original trusted path text,
+    while the ACTIVE value became the attacker's. CodeRabbit
+    reproduced appending the trusted path as a `# comment` line after
+    setting a malicious active value -- also still "present" as a
+    substring while never actually being used. Correctly interpreting
+    git-config's own semantics (comments, duplicate keys, last-value-
+    wins, quoting/escaping) well enough to defend against every such
+    trick would mean re-deriving a real INI-with-git's-own-dialect
+    parser here -- a correctness-critical undertaking exactly the kind
+    this codebase avoids re-deriving (G2-00 SS15). This does something
+    provably simpler and stronger instead: it never tries to
+    UNDERSTAND the config file's meaning at all. It captures the
+    COMPLETE, exact byte content of `.git/config` immediately after
+    `_neutralize_hooks_for_every_registered_repository` itself wrote
+    it (`_EstablishedHooksNeutralization.config_snapshot`), and now
+    requires the CURRENT content to be BYTE-IDENTICAL to that snapshot
+    -- ANY change at all (an appended entry, a comment, a reordered
+    line, anything) fails the cheap check and forces the genuine,
+    expensive re-neutralization. Since identical bytes parse
+    identically under git's own (or any) config reader, this is
+    airtight against every trick that fools a substring or naive-parse
+    check, without this code needing to correctly reimplement git's
+    own config grammar at all."""
     for name, registered in transport._repositories.items():  # noqa: SLF001 -- see _neutralize_hooks_for_every_registered_repository's own docstring
-        no_hooks_dir = established.get(name)
-        if no_hooks_dir is None:
+        snapshot = established.get(name)
+        if snapshot is None:
             return False
         git_dir = registered.root / ".git"
         if git_dir.is_symlink() or not git_dir.is_dir():
             return False
-        if no_hooks_dir.is_symlink() or not no_hooks_dir.is_dir():
+        if snapshot.no_hooks_dir.is_symlink() or not snapshot.no_hooks_dir.is_dir():
             return False
         try:
-            if any(no_hooks_dir.iterdir()):
+            if any(snapshot.no_hooks_dir.iterdir()):
                 # Something was planted directly inside the neutralized
                 # directory itself (e.g. a reference-transaction file)
                 # WITHOUT changing core.hooksPath -- the path reference
@@ -197,17 +241,10 @@ def _hooks_neutralization_still_intact(transport: LocalGitRepositoryTransport, e
         if config_path.is_symlink() or not config_path.is_file():
             return False
         try:
-            config_text = config_path.read_text(encoding="utf-8", errors="strict")
+            current_config_text = config_path.read_text(encoding="utf-8", errors="strict")
         except OSError:
             return False
-        # git's own INI-style config writer escapes backslashes (git
-        # config's own escape character) when it writes a Windows path
-        # value -- compare against that escaped form, not Python's own
-        # raw `str(Path(...))` rendering, or every check on Windows
-        # would spuriously report "not intact" and force the expensive
-        # fallback on every single call, defeating this function's own
-        # purpose.
-        if str(no_hooks_dir).replace("\\", "\\\\") not in config_text:
+        if current_config_text != snapshot.config_snapshot:
             return False
     return True
 
@@ -455,21 +492,26 @@ def gen1_wrap_repository_construction_facility(transport, state_store, authority
     return _ContainmentReCheckedRepositoryFacility(facility, transport, established_no_hooks_dirs)
 
 
-#: Deliberately narrow: ONLY the two methods that define the admitted
-#: identity's own local-commit-only PROMISE (they must unconditionally
-#: raise; an instance-level override is the one way to defeat that
-#: promise, per the reviewer's own reproduction). `commit_files`/
-#: `create_branch`/`resolve_ref`/`read_file` are deliberately EXCLUDED:
-#: this same harness legitimately monkey-patches `commit_files`
-#: (mirroring the already-established `state.put_receipt` crash-
-#: injection pattern) to simulate a lost-ACK/corrupted-mutation window
-#: for RECONCILIATION qualification -- a disclosed, intentional testing
-#: technique, not the attack this check exists to catch. Sealing those
-#: names too would reject that legitimate technique, not just a
-#: malicious one; the actual security boundary this identity promises
-#: is "no remote push/PR/merge effects", not "the local commit
-#: mechanism can never be substituted for testing."
-_SEALED_TRANSPORT_METHOD_NAMES = ("open_pull_request", "merge_pull_request")
+#: Review finding (PR #86, round 15, P1, reproduced by the reviewer):
+#: an earlier version of this closure narrowed this set to only
+#: `open_pull_request`/`merge_pull_request`, EXCLUDING `commit_files`/
+#: `create_branch` because the harness's own reconciliation scenario
+#: legitimately monkey-patched `commit_files` for fault-injection
+#: testing. The reviewer correctly pointed out that this left a real
+#: gap open: a caller overriding `commit_files`/`create_branch` on the
+#: EXACT admitted transport instance after construction can perform
+#: arbitrary out-of-repository effects while still passing every other
+#: check, and the harness's own use of the SAME mechanism it needed to
+#: reject was proof the mechanism itself was genuinely exploitable,
+#: not evidence it was safe to leave open. Fixed correctly this time:
+#: the full set Codex originally named is sealed, and the harness's
+#: OWN fault injection was moved to a dedicated, non-transport test
+#: seam instead (`run_reconciliation_and_ack_semantics_scenario`'s
+#: `post_crash_corruption` parameter) -- never touching
+#: `self.rig.transport`'s own methods at all, so the SAME mechanism a
+#: real attacker would need is never exercised, even for legitimate
+#: testing.
+_SEALED_TRANSPORT_METHOD_NAMES = ("resolve_ref", "read_file", "create_branch", "commit_files", "open_pull_request", "merge_pull_request")
 
 
 def _reject_instance_overridden_transport_methods(transport: LocalGitRepositoryTransport) -> None:
@@ -483,11 +525,15 @@ def _reject_instance_overridden_transport_methods(transport: LocalGitRepositoryT
     reproduced exactly this: the exact-type check passed, but
     `facility.open_pr(...)` still invoked the injected, remote-capable
     override instead of `LocalGitRepositoryTransport`'s own real
-    method (which unconditionally raises by design). A genuinely
-    unmodified instance's own `__dict__` never contains either of
-    these two names at all (both live on the class); this rejects
-    admission (or a later mutating/transport-delegating call) if it
-    does."""
+    method (which unconditionally raises by design). A round-15
+    follow-up (see `_SEALED_TRANSPORT_METHOD_NAMES`'s own comment)
+    showed the same is true of `commit_files`/`create_branch`: an
+    override there can perform arbitrary out-of-repository effects
+    while still passing every other admitted-identity check. A
+    genuinely unmodified instance's own `__dict__` never contains any
+    of `LocalGitRepositoryTransport`'s real public method names at all
+    (they all live on the class); this rejects admission (or a later
+    mutating/transport-delegating call) if it does."""
     overridden = sorted(name for name in _SEALED_TRANSPORT_METHOD_NAMES if name in vars(transport))
     if overridden:
         raise RepositoryConstructionQualificationError(
@@ -514,7 +560,7 @@ class _ContainmentReCheckedRepositoryFacility:
     `merge_pull_request` unconditionally raise by design -- only an
     instance-level override could make them do anything else)."""
 
-    def __init__(self, facility, transport: LocalGitRepositoryTransport, established_no_hooks_dirs: dict[str, Path]) -> None:
+    def __init__(self, facility, transport: LocalGitRepositoryTransport, established_no_hooks_dirs: "dict[str, _EstablishedHooksNeutralization]") -> None:
         # `facility` deliberately left untyped: an explicit
         # `RepositoryFacility` annotation here would itself be an
         # undisclosed live-Gen1-authority reference under the residual
@@ -1257,7 +1303,22 @@ class RepositoryConstructionPropertyQualificationHarness:
             f"stale_generation_rejected={stale_generation_rejected} current_generation_admitted={current_generation_admitted}",
         )
 
-    def run_reconciliation_and_ack_semantics_scenario(self) -> RepositoryConstructionScenarioResult:
+    def run_reconciliation_and_ack_semantics_scenario(self, *, post_crash_corruption=None) -> RepositoryConstructionScenarioResult:
+        # TEST-SEAM PARAMETER (review finding, PR #86, round 15, P1,
+        # reproduced by the reviewer): `commit_files`/`create_branch`
+        # are now sealed against instance-level overrides (see
+        # `_reject_instance_overridden_transport_methods`) -- the SAME
+        # mechanism a real attacker would need to defeat the
+        # local-commit-only boundary, so this harness must no longer
+        # use it either, even for legitimate fault-injection testing.
+        # `post_crash_corruption`, if supplied, is called with the
+        # REAL commit sha the crash-injected mutation genuinely landed
+        # (via the real, unmodified `commit_files`) -- letting a
+        # caller apply raw, direct git manipulation (never touching
+        # `self.rig.transport`'s own methods) to simulate a
+        # corrupted/unrelated-history landed commit, entirely outside
+        # the sealed transport surface.
+        #
         # Review finding (PR #84): merely discarding commit()'s return
         # value does NOT simulate a lost ACK, since _idempotent() has
         # already persisted the receipt before commit() returns -- the
@@ -1303,6 +1364,9 @@ class RepositoryConstructionPropertyQualificationHarness:
         # check). This reads back the real committed file content and
         # compares it against the exact requested bytes.
         real_head_after_crash = self.rig.transport.resolve_ref(self.rig.repository, request["branch"])
+        if post_crash_corruption is not None:
+            post_crash_corruption(real_head_after_crash)
+            real_head_after_crash = self.rig.transport.resolve_ref(self.rig.repository, request["branch"])
         head_moved = real_head_after_crash != self.rig.initial_sha
         # Review finding (PR #84, round 5): checking one requested
         # blob's content does not prove the COMPLETE resulting tree

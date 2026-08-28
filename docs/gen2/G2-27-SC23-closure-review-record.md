@@ -844,6 +844,63 @@ verdict (see below) rather than a hardcoded stale expectation.
     local re-verification: full test file (46/46), full mutation suite
     (37/37), `test_g2_27_self_construction.py` (33/33), and full
     repository sweep re-run clean.
+15. A fresh review pass against the round-14 commit found the
+    round-14 hook re-check and transport-sealing fixes were real but
+    still incomplete -- 3 findings (2 Codex, 1 CodeRabbit):
+    - **P1 ("Validate the effective hooksPath value"), Codex, and
+      independently, CodeRabbit ("Parse `core.hooksPath` as Git
+      configuration", CWE-78)**: the round-14 cheap check searched for
+      the trusted `no_hooks_dir` path as a SUBSTRING of `.git/config`'s
+      raw text. Codex reproduced `git config --add core.hooksPath
+      <malicious>` -- git's own `--add` APPENDS a second `hooksPath`
+      entry rather than replacing the first, and uses the LAST one, so
+      the trusted text remained present as a substring while the
+      ACTIVE value became malicious. CodeRabbit reproduced appending
+      the trusted path as a `# comment` line after setting a malicious
+      active value -- also "present" as a substring while never
+      actually used. **Fixed**: rather than trying to correctly
+      interpret git-config's own semantics (comments, duplicate keys,
+      last-value-wins, escaping) -- effectively re-deriving a real INI
+      parser, exactly the kind of re-derivation this codebase avoids
+      (G2-00 SS15) -- the cheap check now captures the COMPLETE, exact
+      byte content of `.git/config` immediately after establishing
+      neutralization (`_EstablishedHooksNeutralization.config_snapshot`)
+      and requires the current content to be BYTE-IDENTICAL to that
+      snapshot. Since identical bytes parse identically under any
+      config reader, this is airtight against every substring/partial-
+      parse trick without needing to correctly reimplement git's own
+      config grammar. Two new permanent tests reproduce both reviewers'
+      exact attacks.
+    - **P1 ("Seal local mutation methods as well"), Codex**: the
+      round-14 fix deliberately narrowed the sealed transport-method
+      set to exclude `commit_files`/`create_branch`, reasoning that
+      this harness's own legitimate `commit_files` monkey-patching
+      (for RECONCILIATION fault-injection testing) meant the mechanism
+      was safe to leave open. The reviewer correctly identified this
+      as backwards: the harness's own need to use that exact mechanism
+      was evidence it was genuinely exploitable, not evidence it was
+      safe -- a caller overriding `commit_files`/`create_branch` on the
+      admitted instance can perform arbitrary out-of-repository
+      effects while passing every other check. **Fixed properly this
+      time**: the full set Codex originally named is now sealed
+      (`resolve_ref`, `read_file`, `create_branch`, `commit_files`,
+      `open_pull_request`, `merge_pull_request`), and the harness's own
+      fault injection was moved to a dedicated, non-transport test seam
+      instead -- `run_reconciliation_and_ack_semantics_scenario` now
+      accepts an optional `post_crash_corruption` callback, invoked
+      with the REAL landed commit sha after the crash-injected mutation
+      genuinely lands, letting the test apply raw git manipulation
+      (never touching `self.rig.transport`'s own methods at all) to
+      simulate a corrupted/unrelated-history commit. The one test that
+      needed this (round 12's lineage-mismatch regression) was rewritten
+      to use it instead of monkey-patching `commit_files`.
+
+    All 3 genuinely fixed in round 15, with 3 new permanent regression
+    tests, plus one existing test rewritten to no longer depend on the
+    now-sealed mechanism. Full local re-verification: full test file
+    (49/49), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep re-run clean.
 
 ## Real, honest end-to-end result
 

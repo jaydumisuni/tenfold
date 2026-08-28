@@ -361,43 +361,43 @@ def test_sc23_reconciliation_rejects_a_commit_whose_lineage_does_not_match_expec
     landed commit is genuinely a child of the requested expected_head
     -- a faulty commit_files could replace the landed commit with an
     unrelated ROOT commit (no parent) that merely happens to carry the
-    exact expected tree. This reproduces exactly that -- a ONE-SHOT
-    fabricated root commit with the correct resulting tree but no
-    parent for the very first (crashed) commit attempt only, real
-    commit_files behavior restored immediately after -- and confirms
-    the scenario now genuinely detects the mismatch (UNQUALIFIED)
-    rather than reconciling and sealing the wrong commit's result. The
-    reviewer's own concern was that prematurely sealing a wrong result
-    would PREVENT a corrective retry -- this also confirms a later,
-    genuinely correct attempt under the same operation_id can still
-    land (proving reconciliation declined to seal the bad commit,
-    rather than merely refusing everything from then on)."""
+    exact expected tree. This reproduces exactly that via the
+    `post_crash_corruption` test seam (review finding, PR #86, round
+    15: `commit_files`/`create_branch` are now SEALED against
+    instance-level overrides -- the same mechanism this test itself
+    used to use -- so fault injection now goes through the harness's
+    own dedicated, non-transport seam instead, applying raw git
+    manipulation to replace the just-landed commit with a same-tree
+    root commit after the real, unmodified commit_files already ran)
+    -- and confirms the scenario now genuinely detects the mismatch
+    (UNQUALIFIED) rather than reconciling and sealing the wrong
+    commit's result. The reviewer's own concern was that prematurely
+    sealing a wrong result would PREVENT a corrective retry -- this
+    also confirms a later, genuinely correct attempt under the same
+    operation_id can still land (proving reconciliation declined to
+    seal the bad commit, rather than merely refusing everything from
+    then on)."""
     import subprocess
 
     harness = RepositoryConstructionPropertyQualificationHarness(rig)
-    real_commit_files = rig.transport.commit_files
     corrupted_shas: list[str] = []
 
-    def _replaces_the_first_landed_commit_with_a_root_commit_carrying_the_same_tree(repository, branch, expected_head, files, message):
-        rig.transport.commit_files = real_commit_files  # one-shot: only this very first call is corrupted
-        real_result = real_commit_files(repository, branch, expected_head, files, message)
+    def _replace_with_a_root_commit_carrying_the_same_tree(real_landed_sha: str) -> None:
         tree_sha = subprocess.run(
-            ["git", "-C", str(rig.repo_root), "rev-parse", f"{real_result}^{{tree}}"],
+            ["git", "-C", str(rig.repo_root), "rev-parse", f"{real_landed_sha}^{{tree}}"],
             check=True, capture_output=True, text=True,
         ).stdout.strip()
         root_commit = subprocess.run(
             ["git", "-C", str(rig.repo_root), "commit-tree", tree_sha],
-            input=message, check=True, capture_output=True, text=True,
+            input="ack\n", check=True, capture_output=True, text=True,
         ).stdout.strip()
         subprocess.run(
-            ["git", "-C", str(rig.repo_root), "update-ref", f"refs/heads/{branch}", root_commit, real_result],
+            ["git", "-C", str(rig.repo_root), "update-ref", "refs/heads/sc23/ack", root_commit, real_landed_sha],
             check=True, capture_output=True,
         )
         corrupted_shas.append(root_commit)
-        return root_commit
 
-    rig.transport.commit_files = _replaces_the_first_landed_commit_with_a_root_commit_carrying_the_same_tree
-    result = harness.run_reconciliation_and_ack_semantics_scenario()
+    result = harness.run_reconciliation_and_ack_semantics_scenario(post_crash_corruption=_replace_with_a_root_commit_carrying_the_same_tree)
 
     assert result.property == FacilityProperty.RECONCILIATION
     assert result.state == QualificationState.UNQUALIFIED
@@ -407,8 +407,8 @@ def test_sc23_reconciliation_rejects_a_commit_whose_lineage_does_not_match_expec
     # The wrong (corrupted-lineage) commit's result must never be
     # sealed as the reconciled receipt -- whatever receipt DOES end up
     # persisted (from the scenario's own later, real duplicate-key
-    # attempt genuinely landing through the restored, real
-    # commit_files) must not reference the corrupted root commit.
+    # attempt genuinely landing through the real commit_files) must
+    # not reference the corrupted root commit.
     persisted = rig.facility.state.receipt("op-ack-commit")
     assert corrupted_shas  # the corrupted commit genuinely landed once
     if persisted is not None:
@@ -869,6 +869,112 @@ def test_sc23_wrapper_re_neutralizes_hooks_changed_after_admission(tmp_path) -> 
     assert not marker_path.exists()
     current_hooks_path = subprocess.run(["git", "-C", str(repo_root), "config", "core.hooksPath"], check=True, capture_output=True, text=True).stdout.strip()
     assert current_hooks_path != str(malicious_hooks_dir)
+
+
+def test_sc23_wrapper_detects_a_duplicate_hookspath_key_added_after_admission(tmp_path) -> None:
+    """Review finding (PR #86, round 15, P1, reproduced by the
+    reviewer): the round-14 cheap check searched for the trusted
+    no_hooks_dir path as a SUBSTRING of .git/config's raw text --
+    fooled by `git config --add core.hooksPath <malicious>`, which
+    APPENDS a second hooksPath entry (git uses the LAST one) rather
+    than replacing the first, so the trusted text remained present
+    while the ACTIVE value became malicious. The cheap check now
+    requires .git/config's complete content to be byte-identical to
+    the exact snapshot taken when neutralization was established --
+    any addition at all, including a duplicate key, fails the cheap
+    path and forces genuine re-neutralization."""
+    import subprocess
+
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    malicious_hooks_dir = tmp_path / "malicious-hooks-add"
+    malicious_hooks_dir.mkdir()
+    marker_path = tmp_path / "hook-fired-add.txt"
+    (malicious_hooks_dir / "reference-transaction").write_text(f"#!/bin/sh\necho fired > \"{marker_path}\"\nexit 0\n", encoding="utf-8")
+    (malicious_hooks_dir / "reference-transaction").chmod(0o755)
+    # --add APPENDS, never removing the trusted entry the cheap check
+    # was looking for as a substring.
+    subprocess.run(["git", "-C", str(repo_root), "config", "--add", "core.hooksPath", str(malicious_hooks_dir)], check=True, capture_output=True)
+
+    try:
+        facility.create_branch(None, repository="existing", branch="sc23/duplicate-key-hook", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-duplicate-key-hook", foreman_epoch=1)
+    except Exception:
+        pass
+    assert not marker_path.exists()
+
+
+def test_sc23_wrapper_detects_a_trusted_path_hidden_in_a_config_comment(tmp_path) -> None:
+    """Review finding (PR #86, round 15, P1, reproduced by the
+    reviewer, CWE-78): the round-14 cheap check's substring match was
+    also fooled by appending the trusted no_hooks_dir path as a `#`
+    comment line AFTER setting core.hooksPath to a malicious value --
+    "present" as a substring while never actually being the active
+    value. The exact-content comparison rejects this too, since ANY
+    appended text (comment or otherwise) changes .git/config's bytes
+    away from the established snapshot."""
+    import subprocess
+
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.gen2.repository_construction_facility import _neutralize_hooks_for_every_registered_repository
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    established = facility._established_no_hooks_dirs  # noqa: SLF001 -- test-only introspection
+    no_hooks_dir = established["existing"].no_hooks_dir
+
+    malicious_hooks_dir = tmp_path / "malicious-hooks-comment"
+    malicious_hooks_dir.mkdir()
+    marker_path = tmp_path / "hook-fired-comment.txt"
+    (malicious_hooks_dir / "reference-transaction").write_text(f"#!/bin/sh\necho fired > \"{marker_path}\"\nexit 0\n", encoding="utf-8")
+    (malicious_hooks_dir / "reference-transaction").chmod(0o755)
+    subprocess.run(["git", "-C", str(repo_root), "config", "core.hooksPath", str(malicious_hooks_dir)], check=True, capture_output=True)
+    with (repo_root / ".git" / "config").open("a", encoding="utf-8") as f:
+        f.write(f"# {no_hooks_dir}\n")
+
+    try:
+        facility.create_branch(None, repository="existing", branch="sc23/comment-hidden-hook", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-comment-hidden-hook", foreman_epoch=1)
+    except Exception:
+        pass
+    assert not marker_path.exists()
+
+
+def test_sc23_wrapper_rejects_an_instance_overridden_commit_files(tmp_path) -> None:
+    """Review finding (PR #86, round 15, P1, reproduced by the
+    reviewer): an earlier fix left commit_files/create_branch
+    unsealed, reasoning (incorrectly) that this harness's own
+    legitimate use of the same mechanism for fault injection meant the
+    mechanism itself was safe to leave open. The reviewer correctly
+    showed a caller overriding commit_files on the exact admitted
+    instance can perform arbitrary out-of-repository effects. Fault
+    injection now goes through a dedicated, non-transport test seam
+    (run_reconciliation_and_ack_semantics_scenario's
+    post_crash_corruption parameter) instead, so commit_files is now
+    genuinely sealed like every other transport method."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    transport.commit_files = lambda *args, **kwargs: "injected-sha" + "0" * 30
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        facility.commit(None, repository="existing", branch="main", owner="assign-post", expected_head=initial_sha, files={"x.txt": b"x"}, message="x\n", operation_id="op-sealed-commit-files", foreman_epoch=1)
 
 
 def test_sc23_wrapper_rejects_an_instance_overridden_open_pull_request_at_admission(tmp_path) -> None:
