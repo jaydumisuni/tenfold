@@ -676,6 +676,46 @@ def _module_dotted_name(module_short_name: str) -> str:
     return f"tenfold.gen2.{module_short_name}"
 
 
+def _names_used_by_function(tree: ast.AST, imported_names: dict[str, str]) -> dict[ast.AST, set[str]]:
+    """Single-pass, O(n) equivalent of the previous `for func_node in
+    ast.walk(tree): for inner in ast.walk(func_node): ...` pattern (a
+    Sergeant external-assurance finding: "nested iteration pattern may
+    create scaling risk" -- genuine, since that pattern re-walked every
+    function's ENTIRE subtree once per enclosing function, redundantly
+    revisiting nested functions' own subtrees on every enclosing
+    level). A single post-order traversal visits each node EXACTLY
+    once and returns, per function node, the exact same set the
+    original's full-subtree walk would have found: each function's own
+    direct `Name` reference to an already-known imported live-authority
+    symbol, OR its own nested `from tenfold.X import Y` re-establishing
+    one (matching the original inner loop's own two checks exactly --
+    `imported_names` is by this point already fully populated by the
+    caller's own separate, flat, single `ast.walk(tree)` pass over
+    EVERY `Import`/`ImportFrom` in the file regardless of nesting
+    depth, so no further mutation of it is needed here), UNION every
+    nested function's own set (since a full subtree walk of an outer
+    function necessarily also covers everything inside any function
+    nested within it) -- observably identical results, real
+    algorithmic improvement."""
+    results: dict[ast.AST, set[str]] = {}
+
+    def visit(node: ast.AST) -> set[str]:
+        found: set[str] = set()
+        if isinstance(node, ast.Name) and node.id in imported_names:
+            found.add(node.id)
+        elif isinstance(node, ast.ImportFrom) and node.module in GEN1_LIVE_AUTHORITY_MODULES:
+            for alias in node.names:
+                found.add(alias.asname or alias.name)
+        for child in ast.iter_child_nodes(node):
+            found |= visit(child)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            results[node] = found
+        return found
+
+    visit(tree)
+    return results
+
+
 def scan_module_for_gen1_authority_dependency(module_short_name: str, module_obj) -> tuple[Gen1DependencyFinding, ...]:
     """Genuinely walks the real source of `module_obj` via `ast`, finding
     every `import`/`from ... import` naming a `GEN1_LIVE_AUTHORITY_MODULES`
@@ -703,21 +743,18 @@ def scan_module_for_gen1_authority_dependency(module_short_name: str, module_obj
     if not imported_names:
         return ()
 
+    # Nested `from tenfold.X import Y` inside a function body is a real,
+    # established pattern in this codebase (see
+    # dispatch_mutation_transfer.py/mutation_fixtures.py) -- already
+    # captured above by the flat, single `ast.walk(tree)` pass (which
+    # finds every Import/ImportFrom regardless of nesting depth), so
+    # `imported_names` is already complete before this point.
+    used_by_function = _names_used_by_function(tree, imported_names)
     findings: list[Gen1DependencyFinding] = []
     for func_node in ast.walk(tree):
         if not isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        used_names: set[str] = set()
-        for inner in ast.walk(func_node):
-            if isinstance(inner, ast.Name) and inner.id in imported_names:
-                used_names.add(inner.id)
-            # Nested `from tenfold.X import Y` inside a function body (a
-            # real, established pattern in this codebase -- see
-            # dispatch_mutation_transfer.py/mutation_fixtures.py).
-            if isinstance(inner, ast.ImportFrom) and inner.module in GEN1_LIVE_AUTHORITY_MODULES:
-                for alias in inner.names:
-                    used_names.add(alias.asname or alias.name)
-                    imported_names.setdefault(alias.asname or alias.name, f"{inner.module}.{alias.name}")
+        used_names = used_by_function[func_node]
         if not used_names:
             continue
         marker_match = any(marker in func_node.name for marker in _DISCLOSED_FUNCTION_NAME_MARKERS)
@@ -769,6 +806,36 @@ _SCANNED_MODULES: dict[str, object] = {
 }
 
 
+def _function_subtree_calls(tree: ast.AST, function_name: str) -> dict[ast.AST, bool]:
+    """Single-pass, O(n) equivalent of the previous `for func_node in
+    ast.walk(tree): for inner in ast.walk(func_node): ...` pattern here
+    too (the same Sergeant external-assurance "nested iteration pattern
+    may create scaling risk" finding this shares with
+    `_names_used_by_function` -- both re-walked every function's entire
+    subtree once per enclosing function). A single post-order traversal
+    visits each node once and returns, per function node, whether a
+    call to `function_name` appears ANYWHERE in its subtree (its own
+    body, or any function nested within it) -- exactly what the
+    original's full-subtree walk would have found, since the result is
+    order-independent (the caller de-duplicates/sorts the final
+    output)."""
+    results: dict[ast.AST, bool] = {}
+
+    def visit(node: ast.AST) -> bool:
+        found = False
+        if isinstance(node, ast.Call):
+            called_name = node.func.id if isinstance(node.func, ast.Name) else node.func.attr if isinstance(node.func, ast.Attribute) else None
+            found = called_name == function_name
+        for child in ast.iter_child_nodes(node):
+            found |= visit(child)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            results[node] = found
+        return found
+
+    visit(tree)
+    return results
+
+
 def _find_undisclosed_callers_of(function_name: str) -> tuple[str, ...]:
     """Round-2 review finding (Finding 2): a naming-convention-marked
     function is only genuinely non-load-bearing if nothing OUTSIDE
@@ -784,6 +851,7 @@ def _find_undisclosed_callers_of(function_name: str) -> tuple[str, ...]:
         source_path = Path(inspect.getfile(module_obj))
         tree = ast.parse(source_path.read_text(encoding="utf-8"))
         dotted = _module_dotted_name(module_short_name)
+        calls_by_function = _function_subtree_calls(tree, function_name)
         for func_node in ast.walk(tree):
             if not isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
@@ -793,11 +861,8 @@ def _find_undisclosed_callers_of(function_name: str) -> tuple[str, ...]:
             caller_adjudicated = (dotted, func_node.name) in _ADJUDICATED_EXCEPTIONS
             if caller_marker_match or caller_adjudicated:
                 continue
-            for inner in ast.walk(func_node):
-                if isinstance(inner, ast.Call):
-                    called_name = inner.func.id if isinstance(inner.func, ast.Name) else inner.func.attr if isinstance(inner.func, ast.Attribute) else None
-                    if called_name == function_name:
-                        undisclosed_callers.append(f"{dotted}.{func_node.name}")
+            if calls_by_function[func_node]:
+                undisclosed_callers.append(f"{dotted}.{func_node.name}")
     return tuple(sorted(set(undisclosed_callers)))
 
 
