@@ -934,12 +934,16 @@ def test_sc23_wrapper_detects_a_trusted_path_hidden_in_a_config_comment(rig) -> 
     no-hooks-dir state moved out of `facility._established_no_hooks_dirs`
     (a caller-mutable wrapper attribute -- the round-22 finding this
     fix closed) into the module-private `_ADMITTED_TRANSPORT_STATE`
-    registry, reachable only via `_admitted_state_for`."""
+    registry, reachable only via `_admitted_state_for`.
+
+    Review finding (PR #86, round 25, Minor, CodeRabbit): the registry
+    is now keyed by the WRAPPER instance, not `transport` -- see
+    `_ADMITTED_TRANSPORT_STATE`'s own docstring."""
     import subprocess
 
     from tenfold.gen2.repository_construction_facility import _admitted_state_for
 
-    established = _admitted_state_for(rig.transport).no_hooks_dirs
+    established = _admitted_state_for(rig.facility).no_hooks_dirs
     no_hooks_dir = established[rig.repository].no_hooks_dir
 
     malicious_hooks_dir = rig.repo_root.parent / "malicious-hooks-comment"
@@ -1087,9 +1091,15 @@ def test_sc23_wrapper_established_state_cannot_be_poisoned_via_the_facility(tmp_
     defeating the comparison entirely while the qualification scenario
     remained `QUALIFIED`. Both pieces of trusted state now live only
     in a module-private registry the wrapper carries no attribute
-    pointing at, so attempting the exact same reviewer reproduction
-    has no effect: `create_branch` still rejects the tampered
-    transport."""
+    pointing at.
+
+    Review finding (PR #86, round 25, P1, Codex -- "Seal the returned
+    wrapper's own dispatch methods"): the wrapper now uses `__slots__`
+    (`_facility`, `_transport` only), so attempting the reviewer's
+    exact poisoning move -- reaching into the facility to set an
+    attribute of this name -- is no longer merely inert; it is
+    impossible outright, raising `AttributeError` at the assignment
+    itself, before any comparison could ever be reached."""
     from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
     from tenfold.local_git_transport import LocalGitRepositoryTransport
 
@@ -1101,13 +1111,8 @@ def test_sc23_wrapper_established_state_cannot_be_poisoned_via_the_facility(tmp_
 
     transport._git = "not-a-real-git-executable"  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
 
-    # Attempt the reviewer's exact poisoning move: reach into the
-    # facility and try to make the "trusted" baseline match the
-    # tampering. Since the wrapper no longer stores this state as one
-    # of its own attributes, this merely creates a harmless, never-read
-    # instance attribute of that name -- `__getattr__` only fires for
-    # MISSING attributes, so this assignment succeeds but is inert.
-    facility._established_instance_state = {"_git": "not-a-real-git-executable"}
+    with pytest.raises(AttributeError):
+        facility._established_instance_state = {"_git": "not-a-real-git-executable"}
 
     with pytest.raises(RepositoryConstructionQualificationError):
         facility.create_branch(None, repository="existing", branch="sc23/poisoned-baseline", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-poisoned-baseline", foreman_epoch=1)
@@ -1221,7 +1226,7 @@ def test_sc23_wrapper_rejects_a_class_level_overridden_facility_method(tmp_path)
         RepositoryFacility.create_branch = original_create_branch
 
 
-def test_sc23_wrapper_rejects_a_wholesale_replaced_inner_facility(tmp_path) -> None:
+def test_sc23_wrapper_ignores_a_wholesale_replaced_inner_facility(rig) -> None:
     """Review finding (PR #86, round 24, P1, Codex, reproduced by the
     reviewer -- "Verify the inner facility identity before
     delegation"): the round-23 instance-attribute allowlist checks
@@ -1233,20 +1238,18 @@ def test_sc23_wrapper_rejects_a_wholesale_replaced_inner_facility(tmp_path) -> N
     object's own `create_branch` then ran instead of Gen1's real one,
     skipping every authority/lease/request-binding check while
     returning a fabricated success and writing outside the repository.
-    `_current_transport` now exact-type-checks `self._facility` itself
-    before reading anything off it, AND every dispatch method
-    delegates to the immutable, registry-sourced `admitted.facility`
-    rather than `self._facility` -- so even a same-shaped impersonator
-    is rejected outright, never reached for dispatch."""
-    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
-    from tenfold.local_git_transport import LocalGitRepositoryTransport
 
-    repo_root = tmp_path / "existing-repo"
-    initial_sha = _real_existing_repo(repo_root, tmp_path)
-
-    transport = LocalGitRepositoryTransport({"existing": repo_root})
-    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
-
+    Round 25 (see `_ADMITTED_TRANSPORT_STATE`'s own docstring): every
+    dispatch method now delegates to the immutable, registry-sourced
+    `admitted.facility` rather than `self._facility` at all, so a
+    same-shaped impersonator is not merely rejected -- it is never
+    consulted in the first place. Proven here by a REAL, fully-
+    authorized `create_branch` genuinely SUCCEEDING via the real,
+    admitted facility despite `self._facility` being swapped to the
+    impersonator (which, if it had been used instead, would have
+    returned its own fabricated `"0" * 40` result without ever
+    touching a real task -- rather than requiring one, the way the
+    real `RepositoryFacility.create_branch` does)."""
     class _ImpersonatorFacility:
         """Matches the round-23 name allowlist's SHAPE exactly, but is
         not, and never was, a real RepositoryFacility."""
@@ -1259,10 +1262,10 @@ def test_sc23_wrapper_rejects_a_wholesale_replaced_inner_facility(tmp_path) -> N
         def create_branch(self, *args, **kwargs):
             return "0" * 40
 
-    facility._facility = _ImpersonatorFacility(transport, object(), object())  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+    rig.facility._facility = _ImpersonatorFacility(rig.transport, object(), object())  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
 
-    with pytest.raises(RepositoryConstructionQualificationError):
-        facility.create_branch(None, repository="existing", branch="sc23/impersonator-facility", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-impersonator-facility", foreman_epoch=1)
+    receipt = _real_create_branch_on_rig(rig, branch="sc23/impersonator-facility", operation_id="op-impersonator-facility")
+    assert receipt is not None
 
 
 def test_sc23_wrapper_checks_facility_class_before_reading_transport(tmp_path) -> None:
@@ -1306,6 +1309,104 @@ def test_sc23_wrapper_checks_facility_class_before_reading_transport(tmp_path) -
         assert not marker_path.exists()
     finally:
         del RepositoryFacility.__getattribute__
+
+
+def test_sc23_wrapper_rejects_an_instance_shadowed_dispatch_method(tmp_path) -> None:
+    """Review finding (PR #86, round 25, P1, Codex, reproduced by the
+    reviewer -- "Seal the returned wrapper's own dispatch methods"):
+    every check protects the DELEGATED transport and facility, but
+    nothing protected the WRAPPER's own dispatch methods. The reviewer
+    reproduced `facility.create_branch = malicious_fn` (an
+    instance-level shadow directly on the returned wrapper): Python
+    resolves that override without ever calling the wrapper's real
+    `create_branch` at all, so none of this module's checks ever run --
+    there is no hook point from within the wrapper's own code to catch
+    an attack that bypasses the wrapper's own code entirely. `__slots__`
+    closes this at the language level: with no per-instance `__dict__`,
+    such an assignment raises `AttributeError` outright."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    with pytest.raises(AttributeError):
+        facility.create_branch = lambda *args, **kwargs: "0" * 40  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+
+def test_sc23_wrapper_rejects_a_registration_mutated_via_object_setattr(tmp_path) -> None:
+    """Review finding (PR #86, round 25, P1, Codex, reproduced by the
+    reviewer -- "Snapshot registered repository records by value"):
+    `@dataclass(frozen=True)` only blocks NORMAL attribute assignment --
+    `object.__setattr__` bypasses it entirely. Before this fix, the
+    admission snapshot's `_repositories` dict shared the SAME
+    `_RegisteredRepository` object references as the live transport's
+    own `_repositories`, so the reviewer reproduced mutating a shared
+    record's `root`/`device`/`inode` fields in place via
+    `object.__setattr__`, changing both the live view and the snapshot
+    simultaneously (they were the same object) -- the equality check
+    still trivially passed, comparing the mutated object to itself.
+    Every `_RegisteredRepository` is now snapshotted as an independent,
+    freshly-constructed object holding copies of the primitive field
+    values, so a live-record mutation cannot reach it."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    other_root = tmp_path / "other-repo"
+    _real_existing_repo(other_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    other_transport = LocalGitRepositoryTransport({"other": other_root})
+    other_registered = other_transport._repositories["other"]  # noqa: SLF001 -- test-only
+
+    registered = transport._repositories["existing"]  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+    object.__setattr__(registered, "root", other_registered.root)
+    object.__setattr__(registered, "device", other_registered.device)
+    object.__setattr__(registered, "inode", other_registered.inode)
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        facility.create_branch(None, repository="existing", branch="sc23/setattr-mutated-registration", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-setattr-mutated-registration", foreman_epoch=1)
+
+
+def test_sc23_wrapper_admission_state_is_independent_across_repeated_admissions(tmp_path) -> None:
+    """Review finding (PR #86, round 25, Minor, CodeRabbit -- "Bind
+    admission state to each wrapper"): a real recovery/takeover
+    scenario legitimately re-admits the SAME transport object with a
+    DIFFERENT `RepositoryStateStore`. Keying the registry by `transport`
+    meant the second admission silently overwrote the first admission's
+    registry entry, so a later call on the FIRST, still-held wrapper
+    would use the SECOND admission's facility and state. The registry
+    is now keyed by the wrapper instance itself -- unique per admission
+    call by construction -- so two admissions of the same transport
+    cannot collide."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _admitted_state_for, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    authority_store = _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1))
+
+    first_facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state-first.db")), authority_store)
+    second_facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state-second.db")), authority_store)
+
+    first_admitted = _admitted_state_for(first_facility)
+    second_admitted = _admitted_state_for(second_facility)
+
+    # Two DIFFERENT wrappers, both admitting the SAME transport -- each
+    # must keep its OWN, independently-registered facility, never
+    # silently sharing (or being overwritten by) the other's.
+    assert first_admitted.facility is not second_admitted.facility
+    assert first_admitted is not second_admitted
 
 
 def test_sc23_wrapper_rejects_a_reassigned_repository_registration(tmp_path) -> None:

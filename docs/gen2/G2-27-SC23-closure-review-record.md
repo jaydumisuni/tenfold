@@ -1413,6 +1413,95 @@ verdict (see below) rather than a hardcoded stale expectation.
     mutation suite (37/37), `test_g2_27_self_construction.py`
     (33/33), and full repository sweep (1362 passed, only the 9 known
     pre-existing Windows-only failures, zero regressions).
+25. A fresh Codex + CodeRabbit pass against the round-24 commit
+    (`4e43e23`) found 3 further genuine findings (2 P1, Codex; 1
+    Minor, CodeRabbit):
+    - **P1 ("Seal the returned wrapper's own dispatch methods"),
+      Codex**: every check through round 24 protects the DELEGATED
+      transport and inner facility -- but nothing protected the
+      WRAPPER's own dispatch methods. The reviewer reproduced
+      `facility.create_branch = malicious_fn`, an INSTANCE-level
+      shadow directly on the returned wrapper: Python resolves that
+      override without ever calling the wrapper's real `create_branch`
+      at all, so NONE of this module's checks ever run -- there is no
+      hook point from WITHIN the wrapper's own code to catch an attack
+      that bypasses the wrapper's own code entirely. **Fixed**:
+      `_ContainmentReCheckedRepositoryFacility` now uses `__slots__`
+      (`_facility`, `_transport`, plus `__weakref__` -- see below) --
+      with no per-instance `__dict__`, such an assignment now raises
+      `AttributeError` outright at the language level, closing the
+      ENTIRE class of instance-attribute-shadowing on the wrapper at
+      once, the same kind of comprehensive fix round 18 applied to the
+      transport. New permanent regression test reproduces the exact
+      shadow attempt and confirms it now raises `AttributeError`.
+    - **P1 ("Snapshot registered repository records by value"),
+      Codex**: `@dataclass(frozen=True)` only blocks NORMAL attribute
+      assignment -- it does not stop `object.__setattr__`, a
+      well-known way to bypass a frozen dataclass's own immutability.
+      The round-19/20 snapshot correctly copied the OUTER
+      `_repositories` dict, but its VALUES were still the SAME
+      `_RegisteredRepository` object references as the live
+      transport's own `_repositories`. The reviewer reproduced
+      mutating a shared record's `root`/`device`/`inode` fields in
+      place via `object.__setattr__`, which changed both the live view
+      AND the admission snapshot simultaneously (the same object), so
+      the equality check still trivially passed -- comparing the
+      mutated object to itself -- while a subsequent `create_branch`
+      wrote into the now-different, unadmitted repository the fields
+      pointed at. **Fixed**: every `_RegisteredRepository` is now
+      snapshotted as a BRAND NEW object holding copies of the
+      primitive field values (`Path`/`int`/`int`, all themselves
+      immutable), genuinely independent of the live record. New
+      permanent regression test reproduces the exact
+      `object.__setattr__` attack.
+    - **Minor ("Bind admission state to each wrapper"), CodeRabbit**:
+      the recovery/takeover scenario legitimately re-admits the SAME
+      transport object with a DIFFERENT `RepositoryStateStore` --
+      keying `_ADMITTED_TRANSPORT_STATE` by `transport` meant the
+      SECOND admission silently OVERWROTE the FIRST admission's
+      registry entry, so a later call on the FIRST, still-held wrapper
+      would use the SECOND admission's facility and state. **Fixed**:
+      the registry is now keyed by the WRAPPER instance itself,
+      unique per admission call by construction, so two admissions of
+      the same transport can never collide. This also let
+      `_current_transport` drop its round-24 exact-type check on
+      `self._facility` entirely -- with wrapper-keying,
+      `_admitted_state_for(self)` needs no bootstrap read off
+      `self._facility` at all; `admitted.facility.transport` is read
+      directly instead, closing the round-24 "wholesale-swap" class of
+      attack MORE thoroughly than the type-check alone did (that
+      disclosure entry in `self_construction.py` was removed as
+      genuinely stale, not merely superseded). New permanent
+      regression test admits the same transport twice and confirms
+      each wrapper keeps independent admission state.
+
+    SELF-CAUGHT BUG while implementing the `__slots__` fix: the first
+    version (`__slots__ = ("_facility", "_transport")`, without
+    `__weakref__`) failed EVERY admission with `TypeError: cannot
+    create weak reference to '_ContainmentReCheckedRepositoryFacility'
+    object` -- `__slots__` disables weak-referenceability by default
+    unless explicitly included, and the wrapper-keying fix (above)
+    made this class the `WeakKeyDictionary`'s own key type. Fixed by
+    adding `__weakref__` to the slot set.
+
+    Two existing tests needed updating for the new architecture: the
+    round-15 hooks-comment test's `_admitted_state_for(rig.transport)`
+    call became `_admitted_state_for(rig.facility)` (wrapper-keying);
+    the round-24 wholesale-replacement test was rewritten from
+    expecting REJECTION to expecting genuine SUCCESS via a real,
+    fully-authorized dispatch -- with dispatch now delegating
+    exclusively to the registry-sourced `admitted.facility`, a
+    same-shaped impersonator installed on `self._facility` is not
+    rejected, it is simply never consulted, which the rewritten test
+    now proves directly rather than relying on an incidental
+    `AttributeError` from Gen1's own code.
+
+    Fixed in commit `<pending>`, with 3 new permanent regression
+    tests (plus 2 existing tests updated). Full local re-verification:
+    full test file (69/69), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (pending, only the 9 known pre-existing Windows-only
+    failures expected).
 
 ## Real, honest end-to-end result
 

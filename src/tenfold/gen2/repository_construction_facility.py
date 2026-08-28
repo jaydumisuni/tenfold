@@ -51,7 +51,11 @@ from pathlib import Path
 
 from tenfold.contracts import NodeState, TaskPacket
 from tenfold.facility import stable_digest
-from tenfold.local_git_transport import LocalGitRepositoryTransport, LocalGitTransportError
+from tenfold.local_git_transport import (
+    LocalGitRepositoryTransport,
+    LocalGitTransportError,
+    _RegisteredRepository,  # noqa: SLF001 -- genuine safety enforcement; see gen1_wrap_repository_construction_facility's own FROZEN-DATACLASS FINDING
+)
 from tenfold.ownership import WriteLease
 from tenfold.persistence import AssignmentRef, CampaignSnapshot
 from tenfold.repository_facility import (
@@ -717,7 +721,30 @@ def gen1_wrap_repository_construction_facility(transport, state_store, authority
     # copied independently; `_git`/`_author_name`/`_author_email` are
     # plain immutable strings, so no further copying is needed there.
     established_instance_state = dict(vars(transport))  # noqa: SLF001 -- genuine safety enforcement; see _reject_altered_transport_instance_state's own docstring
-    established_instance_state["_repositories"] = dict(established_instance_state["_repositories"])
+    # FROZEN-DATACLASS FINDING (review finding, PR #86, round 25, P1,
+    # Codex, reproduced by the reviewer -- "Snapshot registered
+    # repository records by value"): copying the OUTER `_repositories`
+    # dict (above) is not enough -- its VALUES are still the SAME
+    # `_RegisteredRepository` object references as `transport._repositories`
+    # itself. `@dataclass(frozen=True)` only blocks NORMAL attribute
+    # assignment; it does NOT stop `object.__setattr__(registered,
+    # "root", other_root)`, a well-known way to bypass a frozen
+    # dataclass's own immutability. The reviewer reproduced exactly
+    # this: mutate a shared `_RegisteredRepository`'s `root`/`device`/
+    # `inode` fields in place via `object.__setattr__`, which changes
+    # BOTH the live transport's view AND this snapshot simultaneously
+    # (they're the same object), so `_reject_altered_transport_instance_state`'s
+    # equality check still trivially passes -- comparing the mutated
+    # object to itself -- while a subsequent `create_branch` wrote into
+    # the now-different, unadmitted repository the fields pointed at.
+    # Fixed by constructing BRAND NEW `_RegisteredRepository` instances
+    # holding copies of the primitive field values (`Path`/`int`/`int`,
+    # all themselves immutable) -- genuinely independent objects a
+    # live-record mutation cannot reach.
+    established_instance_state["_repositories"] = {
+        name: _RegisteredRepository(registered.root, registered.device, registered.inode)
+        for name, registered in established_instance_state["_repositories"].items()
+    }
     _reject_symlinked_git_storage_for_every_registered_repository(transport)
     established_no_hooks_dirs = _neutralize_hooks_for_every_registered_repository(transport)
     facility = RepositoryFacility(transport, state_store, authority_store)
@@ -728,8 +755,22 @@ def gen1_wrap_repository_construction_facility(transport, state_store, authority
     # registry, NOT passed into the wrapper's own constructor -- a
     # caller holding only the returned facility has no attribute path
     # to reach or overwrite any of it.
-    _ADMITTED_TRANSPORT_STATE[transport] = _AdmittedTransportState(facility, established_instance_state, established_no_hooks_dirs)
-    return _ContainmentReCheckedRepositoryFacility(facility, transport)
+    #
+    # WRAPPER-KEYED FINDING (review finding, PR #86, round 25, Minor,
+    # CodeRabbit -- "Bind admission state to each wrapper"): keying by
+    # `transport` meant re-admitting the SAME transport object (as a
+    # real recovery/takeover scenario legitimately does, with a
+    # DIFFERENT `RepositoryStateStore`/facility) silently OVERWROTE the
+    # first admission's registry entry -- a later call on the FIRST,
+    # still-held wrapper would then use the SECOND admission's facility
+    # and state. The registry is now keyed by the WRAPPER instance
+    # itself (constructed first, below), which is unique per admission
+    # call by construction -- see `_admitted_state_for`'s own updated
+    # docstring for why hashing the wrapper carries none of round 23's
+    # transport-hashing risk.
+    wrapper = _ContainmentReCheckedRepositoryFacility(facility, transport)
+    _ADMITTED_TRANSPORT_STATE[wrapper] = _AdmittedTransportState(facility, established_instance_state, established_no_hooks_dirs)
+    return wrapper
 
 
 #: Review finding (PR #86, round 18, P1, reproduced by the reviewer):
@@ -911,32 +952,51 @@ class _AdmittedTransportState:
     `self._facility` can affect what actually gets called. `self._facility`
     remains in use only for `__getattr__`'s non-security-sensitive
     delegation (`state`/`authority_store`/`acquire_writer`/
-    `release_writer`) and as the read-source `_current_transport` uses
-    to DISCOVER the current transport (see that method's own docstring
-    for why reading it there is safe)."""
+    `release_writer`).
+
+    Review finding (PR #86, round 25, Minor, CodeRabbit -- "Bind
+    admission state to each wrapper"): registering this state keyed by
+    `transport` meant re-admitting the SAME transport object (as a
+    real recovery/takeover scenario legitimately does, with a
+    DIFFERENT `RepositoryStateStore`/facility) silently OVERWROTE the
+    FIRST admission's entry, so a later call on the FIRST, still-held
+    wrapper would use the SECOND admission's facility and state. Fixed
+    by keying `_ADMITTED_TRANSPORT_STATE` by the WRAPPER instance
+    itself (see its own docstring below) instead -- unique per
+    admission call by construction, so two admissions of the same
+    transport can never collide. `_current_transport` no longer needs
+    to read `self._facility.transport` to DISCOVER a lookup key at
+    all; `admitted.facility.transport` is read directly instead, once
+    `admitted` itself is already in hand."""
 
     facility: object
     instance_state: dict
     no_hooks_dirs: "dict[str, _EstablishedHooksNeutralization]"
 
 
-#: Keyed by transport instance IDENTITY (a `WeakKeyDictionary` so an
-#: admitted transport that is later garbage-collected doesn't leak its
-#: registry entry forever). Looking up a transport that was never
-#: admitted through `gen1_wrap_repository_construction_facility` -- or
-#: was swapped for a different, even if genuine, instance (the round-16
-#: finding) -- correctly finds nothing, giving `_admitted_state_for`'s
-#: rejection double duty as an implicit transport-identity check too.
+#: Keyed by WRAPPER instance IDENTITY (round 25 -- see
+#: `_AdmittedTransportState`'s own docstring for the collision finding
+#: that motivated moving off transport-keying), a `WeakKeyDictionary`
+#: so a wrapper that is later garbage-collected doesn't leak its
+#: registry entry forever. Hashing the wrapper carries none of round
+#: 23's transport-hashing risk: `_ContainmentReCheckedRepositoryFacility`
+#: is this module's OWN class (never Gen1-owned), uses the default,
+#: identity-based `object.__hash__`/`__eq__` (never overridden), and
+#: -- since round 25's `__slots__` fix -- cannot have either rebound at
+#: the INSTANCE level either; only importing this module's own private
+#: class directly and rebinding at the CLASS level could affect it,
+#: the same disclosed "attacker with code execution before this module
+#: is imported"-equivalent threshold every other class-level check in
+#: this file already accepts as out of scope.
 _ADMITTED_TRANSPORT_STATE: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 
 
-def _admitted_state_for(transport: LocalGitRepositoryTransport) -> _AdmittedTransportState:
-    admitted = _ADMITTED_TRANSPORT_STATE.get(transport)
+def _admitted_state_for(wrapper: "_ContainmentReCheckedRepositoryFacility") -> _AdmittedTransportState:
+    admitted = _ADMITTED_TRANSPORT_STATE.get(wrapper)
     if admitted is None:
         raise RepositoryConstructionQualificationError(
-            "_admitted_state_for: no admission-time state found for this transport instance -- "
-            "either it was never admitted through gen1_wrap_repository_construction_facility, "
-            "or it was swapped for a different instance after admission"
+            "_admitted_state_for: no admission-time state found for this wrapper instance -- "
+            "it was never admitted through gen1_wrap_repository_construction_facility"
         )
     return admitted
 
@@ -967,8 +1027,32 @@ class _ContainmentReCheckedRepositoryFacility:
     `_AdmittedTransportState`'s own docstring), the immutable,
     registry-sourced `RepositoryFacility` reference, never to
     `self._facility` directly -- `self._facility` remains in use only
-    for `__getattr__`'s delegation above and as the read-source
-    `_current_transport` uses to discover the current transport."""
+    for `__getattr__`'s delegation above.
+
+    Review finding (PR #86, round 25, P1, Codex, reproduced by the
+    reviewer -- "Seal the returned wrapper's own dispatch methods"):
+    every check above protects the DELEGATED transport and facility --
+    but nothing protected THIS wrapper's own dispatch methods. The
+    reviewer reproduced `facility.create_branch = malicious_fn`
+    (an INSTANCE-level shadow directly on the returned wrapper): Python
+    resolves that override without ever calling this class's real
+    `create_branch` at all, so NONE of the checks above ever run --
+    there is no hook point from WITHIN this class's own code to catch
+    an attack that bypasses this class's own code entirely. `__slots__`
+    (below) closes this at the language level rather than reactively:
+    with no per-instance `__dict__` and a slot set containing only
+    `_facility`/`_transport` (plus `__weakref__`, needed because round
+    25's `_ADMITTED_TRANSPORT_STATE` re-keying now makes THIS class the
+    `WeakKeyDictionary`'s key type, and `__slots__` disables weak-
+    referenceability by default unless explicitly included -- self-
+    caught when the first version without it failed every admission
+    with `TypeError: cannot create weak reference to
+    '_ContainmentReCheckedRepositoryFacility' object`), `facility.create_branch
+    = malicious_fn` raises `AttributeError` outright -- there is no
+    dict for such an override to live in, and slots reserve storage
+    only for the names actually declared."""
+
+    __slots__ = ("_facility", "_transport", "__weakref__")
 
     def __init__(self, facility, transport: LocalGitRepositoryTransport) -> None:
         # `facility` deliberately left untyped: an explicit
@@ -999,59 +1083,46 @@ class _ContainmentReCheckedRepositoryFacility:
 
     def _current_transport(self) -> LocalGitRepositoryTransport:
         # Review finding (PR #86, round 16, P1, reproduced by the
-        # reviewer): every prior round re-validated `self._transport`
-        # -- the reference REMEMBERED at construction time. But
-        # `RepositoryFacility.create_branch`/`commit` internally use
-        # `self._facility.transport` (Gen1's own, plain, mutable
-        # attribute), not this wrapper's own memory of it. The
-        # reviewer reproduced reassigning `facility._facility.transport`
-        # to an injected object AFTER admission: this wrapper's checks
-        # kept validating the ORIGINAL, no-longer-relevant transport,
-        # while the real facility silently delegated every mutation to
-        # the replacement. This method reads `self._facility.transport`
-        # FRESH and re-verifies the exact-type check against whatever
-        # is CURRENTLY there -- so a swap to anything that is not a
+        # reviewer): `RepositoryFacility.create_branch`/`commit`
+        # internally use `self.transport` (Gen1's own, plain, mutable
+        # attribute), not any static reference remembered elsewhere.
+        # The reviewer reproduced reassigning the real facility's own
+        # `.transport` to an injected object AFTER admission, silently
+        # redirecting every subsequent mutation. This method reads
+        # `.transport` FRESH from the TRUSTED facility reference and
+        # re-verifies the exact-type check against whatever is
+        # CURRENTLY there -- so a swap to anything that is not a
         # genuine, unmodified `LocalGitRepositoryTransport` is rejected
         # outright.
         #
-        # Round 24 (two P1 findings, Codex, both reproduced by the
-        # reviewer, both about THIS method's own core read): reading
-        # `self._facility.transport` is only safe once TWO things are
-        # confirmed first, in order:
-        #   1. "Check the facility class before reading transport" --
-        #      `RepositoryFacility`'s own class implementation must be
-        #      confirmed unmodified BEFORE this attribute read, since a
-        #      class-level `__getattribute__` replacement runs the
-        #      moment ANY attribute is read off a genuine instance. The
-        #      reviewer reproduced a replacement `__getattribute__`
-        #      performing an out-of-repository write during exactly
-        #      this read, with the eventual rejection coming too late
-        #      to prevent it.
-        #   2. "Verify the inner facility identity before delegation" --
-        #      confirming `RepositoryFacility`'s CLASS is clean does
-        #      NOT confirm `self._facility` genuinely IS an instance of
-        #      it; the reviewer reproduced replacing `self._facility`
-        #      wholesale with an unrelated object shaped to pass the
-        #      round-23 name-only allowlist. An exact-type check on
-        #      `self._facility` ITSELF, before reading anything off it,
-        #      closes this -- and since every DISPATCH method below now
-        #      delegates through `admitted.facility` (the immutable,
-        #      registry-sourced reference -- see `_AdmittedTransportState`'s
-        #      own round-24 docstring) rather than `self._facility`,
-        #      this read exists ONLY to discover a lookup key, so even a
-        #      cleverly-constructed fake `self._facility` (right type,
-        #      genuine admitted transport, wrong `state`/`authority_store`)
-        #      achieves nothing: dispatch never touches it.
+        # Round 24 (P1, Codex -- "Check the facility class before
+        # reading transport"): the read above is only safe once
+        # `RepositoryFacility`'s own class implementation is confirmed
+        # unmodified FIRST, since a class-level `__getattribute__`
+        # replacement runs the moment ANY attribute is read off a
+        # genuine instance -- the reviewer reproduced exactly this,
+        # with the eventual rejection coming too late to prevent the
+        # side effect.
+        #
+        # Round 25 (see `_ADMITTED_TRANSPORT_STATE`'s own docstring):
+        # this method used to read `self._facility.transport` -- a
+        # plain, caller-mutable wrapper attribute -- purely to
+        # DISCOVER a registry lookup key, which round 24's "Verify the
+        # inner facility identity before delegation" finding showed was
+        # itself an attack surface (a wholesale-swapped `self._facility`
+        # impersonating the right shape). Now that the registry is
+        # keyed by THIS WRAPPER (`self`) rather than by transport,
+        # `_admitted_state_for(self)` needs no bootstrap read at all --
+        # `admitted.facility` (the immutable, registry-sourced
+        # reference) is read directly instead of `self._facility`,
+        # closing that entire class of attack rather than merely
+        # type-checking around it.
         # Every OTHER call site in this class now goes through THIS
         # method rather than duplicating the ordering invariant itself.
-        _reject_altered_transport_class_implementation()
+        admitted = _admitted_state_for(self)
         _reject_altered_facility_class_implementation()
-        if type(self._facility) is not RepositoryFacility:
-            raise RepositoryConstructionQualificationError(
-                f"_current_transport: facility instance is no longer a real RepositoryFacility "
-                f"(a caller may have wholesale-replaced it) -- got {type(self._facility).__name__}"
-            )
-        current = self._facility.transport
+        current = admitted.facility.transport
+        _reject_altered_transport_class_implementation()
         if type(current) is not LocalGitRepositoryTransport:
             raise RepositoryConstructionQualificationError(
                 f"_current_transport: facility.transport is no longer a real LocalGitRepositoryTransport "
@@ -1073,15 +1144,15 @@ class _ContainmentReCheckedRepositoryFacility:
         # via plain `__getattr__` delegation. The name no longer
         # implies "mutation only."
         #
-        # Round 24: `_current_transport` now internally runs BOTH
-        # class-implementation checks (transport and facility) and the
-        # facility exact-type check, in the safe order, before it ever
-        # reads `self._facility.transport` -- so by the time it returns
-        # here, it is already safe to hash `transport` for the registry
-        # lookup below (round 23's ordering lesson, now centralized in
-        # ONE place instead of duplicated at every call site).
+        # Round 24/25: `_current_transport` internally runs the
+        # facility-class-implementation check before ever reading
+        # `admitted.facility.transport`, and the registry lookup below
+        # is keyed by `self` (round 25), which needs no such ordering
+        # care at all (see `_ADMITTED_TRANSPORT_STATE`'s own docstring)
+        # -- both centralized in ONE place instead of duplicated at
+        # every call site.
         transport = self._current_transport()
-        admitted = _admitted_state_for(transport)
+        admitted = _admitted_state_for(self)
         _reject_instance_overridden_facility_methods(admitted.facility)
         # `_reject_altered_transport_instance_state`'s key-set check is
         # a strict superset of `_reject_instance_overridden_transport_methods`
@@ -1122,14 +1193,14 @@ class _ContainmentReCheckedRepositoryFacility:
 
     def open_pr(self, *args, **kwargs):
         transport = self._current_transport()
-        admitted = _admitted_state_for(transport)
+        admitted = _admitted_state_for(self)
         _reject_instance_overridden_transport_methods(transport)
         _reject_instance_overridden_facility_methods(admitted.facility)
         return admitted.facility.open_pr(*args, **kwargs)
 
     def merge_pr(self, *args, **kwargs):
         transport = self._current_transport()
-        admitted = _admitted_state_for(transport)
+        admitted = _admitted_state_for(self)
         _reject_instance_overridden_transport_methods(transport)
         _reject_instance_overridden_facility_methods(admitted.facility)
         return admitted.facility.merge_pr(*args, **kwargs)

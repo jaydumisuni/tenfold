@@ -666,12 +666,14 @@ _ADJUDICATED_EXCEPTIONS: dict[tuple[str, str], str] = {
         "re-deriving, bypassing, or weakening any of RepositoryFacility's own real authority/lease/"
         "request-binding logic -- SC-23 closure, round 23, docs/gen2/G2-27-SC23-closure-review-record.md"
     ),
-    ("tenfold.gen2.repository_construction_facility", "_current_transport"): (
-        "defensive exact-type check (type(self._facility) is not RepositoryFacility) confirming the wrapper's "
-        "own facility reference has not been wholesale-replaced before reading any attribute off it -- never "
-        "re-deriving or bypassing RepositoryFacility's own real authority/lease/request-binding logic -- "
-        "SC-23 closure, round 24, docs/gen2/G2-27-SC23-closure-review-record.md"
-    ),
+    # Round 24's own "_current_transport" entry (an exact-type check
+    # `type(self._facility) is not RepositoryFacility`) is removed here,
+    # round 25: that check no longer exists -- `_current_transport` was
+    # rewritten to read `admitted.facility.transport` (the registry-
+    # sourced reference) instead of `self._facility.transport`, which
+    # needed no such check at all, closing the underlying finding more
+    # thoroughly than the type-check alone did (see
+    # docs/gen2/G2-27-SC23-closure-review-record.md, round 25).
 }
 
 
