@@ -172,11 +172,96 @@ class RealMutatingFacilityAuthorityDisabled(FacilityError):
     AUTHORITY = DISABLED.\""""
 
 
+#: SC-23 closure: the ONE genuinely-qualified, Trust-Table-admitted
+#: repository-construction Facility identity the critical gate admits.
+#: Scope is deliberately narrow: local-commit-only (create_branch/read/
+#: commit via Gen1's real RepositoryFacility + LocalGitRepositoryTransport
+#: against a real, disposable, throwaway local git repository) --
+#: open_pr/merge_pr remain permanently out of scope for this identity,
+#: mirroring LocalGitRepositoryTransport's own existing deliberate
+#: exclusion. Defined here (the critical gate's own owning module)
+#: rather than in `repository_construction_facility.py`, which imports
+#: it from here instead -- avoids a circular import while keeping the
+#: gate and the identity it admits co-located.
+ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_ID = "gen2-repository-construction-facility"
+ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_GENERATION = 1
+ADMITTED_REPOSITORY_CONSTRUCTION_EFFECT_CLASS = "repository-construction-local-commit"
+
+
+def _is_admitted_repository_construction_identity(contract: FacilityContract) -> bool:
+    """SECURITY NOTE (review finding, PR #84, P1): this is an
+    identity-METADATA match against a `FacilityContract` -- plain,
+    freely-constructible dataclass fields, including
+    `property_qualifications`' own `evidence_refs` strings. It is NOT a
+    cryptographic binding proving the contract's properties were
+    genuinely produced by `repository_construction_facility.
+    RepositoryConstructionPropertyQualificationHarness`. Any caller in
+    the same process CAN construct a `FacilityContract` matching this
+    identity, mark every property `QUALIFIED` with arbitrary non-empty
+    `evidence_refs`, and this predicate returns `True`.
+
+    Genuine unforgeability is not achievable here purely in code: the
+    harness's own real evidence (after the PR #84 fix making
+    `LATENCY_BOUNDS` a frozen-threshold pass/fail rather than a
+    measured value) is deterministic, open-source, and public --
+    identical on every genuine run -- so a static digest of "genuine"
+    evidence would carry no more real assurance than the identity match
+    already does; anyone can read the harness's own source and
+    replicate its exact evidence strings. The real, load-bearing
+    enforcement boundary is therefore the SAME one every other
+    `PropertyQualificationRecord`/Trust Table row in this codebase
+    already relies on: construction-time code review (this predicate's
+    hardcoded constants can only change via a reviewed, merged PR),
+    the mutation fixtures that specifically test THIS gate's own logic
+    (`MUT-G14-REPOCONSTRUCT-*`), and disciplined callers.
+
+    Binding rule for any future caller (G2-28+ construction included):
+    a `FacilityContract` claiming this identity must ONLY ever be
+    constructed by genuinely, freshly running
+    `RepositoryConstructionPropertyQualificationHarness.
+    qualify_declared_scenarios()` in trusted, reviewed code (see
+    `repository_construction_facility.build_admitted_repository_construction_contract`).
+    NEVER deserialize or otherwise accept a `FacilityContract` claiming
+    this identity from external/untrusted input (network, user-supplied
+    JSON, another process) without independently re-running the real
+    harness -- this predicate cannot and does not distinguish a
+    genuine result from a hand-typed one."""
+    return (
+        contract.facility_id == ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_ID
+        and contract.facility_generation == ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_GENERATION
+        and contract.adapter_boundary == FacilityAdapterBoundary.REPOSITORY
+        and contract.effect_class == ADMITTED_REPOSITORY_CONSTRUCTION_EFFECT_CLASS
+        and all(contract.is_property_qualified(p) for p in FacilityProperty)
+    )
+
+
 def check_critical_gate(contract: FacilityContract) -> None:
-    if contract.io_class == FacilityIOClass.REAL_MUTATING:
+    """G2-14 critical gate: "Until G2-18 is PROVEN: REAL MUTATING
+    FACILITY AUTHORITY = DISABLED. Allowed only read-only, synthetic/
+    mock, or disposable sandbox mutation with no canonical external
+    effect."
+
+    SC-23 closure narrows (never removes) this gate: REAL_MUTATING is
+    still rejected for every identity except the one specific,
+    genuinely-qualified repository-construction Facility identity above.
+    This is an identity-metadata match, not a cryptographic binding to
+    "this exact harness-tested code genuinely ran against a genuinely
+    disposable repo" -- that trust boundary is enforced at construction/
+    qualification time (the real adversarial harness, permanent tests,
+    adversarial review, and the Trust Table row's own admission), the
+    same trust model every other PropertyQualificationRecord/Trust Table
+    row in this codebase already uses. G2-00 SS9.1's own warning still
+    holds: a Facility declaration has no constitutional authority merely
+    because the adapter/provider says it is true -- this gate does not
+    accept ANY caller-declared REAL_MUTATING contract with self-claimed
+    QUALIFIED properties; only this one pre-agreed identity, with every
+    one of the 11 properties genuinely declared qualified.
+    """
+    if contract.io_class == FacilityIOClass.REAL_MUTATING and not _is_admitted_repository_construction_identity(contract):
         raise RealMutatingFacilityAuthorityDisabled(
             f"FacilityContract {contract.facility_id}: REAL_MUTATING io_class is disabled until G2-18 is PROVEN "
-            "(G2-14 critical gate) -- only READ_ONLY/SYNTHETIC_MOCK/DISPOSABLE_SANDBOX are permitted"
+            "(G2-14 critical gate) -- only READ_ONLY/SYNTHETIC_MOCK/DISPOSABLE_SANDBOX are permitted, or the one "
+            "genuinely-qualified repository-construction Facility identity (SC-23 closure)"
         )
 
 

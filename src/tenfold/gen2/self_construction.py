@@ -67,6 +67,7 @@ from . import (
     proof_transfer,
     recovery_qualification,
     recovery_takeover,
+    repository_construction_facility,
     root_authority,
     runtime_obligation,
     state_model,
@@ -376,36 +377,73 @@ def _qualify_sc22_independent_verifier() -> ConditionQualificationResult:
 
 
 def _qualify_sc23_repository_construction_facility() -> ConditionQualificationResult:
-    """Round-2 review finding (Finding 1, the concrete counter-example
-    the review names): genuinely attempts to construct and validate a
-    real `REAL_MUTATING` `FacilityContract` against Gen2's own
-    `check_critical_gate` -- the same G2-14 critical gate a permanent
-    mutation fixture already proves cannot be bypassed even with every
-    property genuinely qualified ("REAL MUTATING FACILITY AUTHORITY =
-    DISABLED until G2-18 is PROVEN"). G2-18 has since reached PROVEN, but
-    no later milestone ever lifted this code-level gate, and no Gen2-
-    owned mutating repository-construction Facility class exists
-    anywhere in `tenfold.gen2` -- the only real, mutating
-    `RepositoryFacility` in this codebase is Gen1's own
-    `tenfold.repository_facility.RepositoryFacility`. This condition
-    therefore, honestly, does not qualify."""
-    records = tuple(
-        facility.PropertyQualificationRecord(p, facility.QualificationState.QUALIFIED, ("ev-1",), None) for p in facility.FacilityProperty
-    )
-    contract = facility.FacilityContract(
-        "g2-27-repository-construction-probe", 1, facility.FacilityIOClass.REAL_MUTATING, facility.FacilityAdapterBoundary.REPOSITORY,
-        "repository-construction", "authority@ref", records, ("ev-declaration",),
-    )
+    """SC-23 closure: genuinely builds `repository_construction_facility.
+    RepositoryConstructionPropertyQualificationHarness`'s real, disposable
+    local-git rig, runs the full adversarial corpus (every one of the 11
+    `FacilityProperty` values, each backed by a genuine scenario against
+    a real, throwaway local git repository -- never asserted), assembles
+    the ONE Trust-Table-admitted repository-construction `FacilityContract`
+    identity, and confirms it now genuinely passes the narrowed critical
+    gate. A negative control immediately follows: a differently-identified
+    `REAL_MUTATING` contract (otherwise identical, every property
+    genuinely qualified) must still be rejected -- proving the gate
+    genuinely narrowed to this one identity, not opened generally. Scope,
+    deliberately narrow: local-commit-only (create_branch/read/commit);
+    open_pr/merge_pr remain out of scope -- see
+    docs/gen2/G2-27-SC23-closure-review-record.md.
+
+    Round-1/round-2 history (G2-27's own review, before this closure):
+    genuinely attempted the same real `REAL_MUTATING` `FacilityContract`
+    validation and it was genuinely rejected -- G2-18 had reached PROVEN,
+    but no milestone had yet lifted this code-level gate, and no Gen2-
+    owned mutating repository-construction Facility class existed
+    anywhere in `tenfold.gen2`; only Gen1's own
+    `tenfold.repository_facility.RepositoryFacility` provided real
+    repository mutation. This function now genuinely closes that gap."""
+    import tempfile
+
+    from . import repository_construction_facility as rcf
+
+    with tempfile.TemporaryDirectory(prefix="tenfold-gen2-sc23-qualification-") as tmp:
+        rig = rcf.build_disposable_local_git_facility(Path(tmp))
+        harness = rcf.RepositoryConstructionPropertyQualificationHarness(rig)
+        records = harness.qualify_declared_scenarios()
+        contract = rcf.build_admitted_repository_construction_contract(records)
+
     try:
         facility.check_critical_gate(contract)
     except facility.RealMutatingFacilityAuthorityDisabled as e:
         return ConditionQualificationResult(
             "SC-23", False,
-            f"genuinely attempted a REAL_MUTATING FacilityContract validation and it was genuinely rejected: {e} "
-            "-- no Gen2-owned mutating repository-construction Facility exists; only Gen1's own "
-            "tenfold.repository_facility.RepositoryFacility provides real repository mutation today",
+            f"genuinely built and qualified the repository-construction FacilityContract but it was still "
+            f"rejected by the narrowed critical gate: {e} -- SC-23 remains genuinely unqualified",
         )
-    return ConditionQualificationResult("SC-23", True, "a real REAL_MUTATING FacilityContract genuinely passed the critical gate")
+
+    other = replace(contract, facility_id="some-other-real-mutating-facility")
+    try:
+        facility.check_critical_gate(other)
+    except facility.RealMutatingFacilityAuthorityDisabled:
+        pass
+    else:
+        return ConditionQualificationResult(
+            "SC-23", False,
+            "critical gate opened generally (a different REAL_MUTATING identity was wrongly admitted) -- "
+            "SC-23 closure regression, not genuine narrowing",
+        )
+
+    trust_ok, trust_evidence = _check_trust_table_admits("repository_construction_facility")
+    if not trust_ok:
+        return ConditionQualificationResult("SC-23", False, f"critical gate passed but Trust Table admission genuinely failed: {trust_evidence}")
+
+    property_states = {r.property: r.state for r in records}
+    return ConditionQualificationResult(
+        "SC-23", True,
+        "genuinely built, adversarially qualified (all 11 FacilityProperty values via "
+        "RepositoryConstructionPropertyQualificationHarness against a real disposable local git repository), "
+        f"and Trust-Table-admitted the ONE repository-construction FacilityContract identity; property states: "
+        f"{sorted(p.value + '=' + s.value for p, s in property_states.items())}; a differently-identified "
+        "REAL_MUTATING contract is still genuinely rejected (negative control)",
+    )
 
 
 def _qualify_sc24_recovery_takeover(work_dir: Path) -> ConditionQualificationResult:
@@ -476,8 +514,17 @@ def derive_condition_qualifications(work_dir: Path) -> tuple[ConditionQualificat
 #: live construction-decision authority -- matching G2-00 SS20's own
 #: allowlist ("frozen Gen1 reference... WRAPPED worker/task/evidence
 #: contracts") generalized to the same class of component.
+#: `tenfold.repository_facility` added at SC-23 closure: Gen1's own
+#: real, mutating repository-construction Facility, genuinely wrapped
+#: (not re-derived) by `tenfold.gen2.repository_construction_facility`
+#: -- exactly the class of live Gen1 execution authority this scan
+#: exists to track. `tenfold.local_git_transport` is deliberately NOT
+#: added: it is mechanical git execution with no permission/authority
+#: logic of its own (entirely gated by `RepositoryFacility`'s own
+#: callers), the same class as `tenfold.durability`/`tenfold.contracts`
+#: -- a disclosed classification, not an oversight.
 GEN1_LIVE_AUTHORITY_MODULES = frozenset(
-    {"tenfold.foreman", "tenfold.ownership", "tenfold.recovery", "tenfold.facility", "tenfold.scheduler", "tenfold.workers", "tenfold.workforce"}
+    {"tenfold.foreman", "tenfold.ownership", "tenfold.recovery", "tenfold.facility", "tenfold.scheduler", "tenfold.workers", "tenfold.workforce", "tenfold.repository_facility"}
 )
 
 #: A reference to a `GEN1_LIVE_AUTHORITY_MODULES` import is genuinely
@@ -544,6 +591,73 @@ _ADJUDICATED_EXCEPTIONS: dict[tuple[str, str], str] = {
         "already-`_kill_check`-marked functions (_g2_11_lease_conflict_kill_check, _g2_11_fencing_kill_check) "
         "that genuinely exercise real Gen1 code; confirmed by direct inspection this is the function's ONLY "
         "use of any Gen1-authority-module name outside those already-disclosed nested kill_check functions"
+    ),
+    # SC-23 closure: repository_construction_facility.py genuinely wraps
+    # (never re-derives) Gen1's real, already-built, production-grade
+    # tenfold.repository_facility.RepositoryFacility, per G2-00 SS15's
+    # "no invariant split across Python/Rust" -- the same reuse
+    # precedent already sanctioned for recovery_takeover.py's
+    # run_real_gen2_recovery_takeover above. Every function below
+    # operates ONLY inside a real, disposable, throwaway local git
+    # repository (created and destroyed per qualification run, never
+    # canonical/production state or a live production dispatch) -- the
+    # same disposable-qualification-context pattern already sanctioned
+    # for recovery_takeover.py's own _scenario_* functions above. See
+    # docs/gen2/G2-27-SC23-closure-review-record.md.
+    ("tenfold.gen2.repository_construction_facility", "gen1_wrap_repository_construction_facility"): (
+        "thin constructor around real tenfold.repository_facility.RepositoryFacility, never re-derived -- "
+        "SC-23 closure, docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
+    ("tenfold.gen2.repository_construction_facility", "build_disposable_local_git_facility"): (
+        "constructs the disposable local git repository + Gen1 RepositoryFacility rig used ONLY by this "
+        "module's own real adversarial qualification harness -- SC-23 closure, "
+        "docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
+    ("tenfold.gen2.repository_construction_facility", "_empty_snapshot"): (
+        "builds a disposable, in-memory CampaignSnapshot for the qualification harness's own authority-store "
+        "stand-in -- never live production campaign state -- SC-23 closure, "
+        "docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
+    ("tenfold.gen2.repository_construction_facility", "_dispatch"): (
+        "builds one genuinely-sealed dispatch (task/lease/assignment/snapshot) for the qualification harness's "
+        "own bounded scenarios, reusing Gen1's real fencing data shapes -- never a live production dispatch -- "
+        "SC-23 closure, docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
+    ("tenfold.gen2.repository_construction_facility", "run_duplicate_key_scenario"): (
+        "one of this module's own real, bounded, disposable-repository adversarial scenarios (G2-00 SS9.1's "
+        "corpus) -- SC-23 closure, docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
+    ("tenfold.gen2.repository_construction_facility", "run_idempotency_two_sided_scenario"): (
+        "same as run_duplicate_key_scenario -- SC-23 closure, docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
+    ("tenfold.gen2.repository_construction_facility", "run_stale_expected_head_non_occurrence_scenario"): (
+        "same as run_duplicate_key_scenario -- SC-23 closure, docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
+    ("tenfold.gen2.repository_construction_facility", "run_enumeration_falsification_scenario"): (
+        "same as run_duplicate_key_scenario -- SC-23 closure, docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
+    ("tenfold.gen2.repository_construction_facility", "run_observation_semantics_scenario"): (
+        "same as run_duplicate_key_scenario -- SC-23 closure, docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
+    ("tenfold.gen2.repository_construction_facility", "run_effect_reach_scenario"): (
+        "same as run_duplicate_key_scenario -- SC-23 closure, docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
+    ("tenfold.gen2.repository_construction_facility", "run_recovery_takeover_scenario"): (
+        "same as run_duplicate_key_scenario -- SC-23 closure, docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
+    ("tenfold.gen2.repository_construction_facility", "run_generation_enforcement_scenario"): (
+        "same as run_duplicate_key_scenario -- SC-23 closure, docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
+    ("tenfold.gen2.repository_construction_facility", "run_reconciliation_and_ack_semantics_scenario"): (
+        "same as run_duplicate_key_scenario -- SC-23 closure, docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
+    ("tenfold.gen2.repository_construction_facility", "run_latency_bounds_scenario"): (
+        "same as run_duplicate_key_scenario -- SC-23 closure, docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
+    ("tenfold.gen2.repository_construction_facility", "_probe_reference_transaction_hook_does_not_fire_on_rig"): (
+        "one of this module's own real, bounded, disposable-repository adversarial scenarios (a genuine "
+        "Facility-driven create_branch call proving hooks are neutralized) -- SC-23 closure, round-4 review "
+        "finding, docs/gen2/G2-27-SC23-closure-review-record.md"
     ),
 }
 
@@ -647,6 +761,7 @@ _SCANNED_MODULES: dict[str, object] = {
     "proof_transfer": proof_transfer,
     "recovery_qualification": recovery_qualification,
     "recovery_takeover": recovery_takeover,
+    "repository_construction_facility": repository_construction_facility,
     "root_authority": root_authority,
     "runtime_obligation": runtime_obligation,
     "state_model": state_model,

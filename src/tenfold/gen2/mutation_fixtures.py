@@ -123,6 +123,9 @@ from .runtime_obligation_bridge import (
     rust_find_missing_runtime_obligations,
 )
 from .facility import (
+    ADMITTED_REPOSITORY_CONSTRUCTION_EFFECT_CLASS,
+    ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_GENERATION,
+    ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_ID,
     FacilityAdapterBoundary,
     FacilityContract,
     FacilityIOClass,
@@ -1310,6 +1313,114 @@ def _g2_14_critical_gate_bypass_kill_check() -> None:
     gen1_records = tuple(PropertyQualificationRecord(FacilityProperty(r["property"]), QualificationState(r["state"]), tuple(r["evidence_refs"]), r["bound_description"]) for r in _all_qualified_property_records())
     contract = FacilityContract("fac-1", 1, FacilityIOClass.REAL_MUTATING, FacilityAdapterBoundary.LOCAL_FACILITY, "test-effect", "authority@ref", gen1_records, ("ev-declaration",))
     contract.can_emit_authoritative_non_occurrence()
+
+
+def _repository_construction_contract_dict(**overrides) -> dict:
+    base = {
+        "facility_id": ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_ID,
+        "facility_generation": ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_GENERATION,
+        "io_class": "REAL_MUTATING",
+        "adapter_boundary": "REPOSITORY",
+        "effect_class": ADMITTED_REPOSITORY_CONSTRUCTION_EFFECT_CLASS,
+        "authority_ref": "authority@gen2-sc23-repository-construction",
+        "property_qualifications": _all_qualified_property_records(),
+        "evidence_refs": ["ev-sc23-closure"],
+    }
+    base.update(overrides)
+    return base
+
+
+def _repository_construction_contract(**overrides) -> FacilityContract:
+    contract_dict = _repository_construction_contract_dict(**overrides)
+    records = tuple(PropertyQualificationRecord(FacilityProperty(r["property"]), QualificationState(r["state"]), tuple(r["evidence_refs"]), r["bound_description"]) for r in contract_dict["property_qualifications"])
+    return FacilityContract(
+        contract_dict["facility_id"], contract_dict["facility_generation"], FacilityIOClass.REAL_MUTATING,
+        FacilityAdapterBoundary.REPOSITORY, contract_dict["effect_class"], contract_dict["authority_ref"], records, tuple(contract_dict["evidence_refs"]),
+    )
+
+
+class RepositoryConstructionIdentityMismatchCorrectlyRejected(Exception):
+    """Fixture-only sentinel (see `PartialProofCorrectlyRejected` above
+    for the rationale), for SC-23 closure's critical-gate narrowing:
+    a REAL_MUTATING contract that does not exactly match the one
+    admitted repository-construction identity is still rejected."""
+
+
+def _g2_23_repository_construction_identity_mismatch_kill_check() -> None:
+    # SC-23 closure: the narrowed critical gate admits ONLY the one
+    # pre-agreed identity (facility_id/facility_generation/
+    # adapter_boundary/effect_class), never any other REAL_MUTATING
+    # contract -- even one with every property genuinely qualified and
+    # only a single identity field off.
+    contract_dict = _repository_construction_contract_dict(facility_id="some-other-repository-construction-facility")
+    try:
+        rust_validate_facility_contract(contract_dict)
+    except FacilityCliError:
+        pass
+    else:
+        raise AssertionError("rust facility kernel incorrectly admitted a REAL_MUTATING contract with a mismatched facility_id")
+
+    contract = _repository_construction_contract(facility_id="some-other-repository-construction-facility")
+    try:
+        check_critical_gate(contract)
+    except Gen2FacilityError:
+        pass
+    else:
+        raise AssertionError("gen1 check_critical_gate incorrectly admitted a REAL_MUTATING contract with a mismatched facility_id")
+
+    raise RepositoryConstructionIdentityMismatchCorrectlyRejected("a REAL_MUTATING contract with a mismatched identity is rejected in both Gen1 and Rust, even with every property genuinely qualified")
+
+
+class RepositoryConstructionPartialQualificationCorrectlyRejected(Exception):
+    """Fixture-only sentinel, same rationale as
+    `RepositoryConstructionIdentityMismatchCorrectlyRejected`, for SC-23
+    closure's own qualification-completeness requirement: the admitted
+    identity with even one property genuinely unqualified is still
+    rejected."""
+
+
+def _g2_23_repository_construction_partial_qualification_kill_check() -> None:
+    # The admitted identity's own fields match exactly, but one property
+    # (LATENCY_BOUNDS) is genuinely UNQUALIFIED -- the gate must still
+    # reject it; identity match alone is not sufficient.
+    records = [r for r in _all_qualified_property_records() if r["property"] != "LATENCY_BOUNDS"]
+    records.append({"property": "LATENCY_BOUNDS", "state": "UNQUALIFIED", "evidence_refs": [], "bound_description": None})
+    contract_dict = _repository_construction_contract_dict(property_qualifications=records)
+    try:
+        rust_validate_facility_contract(contract_dict)
+    except FacilityCliError:
+        pass
+    else:
+        raise AssertionError("rust facility kernel incorrectly admitted the admitted identity with an unqualified property")
+
+    contract = _repository_construction_contract(property_qualifications=records)
+    try:
+        check_critical_gate(contract)
+    except Gen2FacilityError:
+        pass
+    else:
+        raise AssertionError("gen1 check_critical_gate incorrectly admitted the admitted identity with an unqualified property")
+
+    raise RepositoryConstructionPartialQualificationCorrectlyRejected("the admitted repository-construction identity with even one genuinely unqualified property is rejected in both Gen1 and Rust")
+
+
+class AdmittedRepositoryConstructionIdentityCorrectlyAdmitted(Exception):
+    """Fixture-only sentinel, same rationale as the others in this
+    section -- but for the POSITIVE regression guard: the one genuinely-
+    qualified admitted identity DOES pass the narrowed critical gate in
+    both Gen1 and Rust. Catches an accidental future revert to blanket
+    REAL_MUTATING rejection (a different, opposite defect than the
+    identity-mismatch/partial-qualification fixtures above prove)."""
+
+
+def _g2_23_admitted_repository_construction_identity_kill_check() -> None:
+    contract_dict = _repository_construction_contract_dict()
+    rust_validate_facility_contract(contract_dict)  # must NOT raise
+
+    contract = _repository_construction_contract()
+    check_critical_gate(contract)  # must NOT raise
+
+    raise AdmittedRepositoryConstructionIdentityCorrectlyAdmitted("the one genuinely-qualified admitted repository-construction identity passes the narrowed critical gate in both Gen1 and Rust")
 
 
 def _g2_15_ambient_authority_kill_check() -> None:
@@ -3349,6 +3460,48 @@ def build_initial_mutation_suite() -> MutationSuite:
             "facility_declaration",
             _g2_14_critical_gate_bypass_kill_check,
             Gen2FacilityError,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G14-REPOCONSTRUCT-IDENTITY-001",
+            MutationCategory.EFFECT_CONTAINMENT,
+            "A REAL_MUTATING FacilityContract with a mismatched facility_id -- even with every "
+            "property genuinely qualified -- is rejected by both the real compiled Rust facility "
+            "kernel and real Gen-1 check_critical_gate (SC-23 closure): the narrowed critical gate "
+            "admits ONLY the one pre-agreed repository-construction identity.",
+            "G2-14 critical gate; SC-23",
+            "repository_construction_facility",
+            _g2_23_repository_construction_identity_mismatch_kill_check,
+            RepositoryConstructionIdentityMismatchCorrectlyRejected,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G14-REPOCONSTRUCT-PARTIALQUAL-001",
+            MutationCategory.EFFECT_CONTAINMENT,
+            "The admitted repository-construction identity with even one property (LATENCY_BOUNDS) "
+            "genuinely UNQUALIFIED is still rejected by both the real compiled Rust facility kernel "
+            "and real Gen-1 check_critical_gate (SC-23 closure): identity match alone is not "
+            "sufficient.",
+            "G2-00 SS9.1; SC-23",
+            "repository_construction_facility",
+            _g2_23_repository_construction_partial_qualification_kill_check,
+            RepositoryConstructionPartialQualificationCorrectlyRejected,
+        )
+    )
+    suite.register(
+        MutationFixture(
+            "MUT-G14-REPOCONSTRUCT-ADMIT-001",
+            MutationCategory.EFFECT_CONTAINMENT,
+            "The ONE genuinely-qualified admitted repository-construction identity DOES pass the "
+            "narrowed critical gate in both the real compiled Rust facility kernel and real Gen-1 "
+            "(SC-23 closure) -- a positive regression guard catching an accidental future revert to "
+            "blanket REAL_MUTATING rejection.",
+            "SC-23",
+            "repository_construction_facility",
+            _g2_23_admitted_repository_construction_identity_kill_check,
+            AdmittedRepositoryConstructionIdentityCorrectlyAdmitted,
         )
     )
     suite.register(

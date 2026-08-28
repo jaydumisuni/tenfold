@@ -266,7 +266,7 @@ pub fn initial_trust_table() -> TrustTable {
             independently_checks: vec![
                 "nothing authoritative before qualification".into(),
                 "unqualified non-occurrence signal cannot yield FAILED_NON_OCCURRENCE_PROVEN".into(),
-                "REAL_MUTATING io_class mechanically blocked (G2-14 critical gate, until G2-18 is PROVEN)".into(),
+                "REAL_MUTATING io_class mechanically blocked for every identity except the one narrowly-admitted repository-construction Facility identity (G2-14 critical gate, narrowed at SC-23 closure -- see repository_construction_facility row)".into(),
             ],
             trusts_only: "individually qualified properties only".into(),
             trust_bounded_reason: "G2-00 SS9.1: a Facility declaration has no constitutional authority merely because the adapter/provider says it is true; only adversarially qualified properties may be trusted, and only up to their qualified bound".into(),
@@ -276,6 +276,20 @@ pub fn initial_trust_table() -> TrustTable {
             // G2-14 (rust/facility) is the real crate genuinely backing
             // this claim now -- flipped from the honest `false` G2-03
             // seeded this row with before any real runtime existed.
+            fixture_qualified: true,
+        },
+        TrustTableRow {
+            artifact_identity: "repository_construction_facility".into(),
+            independently_checks: vec![
+                "the declared facility_id/facility_generation/adapter_boundary/effect_class exactly match the single admitted repository-construction identity".into(),
+                "every one of the 11 FacilityProperty records is genuinely QUALIFIED/QUALIFIED_WITH_BOUND with non-empty evidence_refs".into(),
+                "every other REAL_MUTATING FacilityContract (any other identity) is still mechanically rejected".into(),
+            ],
+            trusts_only: "that the caller-supplied evidence_refs genuinely reflect real scenarios executed by RepositoryConstructionPropertyQualificationHarness against a real disposable local git repository (Gen1's RepositoryFacility + LocalGitRepositoryTransport, reused not re-derived)".into(),
+            trust_bounded_reason: "G2-00 SS9.1: a Facility declaration has no constitutional authority merely because the adapter/provider says it is true; this row narrows the pre-existing facility_declaration REAL_MUTATING-disabled claim to admit exactly one Trust-Table-admitted, genuinely-qualified identity, scoped to local-commit-only (create_branch/read/commit) -- open_pr/merge_pr remain permanently out of this identity's scope, matching LocalGitRepositoryTransport's own design (SC-23 closure, G2-00 SS20).".into(),
+            authority_generation: 1,
+            required_negative_fixture: "REAL_MUTATING contract with a different facility_id/adapter_boundary/effect_class, or missing even one qualified property, attempted against the narrowed gate".into(),
+            failure_result: "reject".into(),
             fixture_qualified: true,
         },
         TrustTableRow {
@@ -503,9 +517,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn initial_table_has_all_sixteen_minimum_families() {
+    fn initial_table_has_all_seventeen_minimum_families() {
         let table = initial_trust_table();
-        assert_eq!(table.len(), 16);
+        assert_eq!(table.len(), 17);
     }
 
     #[test]
@@ -535,6 +549,7 @@ mod tests {
             "full_system_qualification",
             "self_construction_capability",
             "evidence_packet",
+            "repository_construction_facility",
         ] {
             assert!(table.admit(identity).is_ok(), "expected {identity} to be admitted");
         }
@@ -683,7 +698,7 @@ mod tests {
             fixture_qualified: true,
         };
         assert!(table.extend(row).is_ok());
-        assert_eq!(table.len(), 17);
+        assert_eq!(table.len(), 18);
         assert!(table.admit("chronicle_event").is_ok());
     }
 

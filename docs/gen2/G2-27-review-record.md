@@ -262,6 +262,9 @@ honest — not a determination that self-construction is reached.
 Acceptance, verbatim: "Independent verifier + external assurance
 conclude `SELF_CONSTRUCTION_CAPABLE`."
 
+**As of this milestone's own proven candidate (`bba1974`), before the
+SC-16/SC-23 closures documented above:**
+
 - Independent verifier — **EXECUTED, CONCLUDES FALSE**: all 25 SS20
   conditions independently derived and genuinely, functionally
   qualification-checked; zero undisclosed live-Gen1-authority
@@ -271,8 +274,14 @@ conclude `SELF_CONSTRUCTION_CAPABLE`."
 - External assurance — **EXECUTED, CONCLUDES GENUINE (non-BLOCK,
   eligibility-checked)**: two genuinely independent, real Sergeant
   invocations, reconciled.
-- **Combined, authoritative result: `SELF_CONSTRUCTION_CAPABLE =
-  FALSE`.**
+- **Combined, authoritative result at the time: `SELF_CONSTRUCTION_CAPABLE
+  = FALSE`.**
+
+**This is now a historical snapshot, superseded by "Result after G2-27"
+below** — SC-16 and SC-23 have since closed (all 25 conditions now
+genuinely qualify), but the combined, authoritative result remains
+`FALSE` today for a different reason (external assurance). See "Result
+after G2-27" for the current, real state.
 
 `MUT-G27-CAPABILITYWRONGCOUNT-001`, `MUT-G27-CAPABILITYINCONSISTENTCOUNT-001`,
 `MUT-G27-CAPABILITYOVERCLAIM-001`, and
@@ -296,26 +305,45 @@ because:
   `0b134d7`). Re-verified directly: `derive_condition_qualifications()`
   now genuinely qualifies SC-16.
 - **SC-23** (qualified repository construction Facility): G2-14's own
-  critical gate still unconditionally disables `REAL_MUTATING` Facility
+  critical gate still unconditionally disabled `REAL_MUTATING` Facility
   authority in both the Python and Rust sides; no Gen2-owned, qualified,
-  mutating repository-construction Facility class exists anywhere in
-  `tenfold.gen2`. **Still open.**
+  mutating repository-construction Facility class existed anywhere in
+  `tenfold.gen2`. **Since closed** — see
+  `docs/gen2/G2-27-SC23-closure-review-record.md`. Re-verified directly:
+  `derive_condition_qualifications()` now genuinely qualifies all 25
+  conditions, zero unqualified.
 
 Per the roadmap's own design, `G2-28` ("Gen2 Self-Construction
 Campaign") requires exactly the capability this gate found absent —
 "Gen2 consumes approved remaining roadmap... using only Gen2 live
 execution authority." Proceeding to G2-28, or removing any live Gen1
 construction authority, is not authorized by this result and has not
-been done. `self_construction_capable` remains `False`, now driven by
-SC-23 alone (directly re-verified after SC-16's closure).
+been done. **With both SC-16 and SC-23 now closed, the internal verifier
+genuinely reports `self_construction_capable = True` for the first time
+(directly re-verified) — but G2-27's own Acceptance requires BOTH legs:
+"Independent verifier + external assurance conclude
+SELF_CONSTRUCTION_CAPABLE." A real, independently-invoked external
+Sergeant assurance run at SC-23's closure returned `NEEDS_WORK` (not
+`eligible_for_satisfaction`), so the gate's own FINAL, authoritative
+combined verdict genuinely remains `False`, now driven by external
+assurance alone.** No live Gen1 authority has been removed and none is
+authorized by this state. A fresh, full G2-27 gate re-attempt (real
+external assurance, real Council reconciliation) is a distinct, future,
+separately-deliberated action, appropriate once external assurance
+genuinely resolves.
 
 ## Does not enable
 
-- Self-construction — this result is the opposite: it confirms
-  self-construction is **not yet** reached;
+- Self-construction — the FINAL, authoritative combined verdict is
+  still `False`, driven by external assurance;
 - removal of any live Gen1 execution authority;
-- G2-28 construction, which explicitly requires the capability this
-  gate found genuinely absent;
-- a future re-attempt of this gate before SC-23 is genuinely closed by
-  dedicated future construction work (SC-16 already closed, see
-  `docs/gen2/G2-19-SC16-closure-review-record.md`).
+- G2-28 construction;
+- a claim that the internal verifier's `True` report is itself
+  sufficient — both legs of G2-27's own Acceptance are required, and
+  only one is currently satisfied (see
+  `docs/gen2/G2-19-SC16-closure-review-record.md` and
+  `docs/gen2/G2-27-SC23-closure-review-record.md` for the condition
+  closures; external assurance remains the open item);
+- a formal G2-27 gate re-attempt/re-brief — appropriate as a distinct,
+  separately-deliberated future action once external assurance
+  genuinely resolves to `eligible_for_satisfaction`.
