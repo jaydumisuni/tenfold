@@ -828,7 +828,34 @@ def test_sc23_wrapper_rejects_a_symlinked_git_directory_planted_after_admission(
         facility.create_branch(None, repository="existing", branch="sc23/post-admission-git-swap", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-post-admission-git-swap", foreman_epoch=1)
 
 
-def test_sc23_wrapper_re_neutralizes_hooks_changed_after_admission(tmp_path) -> None:
+def _plant_a_reference_transaction_hook(hooks_dir, marker_path) -> None:
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    (hooks_dir / "reference-transaction").write_text(f"#!/bin/sh\necho fired > \"{marker_path}\"\nexit 0\n", encoding="utf-8")
+    (hooks_dir / "reference-transaction").chmod(0o755)
+
+
+def _real_create_branch_on_rig(rig, *, branch: str, operation_id: str):
+    """Review finding (PR #86, round 17, Minor, CodeRabbit): a
+    placeholder `task=None` wrapped in a broad `try/except: pass` can
+    pass even if hook re-neutralization itself regressed, as long as
+    SOME OTHER validation happens to reject the call first for an
+    unrelated reason -- proving nothing about whether re-neutralization
+    genuinely ran. This performs a REAL, fully-authorized create_branch
+    dispatch (the same `_dispatch` machinery the harness's own
+    scenarios use) and returns its real receipt, so callers can assert
+    the mutation genuinely SUCCEEDED, not merely that something was
+    rejected."""
+    from tenfold.gen2.repository_construction_facility import _dispatch
+    from tenfold.repository_facility import repository_ref_resource, repository_request_binding
+
+    request = {"operation_id": operation_id, "repository": rig.repository, "branch": branch, "owner": "assign-post", "base_ref": "main", "expected_base_sha": rig.initial_sha}
+    binding = repository_request_binding("create_branch", **request)
+    resource = repository_ref_resource(rig.repository, branch)
+    task = _dispatch(rig, assignment_id="assign-post", attempt=1, campaign_generation=1, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=resource, request_binding=binding)
+    return rig.facility.create_branch(task, repository=request["repository"], branch=branch, owner="assign-post", base_ref="main", expected_base_sha=rig.initial_sha, operation_id=operation_id, foreman_epoch=1)
+
+
+def test_sc23_wrapper_re_neutralizes_hooks_changed_after_admission(rig) -> None:
     """Review finding (PR #86, round 14, P1, reproduced by the
     reviewer): the round-13 per-mutation re-check only re-ran the
     containment scan, never re-applied hook neutralization -- a
@@ -836,42 +863,30 @@ def test_sc23_wrapper_re_neutralizes_hooks_changed_after_admission(tmp_path) -> 
     directory containing a real hook AFTER admission would still fire
     on the next mutation, since nothing re-neutralized it. The wrapper
     now also re-neutralizes hooks before every create_branch/commit
-    call (cheaply, when nothing changed; genuinely, when it has)."""
+    call (cheaply, when nothing changed; genuinely, when it has).
+
+    Review finding (PR #86, round 17, Minor, CodeRabbit): rewritten to
+    use a REAL, fully-authorized create_branch dispatch (see
+    `_real_create_branch_on_rig`) and assert the mutation genuinely
+    succeeds, rather than a placeholder task wrapped in a broad
+    try/except that could pass for the wrong reason."""
     import subprocess
-
-    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
-    from tenfold.local_git_transport import LocalGitRepositoryTransport
-
-    repo_root = tmp_path / "existing-repo"
-    initial_sha = _real_existing_repo(repo_root, tmp_path)
-
-    transport = LocalGitRepositoryTransport({"existing": repo_root})
-    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
 
     # Admission neutralized hooks genuinely -- NOW restore
     # core.hooksPath to a real, malicious hook directory.
-    malicious_hooks_dir = tmp_path / "malicious-hooks"
-    malicious_hooks_dir.mkdir()
-    marker_path = tmp_path / "hook-fired.txt"
-    (malicious_hooks_dir / "reference-transaction").write_text(f"#!/bin/sh\necho fired > \"{marker_path}\"\nexit 0\n", encoding="utf-8")
-    (malicious_hooks_dir / "reference-transaction").chmod(0o755)
-    subprocess.run(["git", "-C", str(repo_root), "config", "core.hooksPath", str(malicious_hooks_dir)], check=True, capture_output=True)
+    malicious_hooks_dir = rig.repo_root.parent / "malicious-hooks"
+    marker_path = rig.repo_root.parent / "hook-fired.txt"
+    _plant_a_reference_transaction_hook(malicious_hooks_dir, marker_path)
+    subprocess.run(["git", "-C", str(rig.repo_root), "config", "core.hooksPath", str(malicious_hooks_dir)], check=True, capture_output=True)
 
-    # The wrapper's re-validation (containment + hook re-neutralization)
-    # runs as the FIRST statement in create_branch, before any
-    # task/authority argument is even inspected -- a placeholder task
-    # is sufficient: whatever this call ultimately raises, hooks must
-    # already have been genuinely re-neutralized before it did.
-    try:
-        facility.create_branch(None, repository="existing", branch="sc23/post-admission-hook", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-post-admission-hook", foreman_epoch=1)
-    except Exception:
-        pass
+    receipt = _real_create_branch_on_rig(rig, branch="sc23/post-admission-hook", operation_id="op-post-admission-hook")
+    assert receipt is not None
     assert not marker_path.exists()
-    current_hooks_path = subprocess.run(["git", "-C", str(repo_root), "config", "core.hooksPath"], check=True, capture_output=True, text=True).stdout.strip()
+    current_hooks_path = subprocess.run(["git", "-C", str(rig.repo_root), "config", "core.hooksPath"], check=True, capture_output=True, text=True).stdout.strip()
     assert current_hooks_path != str(malicious_hooks_dir)
 
 
-def test_sc23_wrapper_detects_a_duplicate_hookspath_key_added_after_admission(tmp_path) -> None:
+def test_sc23_wrapper_detects_a_duplicate_hookspath_key_added_after_admission(rig) -> None:
     """Review finding (PR #86, round 15, P1, reproduced by the
     reviewer): the round-14 cheap check searched for the trusted
     no_hooks_dir path as a SUBSTRING of .git/config's raw text --
@@ -882,35 +897,26 @@ def test_sc23_wrapper_detects_a_duplicate_hookspath_key_added_after_admission(tm
     requires .git/config's complete content to be byte-identical to
     the exact snapshot taken when neutralization was established --
     any addition at all, including a duplicate key, fails the cheap
-    path and forces genuine re-neutralization."""
+    path and forces genuine re-neutralization.
+
+    Review finding (PR #86, round 17, Minor, CodeRabbit): rewritten to
+    assert the mutation genuinely succeeds -- see
+    `_real_create_branch_on_rig`."""
     import subprocess
 
-    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
-    from tenfold.local_git_transport import LocalGitRepositoryTransport
-
-    repo_root = tmp_path / "existing-repo"
-    initial_sha = _real_existing_repo(repo_root, tmp_path)
-
-    transport = LocalGitRepositoryTransport({"existing": repo_root})
-    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
-
-    malicious_hooks_dir = tmp_path / "malicious-hooks-add"
-    malicious_hooks_dir.mkdir()
-    marker_path = tmp_path / "hook-fired-add.txt"
-    (malicious_hooks_dir / "reference-transaction").write_text(f"#!/bin/sh\necho fired > \"{marker_path}\"\nexit 0\n", encoding="utf-8")
-    (malicious_hooks_dir / "reference-transaction").chmod(0o755)
+    malicious_hooks_dir = rig.repo_root.parent / "malicious-hooks-add"
+    marker_path = rig.repo_root.parent / "hook-fired-add.txt"
+    _plant_a_reference_transaction_hook(malicious_hooks_dir, marker_path)
     # --add APPENDS, never removing the trusted entry the cheap check
     # was looking for as a substring.
-    subprocess.run(["git", "-C", str(repo_root), "config", "--add", "core.hooksPath", str(malicious_hooks_dir)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(rig.repo_root), "config", "--add", "core.hooksPath", str(malicious_hooks_dir)], check=True, capture_output=True)
 
-    try:
-        facility.create_branch(None, repository="existing", branch="sc23/duplicate-key-hook", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-duplicate-key-hook", foreman_epoch=1)
-    except Exception:
-        pass
+    receipt = _real_create_branch_on_rig(rig, branch="sc23/duplicate-key-hook", operation_id="op-duplicate-key-hook")
+    assert receipt is not None
     assert not marker_path.exists()
 
 
-def test_sc23_wrapper_detects_a_trusted_path_hidden_in_a_config_comment(tmp_path) -> None:
+def test_sc23_wrapper_detects_a_trusted_path_hidden_in_a_config_comment(rig) -> None:
     """Review finding (PR #86, round 15, P1, reproduced by the
     reviewer, CWE-78): the round-14 cheap check's substring match was
     also fooled by appending the trusted no_hooks_dir path as a `#`
@@ -918,35 +924,25 @@ def test_sc23_wrapper_detects_a_trusted_path_hidden_in_a_config_comment(tmp_path
     "present" as a substring while never actually being the active
     value. The exact-content comparison rejects this too, since ANY
     appended text (comment or otherwise) changes .git/config's bytes
-    away from the established snapshot."""
+    away from the established snapshot.
+
+    Review finding (PR #86, round 17, Minor, CodeRabbit): rewritten to
+    assert the mutation genuinely succeeds -- see
+    `_real_create_branch_on_rig`."""
     import subprocess
 
-    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
-    from tenfold.gen2.repository_construction_facility import _neutralize_hooks_for_every_registered_repository
-    from tenfold.local_git_transport import LocalGitRepositoryTransport
+    established = rig.facility._established_no_hooks_dirs  # noqa: SLF001 -- test-only introspection
+    no_hooks_dir = established[rig.repository].no_hooks_dir
 
-    repo_root = tmp_path / "existing-repo"
-    initial_sha = _real_existing_repo(repo_root, tmp_path)
-
-    transport = LocalGitRepositoryTransport({"existing": repo_root})
-    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
-
-    established = facility._established_no_hooks_dirs  # noqa: SLF001 -- test-only introspection
-    no_hooks_dir = established["existing"].no_hooks_dir
-
-    malicious_hooks_dir = tmp_path / "malicious-hooks-comment"
-    malicious_hooks_dir.mkdir()
-    marker_path = tmp_path / "hook-fired-comment.txt"
-    (malicious_hooks_dir / "reference-transaction").write_text(f"#!/bin/sh\necho fired > \"{marker_path}\"\nexit 0\n", encoding="utf-8")
-    (malicious_hooks_dir / "reference-transaction").chmod(0o755)
-    subprocess.run(["git", "-C", str(repo_root), "config", "core.hooksPath", str(malicious_hooks_dir)], check=True, capture_output=True)
-    with (repo_root / ".git" / "config").open("a", encoding="utf-8") as f:
+    malicious_hooks_dir = rig.repo_root.parent / "malicious-hooks-comment"
+    marker_path = rig.repo_root.parent / "hook-fired-comment.txt"
+    _plant_a_reference_transaction_hook(malicious_hooks_dir, marker_path)
+    subprocess.run(["git", "-C", str(rig.repo_root), "config", "core.hooksPath", str(malicious_hooks_dir)], check=True, capture_output=True)
+    with (rig.repo_root / ".git" / "config").open("a", encoding="utf-8") as f:
         f.write(f"# {no_hooks_dir}\n")
 
-    try:
-        facility.create_branch(None, repository="existing", branch="sc23/comment-hidden-hook", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-comment-hidden-hook", foreman_epoch=1)
-    except Exception:
-        pass
+    receipt = _real_create_branch_on_rig(rig, branch="sc23/comment-hidden-hook", operation_id="op-comment-hidden-hook")
+    assert receipt is not None
     assert not marker_path.exists()
 
 
@@ -1037,6 +1033,57 @@ def test_sc23_wrapper_rejects_an_included_git_config_planted_after_admission(tmp
 
     with pytest.raises(RepositoryConstructionQualificationError):
         facility.create_branch(None, repository="existing", branch="sc23/included-config", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-included-config", foreman_epoch=1)
+
+
+def test_sc23_wrapper_rejects_a_worktree_config_file(tmp_path) -> None:
+    """Review finding (PR #86, round 17, P1, reproduced by the
+    reviewer): git's config resolution also reads a SEPARATE
+    .git/config.worktree file (when extensions.worktreeConfig is
+    enabled), which takes precedence over the local [core] section for
+    exactly this kind of setting -- entirely outside anything
+    .git/config's own bytes reveal, so the round-16 exact-content check
+    (which only watches .git/config) cannot see it. The reviewer
+    reproduced (Git 2.43.0) a malicious core.hooksPath in
+    .git/config.worktree firing despite _hooks_neutralization_still_intact
+    reporting the local file unchanged. The wrapper now rejects
+    admission outright if .git/config.worktree exists at all."""
+    import subprocess
+
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    _real_existing_repo(repo_root, tmp_path)
+
+    subprocess.run(["git", "-C", str(repo_root), "config", "extensions.worktreeConfig", "true"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "config", "--worktree", "core.hooksPath", str(tmp_path / "malicious-worktree-hooks")], check=True, capture_output=True)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    with pytest.raises(RepositoryConstructionQualificationError):
+        gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+
+def test_sc23_wrapper_rejects_a_worktree_config_file_planted_after_admission(tmp_path) -> None:
+    """Companion to the admission-time case: extensions.worktreeConfig
+    and .git/config.worktree planted AFTER a genuinely clean admission
+    are rejected at the next mutation attempt too, not merely at
+    construction."""
+    import subprocess
+
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    subprocess.run(["git", "-C", str(repo_root), "config", "extensions.worktreeConfig", "true"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "config", "--worktree", "core.hooksPath", str(tmp_path / "malicious-worktree-hooks-post")], check=True, capture_output=True)
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        facility.create_branch(None, repository="existing", branch="sc23/worktree-config", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-worktree-config", foreman_epoch=1)
 
 
 def test_sc23_wrapper_rejects_a_transport_reassigned_on_the_inner_facility(tmp_path) -> None:

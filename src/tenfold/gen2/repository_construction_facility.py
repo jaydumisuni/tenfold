@@ -148,7 +148,15 @@ def _neutralize_hooks_for_every_registered_repository(transport: LocalGitReposit
                 f"_neutralize_hooks_for_every_registered_repository: {repo_root} has no real, non-symlink .git directory"
             )
         no_hooks_dir = Path(tempfile.mkdtemp(prefix="tenfold-gen2-no-hooks-", dir=str(git_dir)))
-        transport._run(name, "config", "core.hooksPath", str(no_hooks_dir))  # noqa: SLF001 -- see docstring
+        # Self-caught bug (round 17): a plain `git config
+        # core.hooksPath <value>` REFUSES to run at all when the key
+        # already has multiple values ("cannot overwrite multiple
+        # values with a single value") -- exactly the state a round-15
+        # `--add`-based attack leaves behind. `--replace-all` genuinely
+        # replaces EVERY existing value with the single trusted one,
+        # succeeding regardless of how many stale/malicious entries
+        # were already present.
+        transport._run(name, "config", "--replace-all", "core.hooksPath", str(no_hooks_dir))  # noqa: SLF001 -- see docstring
         config_path = git_dir / "config"
         established[name] = _EstablishedHooksNeutralization(no_hooks_dir, config_path.read_text(encoding="utf-8", errors="strict"))
     return established
@@ -380,7 +388,7 @@ def _reject_symlinked_git_storage_for_every_registered_repository(transport: Loc
                     f"_reject_symlinked_git_storage_for_every_registered_repository: "
                     f"{name}'s .git/{internal} contains a symlink or hard link ({found}), escaping the registered repository root"
                 )
-        _reject_included_git_config(name, git_dir / "config")
+        _reject_alternate_git_config_sources(name, git_dir)
 
 
 #: Self-caught bug (round 16): a trailing `\b` here would require a
@@ -391,40 +399,53 @@ def _reject_symlinked_git_storage_for_every_registered_repository(transport: Loc
 #: both `[include]` and `[includeIf ...]` correctly.
 _INCLUDE_SECTION_HEADER = re.compile(r"^\s*\[include", re.MULTILINE | re.IGNORECASE)
 
+#: Case-insensitive substring match, deliberately not a precise parse
+#: -- see `_reject_alternate_git_config_sources`'s own docstring for
+#: why "detect presence, don't interpret" is the whole point here.
+_WORKTREE_CONFIG_MENTION = re.compile(r"worktreeconfig", re.IGNORECASE)
 
-def _reject_included_git_config(name: str, config_path: Path) -> None:
-    """Review finding (PR #86, round 16, P1, reproduced by the
-    reviewer): the round-15 exact-byte-snapshot fix for
-    `_hooks_neutralization_still_intact` is airtight against tampering
-    WITHIN `.git/config` itself, but git's OWN config resolution reads
-    `[include]`/`[includeIf "..."]` directives and merges values from
-    whatever file(s) they point at -- a LATER `core.hooksPath` from an
-    included file overrides the local one, entirely outside anything
-    `.git/config`'s own bytes reveal. The reviewer reproduced (Git
-    2.43.0) `_hooks_neutralization_still_intact` reporting `True` while
-    the next mutation executed a `reference-transaction` hook sourced
-    from an included file. Correctly resolving the COMPLETE effective
-    configuration (multiple included files, `includeIf` conditional
-    matching on gitdir/onbranch, precedence ordering) would mean
-    re-deriving a real, correct git-config resolution ENGINE in
-    Python -- exactly the kind of re-derivation this codebase avoids
-    (G2-00 SS15), and a losing battle besides: every variation fixed
-    invites another. `LocalGitRepositoryTransport` (Gen1-owned) always
-    reads `.git/config` and its includes for every git subprocess call
-    it makes, and offers no way for Gen2 code to override that without
-    modifying Gen1's own transport, out of this closure's wrapper-only
-    scope. Instead of trying to interpret what an include directive
-    WOULD resolve to, this reflects the same philosophy as the round-15
-    fix: make the check robust BY CONSTRUCTION rather than by
-    correctly modeling arbitrary semantics. A genuinely admitted,
-    from-scratch local-commit-only repository has no legitimate reason
-    to use `[include]`/`[includeIf]` at all (a construct meant for
-    sharing config across MULTIPLE repositories, not something `git
-    init` or ordinary single-repo use ever creates) -- so its mere
-    PRESENCE, detected via a simple, reliable section-header search
-    (not full config parsing), is rejected outright, at admission and
-    before every mutation, closing the vector without needing to
-    resolve what it would have meant."""
+
+def _reject_alternate_git_config_sources(name: str, git_dir: Path) -> None:
+    """Review finding (PR #86, round 16, P1): git's config resolution
+    reads `.git/config` -- but also `[include]`/`[includeIf "..."]`
+    directives WITHIN it (fixed earlier this round), AND, when
+    `extensions.worktreeConfig` is enabled, a SEPARATE
+    `.git/config.worktree` file that takes precedence over the local
+    `[core]` section for exactly this kind of setting. Round 17,
+    reproduced by the reviewer (Git 2.43.0): with
+    `extensions.worktreeConfig=true` and a malicious `core.hooksPath`
+    in `.git/config.worktree`, `_hooks_neutralization_still_intact`
+    still reported the local file's own bytes as unchanged (correctly
+    -- they were), while the ACTUAL effective hooksPath came from the
+    higher-precedence worktree file entirely outside what
+    `.git/config` reveals; re-neutralization only ever rewrote the
+    lower-priority local value, never touching the file that actually
+    mattered.
+
+    This is genuinely the SAME category of problem as the include
+    directive, just a different git mechanism -- and re-deriving git's
+    own complete config-resolution engine (every scope, every
+    precedence rule, every extension) to correctly interpret each one
+    is a losing battle where every fix invites the next variant (G2-00
+    SS15's "no re-derivation" principle, and simple pragmatism, both
+    argue against it). The philosophy stays the same as round 16: make
+    the check robust BY CONSTRUCTION -- detect the mere PRESENCE of a
+    mechanism this identity's own disposable, single-worktree,
+    from-scratch repositories have no legitimate reason to use, and
+    reject it outright, rather than trying to correctly interpret what
+    it would resolve to. Rejects if `.git/config.worktree` exists at
+    all (regardless of content), OR if `.git/config`'s own text even
+    MENTIONS `worktreeConfig` (case-insensitive substring, not a
+    precise key/value parse -- deliberately conservative: a
+    false-positive rejection here costs nothing for a repository that
+    genuinely has no reason to reference it at all)."""
+    worktree_config_path = git_dir / "config.worktree"
+    if worktree_config_path.exists():
+        raise RepositoryConstructionQualificationError(
+            f"_reject_alternate_git_config_sources: {name} has a .git/config.worktree file -- "
+            f"rejected outright rather than resolving its effective value"
+        )
+    config_path = git_dir / "config"
     if config_path.is_symlink() or not config_path.is_file():
         return  # handled by the caller's own symlink/hard-link check
     try:
@@ -433,7 +454,12 @@ def _reject_included_git_config(name: str, config_path: Path) -> None:
         return
     if _INCLUDE_SECTION_HEADER.search(config_text):
         raise RepositoryConstructionQualificationError(
-            f"_reject_included_git_config: {name}'s .git/config declares an [include]/[includeIf] section -- "
+            f"_reject_alternate_git_config_sources: {name}'s .git/config declares an [include]/[includeIf] section -- "
+            f"rejected outright rather than resolving its effective value"
+        )
+    if _WORKTREE_CONFIG_MENTION.search(config_text):
+        raise RepositoryConstructionQualificationError(
+            f"_reject_alternate_git_config_sources: {name}'s .git/config mentions worktreeConfig -- "
             f"rejected outright rather than resolving its effective value"
         )
 
@@ -646,15 +672,21 @@ class _ContainmentReCheckedRepositoryFacility:
         # kept validating the ORIGINAL, no-longer-relevant transport,
         # while the real facility silently delegated every mutation to
         # the replacement. Every mutating/delegating call now reads
-        # `self._facility.transport` FRESH and re-runs the FULL
-        # admission-equivalent check set (including the exact-type
-        # check, not merely containment/hooks/instance-overrides)
-        # against whatever is CURRENTLY there -- so a swap to anything
-        # that is not a genuine, unmodified `LocalGitRepositoryTransport`
-        # is rejected outright, and a swap to a DIFFERENT (even if
-        # genuine) instance forces a full, fresh re-verification of
-        # ITS OWN containment/hooks state rather than silently reusing
-        # stale results computed for the original.
+        # `self._facility.transport` FRESH via THIS method and
+        # re-verifies the exact-type check against whatever is
+        # CURRENTLY there -- so a swap to anything that is not a
+        # genuine, unmodified `LocalGitRepositoryTransport` is rejected
+        # outright, at every call site (`open_pr`/`merge_pr` included).
+        # `_revalidate_before_mutation` (called by `create_branch`/
+        # `commit` only) additionally re-runs the full containment/
+        # hooks/instance-override check set on top of this, so a swap
+        # to a DIFFERENT (even if genuine) instance also forces a
+        # full, fresh re-verification of ITS OWN containment/hooks
+        # state there -- but THIS method, by itself, only re-verifies
+        # the transport's own type identity (CodeRabbit review
+        # finding, round 17: narrowed this comment's own claim to
+        # match precisely what this method does, versus what the
+        # caller built on top of it does).
         current = self._facility.transport
         if type(current) is not LocalGitRepositoryTransport:
             raise RepositoryConstructionQualificationError(

@@ -943,20 +943,95 @@ verdict (see below) rather than a hardcoded stale expectation.
       real facility silently delegated every mutation to the
       replacement. **Fixed**: every mutating/delegating method now
       reads `self._facility.transport` FRESH via a new
-      `_current_transport()` helper and re-runs the FULL
-      admission-equivalent check set against whatever is currently
-      there -- including the exact-type check, not merely
-      containment/hooks/instance-overrides -- so a swap to anything
-      that is not a genuine, unmodified `LocalGitRepositoryTransport`
-      is rejected outright, and a swap to a different (even if
-      genuine) instance forces a full, fresh re-verification of ITS
-      OWN state rather than silently reusing stale results. New
-      permanent test reproduces the exact reassignment.
+      `_current_transport()` helper, which re-runs the exact-type
+      check against whatever is currently there -- so a swap to
+      anything that is not a genuine, unmodified
+      `LocalGitRepositoryTransport` is rejected outright at EVERY
+      call, `open_pr`/`merge_pr` included. `create_branch`/`commit`
+      additionally re-run the full containment/hooks/instance-override
+      check set (via `_revalidate_before_mutation`, which itself now
+      calls `_current_transport()`) against a swapped-but-genuine
+      instance, forcing a full, fresh re-verification of ITS OWN state
+      rather than silently reusing stale results. `open_pr`/`merge_pr`
+      do not re-run those additional checks -- they do not need to,
+      since `LocalGitRepositoryTransport`'s own real
+      `open_pull_request`/`merge_pull_request` unconditionally raise
+      by design; only an instance-level override could make them do
+      anything else, and that is exactly what the exact-type and
+      instance-override checks both catch. (CodeRabbit review finding,
+      round 17: this record originally described "every mutation" and
+      "the FULL admission-equivalent check set" without this
+      qualification -- corrected here to name precisely which checks
+      apply to which methods.) New permanent test reproduces the exact
+      reassignment.
 
     Both genuinely fixed in round 16, with 3 new permanent regression
     tests. Full local re-verification: full test file (52/52), full
     mutation suite (37/37), `test_g2_27_self_construction.py` (33/33),
     and full repository sweep re-run clean.
+17. A fresh Codex + CodeRabbit pass against the round-16 commit found 3
+    findings: one further genuine P1 code gap (Codex), and two docs/
+    test-quality corrections (CodeRabbit, both Minor):
+    - **P1 ("Neutralize hooks from per-worktree configuration"),
+      Codex**: the round-16 include-directive fix covers `.git/config`
+      and its includes, but git ALSO reads a SEPARATE
+      `.git/config.worktree` file (when `extensions.worktreeConfig` is
+      enabled), which takes precedence over the local `[core]` section
+      for exactly this kind of setting -- entirely outside anything
+      `.git/config`'s own bytes reveal. The reviewer reproduced (Git
+      2.43.0) a malicious `core.hooksPath` in `.git/config.worktree`
+      firing despite `_hooks_neutralization_still_intact` correctly
+      reporting the LOCAL file unchanged; re-neutralization only ever
+      rewrote the lower-priority local value. **Fixed**: the renamed
+      `_reject_alternate_git_config_sources` (generalizing the round-16
+      `_reject_included_git_config`) now ALSO rejects admission and
+      every mutation outright if `.git/config.worktree` exists at all,
+      or if `.git/config`'s own text even mentions `worktreeConfig` --
+      same "detect presence, don't interpret" philosophy as the
+      include-directive fix, since a genuinely admitted, from-scratch,
+      single-worktree repository has no legitimate reason to reference
+      either. Fixing this surfaced a SEPARATE, self-caught bug: a
+      plain `git config core.hooksPath <value>` REFUSES to run at all
+      once the key already has multiple values (exactly the state a
+      round-15 `--add` attack leaves behind) -- `_neutralize_hooks_for_every_registered_repository`
+      now uses `git config --replace-all core.hooksPath <value>`,
+      which genuinely replaces every existing value regardless of how
+      many were already present. Two new permanent tests cover
+      admission-time and post-admission worktree-config planting.
+    - **Minor, CodeRabbit**: this record's own round-16 entry claimed
+      `open_pr`/`merge_pr` re-run "the FULL admission-equivalent check
+      set," when in fact only `create_branch`/`commit` do (via
+      `_revalidate_before_mutation`); `open_pr`/`merge_pr` re-run only
+      the transport instance-override check, which is all they need
+      since `LocalGitRepositoryTransport`'s own real
+      `open_pull_request`/`merge_pull_request` unconditionally raise
+      by design. **Fixed**: both this record's round-16 entry (above)
+      and the corresponding source docstring on `_current_transport`
+      were corrected to name precisely which checks apply to which
+      methods, rather than overclaiming uniform coverage.
+    - **Minor, CodeRabbit (Ruff S110/BLE001)**: the round-14/15 hook
+      re-neutralization tests passed a placeholder `task=None` wrapped
+      in a broad `try/except: pass` -- these can pass even if hook
+      re-neutralization itself regressed, as long as SOME OTHER
+      validation happens to reject the call first for an unrelated
+      reason, proving nothing about whether re-neutralization
+      genuinely ran. **Fixed**: rewrote all three affected tests (and
+      added a shared `_real_create_branch_on_rig` helper) to perform a
+      REAL, fully-authorized `create_branch` dispatch via the same
+      `_dispatch` machinery the harness's own scenarios use, and
+      assert the mutation genuinely SUCCEEDS (a real receipt) in
+      addition to the hook marker being absent -- catching the
+      `--replace-all` bug above in the process, since the naive fix
+      would have made the REAL create_branch call fail outright rather
+      than merely "pass by accident."
+
+    1 of 1 code finding genuinely fixed in round 17 (plus one
+    self-caught bug it surfaced), both docs/test-quality corrections
+    applied, with 2 new permanent regression tests and 3 existing
+    tests strengthened. Full local re-verification: full test file
+    (54/54), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep re-run clean.
 
 ## Real, honest end-to-end result
 
