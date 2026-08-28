@@ -1408,11 +1408,11 @@ verdict (see below) rather than a hardcoded stale expectation.
     pattern as round 23's. New permanent regression tests reproduce
     both findings exactly.
 
-    Fixed in commit `<pending>`, with 2 new permanent regression
+    Fixed in commit `6bb379d`, with 2 new permanent regression
     tests. Full local re-verification: full test file (66/66), full
     mutation suite (37/37), `test_g2_27_self_construction.py`
-    (pending), and full repository sweep (pending, only the 9 known
-    pre-existing Windows-only failures expected).
+    (33/33), and full repository sweep (1362 passed, only the 9 known
+    pre-existing Windows-only failures, zero regressions).
 
 ## Real, honest end-to-end result
 
