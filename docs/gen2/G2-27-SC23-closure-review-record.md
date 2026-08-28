@@ -1090,11 +1090,11 @@ verdict (see below) rather than a hardcoded stale expectation.
       reproduces the swap using a second, independently-registered real
       transport rather than the private dataclass constructor.
 
-    Fixed in commit `<pending>`, with 1 new permanent regression test.
+    Fixed in commit `49c6059`, with 1 new permanent regression test.
     Full local re-verification: full test file (56/56), full mutation
-    suite (37/37), `test_g2_27_self_construction.py` (pending), and
-    full repository sweep (pending, only the 9 known pre-existing
-    Windows-only failures expected).
+    suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1352 passed, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
 
 ## Real, honest end-to-end result
 
