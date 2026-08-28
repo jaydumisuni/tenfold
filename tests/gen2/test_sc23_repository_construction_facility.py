@@ -93,6 +93,40 @@ def test_sc23_wrapper_rejects_a_non_local_git_transport() -> None:
         gen1_wrap_repository_construction_facility(_FakeRemoteTransport(), None, None)
 
 
+def test_sc23_wrapper_rejects_an_overridable_local_transport_subclass(tmp_path) -> None:
+    """Review finding (PR #84, round 13, P1, reproduced by the
+    reviewer): isinstance accepts any SUBCLASS of
+    LocalGitRepositoryTransport too -- a subclass could override
+    commit_files/open_pull_request/merge_pull_request with real remote
+    or out-of-domain effects while still passing the isinstance check
+    and receiving the local-commit-only admitted identity. The wrapper
+    now requires the EXACT class, not merely an instance of it."""
+    import subprocess
+
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    repo_root.mkdir()
+    subprocess.run(["git", "-C", str(repo_root), "init", "-b", "main"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "config", "user.name", "test"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "config", "user.email", "test@local.invalid"], check=True, capture_output=True)
+    (repo_root / "README.md").write_text("existing repo\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_root), "add", "README.md"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "commit", "-qm", "initial"], check=True, capture_output=True)
+
+    class _OverridingTransport(LocalGitRepositoryTransport):
+        def open_pull_request(self, *args, **kwargs):
+            return ("pr", 1)
+
+        def merge_pull_request(self, *args, **kwargs):
+            return "merged"
+
+    transport = _OverridingTransport({"existing": repo_root})
+    with pytest.raises(RepositoryConstructionQualificationError):
+        gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+
 def test_sc23_wrapper_neutralizes_hooks_for_a_caller_supplied_existing_repository(tmp_path) -> None:
     """Review finding (PR #84, round 8, P1): hooks were only neutralized
     for build_disposable_local_git_facility's own freshly-created repo
@@ -627,6 +661,124 @@ def test_sc23_wrapper_rejects_a_symlinked_git_config(tmp_path) -> None:
     transport = LocalGitRepositoryTransport({"existing": repo_root})
     with pytest.raises(RepositoryConstructionQualificationError):
         gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+
+def test_sc23_wrapper_rejects_a_dangling_symlink(tmp_path) -> None:
+    """Review finding (PR #84, round 13, Major, CWE-59, reproduced by
+    the reviewer): the original check called root.exists() BEFORE
+    root.is_symlink() -- Path.exists() follows a symlink and returns
+    False for a DANGLING one (target does not exist yet), so a
+    dangling symlink was silently skipped even though a later write
+    through it (e.g. hook neutralization's own git config write) would
+    create the external target. is_symlink() is now checked first,
+    unconditionally."""
+    import subprocess
+
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    repo_root.mkdir()
+    subprocess.run(["git", "-C", str(repo_root), "init", "-b", "main"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "config", "user.name", "test"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "config", "user.email", "test@local.invalid"], check=True, capture_output=True)
+    (repo_root / "README.md").write_text("existing repo\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_root), "add", "README.md"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "commit", "-qm", "initial"], check=True, capture_output=True)
+
+    # A dangling symlink under .git/refs (never read by transport
+    # construction's own rev-parse --git-dir, unlike .git/config) --
+    # the target does not exist yet, but the escape path is real once
+    # something writes through it later.
+    dangling_target = tmp_path / "external-dangling-target"
+    (repo_root / ".git" / "refs" / "heads" / "dangling-link").symlink_to(dangling_target)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    with pytest.raises(RepositoryConstructionQualificationError):
+        gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+
+def test_sc23_wrapper_rejects_a_hard_linked_git_metadata_file(tmp_path) -> None:
+    """Review finding (PR #84, round 13, P1, reproduced by the
+    reviewer): symlink detection alone misses a HARD-linked file --
+    .git/logs/refs/heads/main hard-linked to an external file is not a
+    symlink at all, yet writing through either path mutates the same
+    underlying data since both names reference the identical inode.
+    The wrapper now also rejects any registered repository whose
+    Git-internal storage contains a multiply-linked (st_nlink > 1)
+    regular file."""
+    import subprocess
+
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    repo_root.mkdir()
+    subprocess.run(["git", "-C", str(repo_root), "init", "-b", "main"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "config", "user.name", "test"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "config", "user.email", "test@local.invalid"], check=True, capture_output=True)
+    (repo_root / "README.md").write_text("existing repo\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_root), "add", "README.md"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "commit", "-qm", "initial"], check=True, capture_output=True)
+
+    import os
+
+    external_target = tmp_path / "external-hardlink-target"
+    external_target.write_text("external\n", encoding="utf-8")
+    reflog = repo_root / ".git" / "logs" / "refs" / "heads" / "main"
+    reflog.unlink()
+    os.link(str(external_target), str(reflog))
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    with pytest.raises(RepositoryConstructionQualificationError):
+        gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+
+def test_sc23_wrapper_re_validates_containment_before_every_mutation(tmp_path) -> None:
+    """Review finding (PR #84, round 13, P1, reproduced by the
+    reviewer): the containment scan ran exactly ONCE at admission --
+    nothing re-validated before each subsequent mutation. The reviewer
+    reproduced admitting a clean repository, THEN replacing
+    .git/refs/heads with an external-directory symlink AFTER
+    admission, then a later create_branch call following that
+    newly-planted symlink. The returned facility now re-runs the same
+    real containment check before every create_branch/commit call, so
+    a symlink planted AFTER admission is genuinely rejected at the
+    next mutation attempt, not merely at construction."""
+    import subprocess
+
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    repo_root.mkdir()
+    subprocess.run(["git", "-C", str(repo_root), "init", "-b", "main"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "config", "user.name", "test"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "config", "user.email", "test@local.invalid"], check=True, capture_output=True)
+    (repo_root / "README.md").write_text("existing repo\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_root), "add", "README.md"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "commit", "-qm", "initial"], check=True, capture_output=True)
+    initial_sha = subprocess.run(["git", "-C", str(repo_root), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    # Admission passed genuinely clean -- NOW plant the escape, after
+    # the facility already exists.
+    external = tmp_path / "external-refs-heads-post-admission"
+    heads_dir = repo_root / ".git" / "refs" / "heads"
+    backup = tmp_path / "heads-backup"
+    heads_dir.rename(backup)
+    backup.rename(external)
+    heads_dir.symlink_to(external, target_is_directory=True)
+
+    # The wrapper's containment re-check runs as the FIRST statement
+    # in create_branch/commit, before any task/authority argument is
+    # even inspected -- a placeholder task is sufficient to prove the
+    # re-check itself fires, without needing a fully-authorized
+    # dispatch.
+    with pytest.raises(RepositoryConstructionQualificationError):
+        facility.create_branch(None, repository="existing", branch="sc23/post-admission", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-post-admission", foreman_epoch=1)
 
 
 def subprocess_check_output(rig, args: list[str]) -> str:

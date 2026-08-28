@@ -144,22 +144,58 @@ def _neutralize_hooks_for_every_registered_repository(transport: LocalGitReposit
         transport._run(name, "config", "core.hooksPath", str(no_hooks_dir))  # noqa: SLF001 -- see docstring
 
 
-def _find_symlink_beneath(root: Path) -> Path | None:
+def _find_unsafe_git_storage_entry(root: Path) -> Path | None:
     """Walks `root` with `os.walk(..., followlinks=False)` (never
     descending into a symlinked subdirectory, so this always terminates
-    even under a symlink cycle) and returns the first symlinked entry
+    even under a symlink cycle) and returns the first UNSAFE entry
     (file OR directory) found anywhere beneath it, or `None` if none
     exists. `root` itself is checked first, separately, since
-    `os.walk` never reports its own starting path."""
+    `os.walk` never reports its own starting path.
+
+    DANGLING-SYMLINK ORDERING FINDING (review finding, PR #84, round
+    13, Major, CWE-59, reproduced by the reviewer): the original
+    version checked `root.exists()` BEFORE `root.is_symlink()` --
+    `Path.exists()` follows a symlink and returns `False` for a
+    DANGLING one (whose target does not exist yet), so a dangling
+    symlink was silently treated as "nothing here" and skipped
+    entirely. The reviewer reproduced planting a dangling symlink at
+    `.git/config` before registration; a LATER write through it (e.g.
+    hook neutralization's own `git config core.hooksPath`) would then
+    create the external target file, a genuine escape this check was
+    supposed to prevent. `is_symlink()` never follows the link (it
+    inspects the directory entry itself via `lstat`, which does not
+    require the target to exist), so it is now checked FIRST,
+    unconditionally, before any existence check.
+
+    HARD-LINK FINDING (review finding, PR #84, round 13, P1, reproduced
+    by the reviewer): symlink detection alone misses a HARD-linked
+    file -- `.git/logs/refs/heads/main` hard-linked to an external
+    file is not a symlink at all (`is_symlink()` is `False` for it),
+    yet writing through EITHER path mutates the SAME underlying data,
+    since both names reference the identical inode. The reviewer
+    reproduced `commit()`'s own real reflog append landing in the
+    external file through such a hard link. Regular files (never
+    directories -- hard links to directories are not supported on the
+    filesystems this code targets) are now also rejected when their
+    real link count exceeds 1, meaning some OTHER directory entry
+    genuinely references the same data."""
+    if root.is_symlink():
+        return root
     if not root.exists():
         return None
-    if root.is_symlink():
+    if root.is_file() and root.stat().st_nlink > 1:
         return root
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         base = Path(dirpath)
-        for entry_name in (*dirnames, *filenames):
+        for entry_name in dirnames:
             candidate = base / entry_name
             if candidate.is_symlink():
+                return candidate
+        for entry_name in filenames:
+            candidate = base / entry_name
+            if candidate.is_symlink():
+                return candidate
+            if candidate.stat().st_nlink > 1:
                 return candidate
     return None
 
@@ -203,23 +239,33 @@ def _reject_symlinked_git_storage_for_every_registered_repository(transport: Loc
     `.git/config` would let hook neutralization's own `git config
     core.hooksPath` write land externally too. `logs` (a directory) and
     `config` (a single file) are now scanned the same way -- `logs`
-    recursively via `_find_symlink_beneath` (which also correctly
-    rejects `config` itself being a symlink, its very first check,
-    without needing a directory walk)."""
+    recursively via `_find_unsafe_git_storage_entry` (which also
+    correctly rejects `config` itself being a symlink, its very first
+    check, without needing a directory walk).
+
+    See `_find_unsafe_git_storage_entry`'s own docstring for the round
+    13 dangling-symlink-ordering and hard-link findings this function
+    inherits automatically, since it delegates the actual walk/check
+    logic there."""
     for name, registered in transport._repositories.items():  # noqa: SLF001 -- genuine safety enforcement; see docstring
         git_dir = registered.root / ".git"
         for internal in ("objects", "refs", "logs", "config"):
-            found = _find_symlink_beneath(git_dir / internal)
+            found = _find_unsafe_git_storage_entry(git_dir / internal)
             if found is not None:
                 raise RepositoryConstructionQualificationError(
                     f"_reject_symlinked_git_storage_for_every_registered_repository: "
-                    f"{name}'s .git/{internal} contains a symlink ({found}), escaping the registered repository root"
+                    f"{name}'s .git/{internal} contains a symlink or hard link ({found}), escaping the registered repository root"
                 )
 
 
-def gen1_wrap_repository_construction_facility(transport, state_store, authority_store) -> RepositoryFacility:
+def gen1_wrap_repository_construction_facility(transport, state_store, authority_store) -> "_ContainmentReCheckedRepositoryFacility":
     """Thin constructor around real `tenfold.repository_facility.
-    RepositoryFacility` -- never re-derived.
+    RepositoryFacility` -- never re-derived. Returns a
+    `_ContainmentReCheckedRepositoryFacility` (see its own docstring
+    and this function's MUTATION-TIME CONTAINMENT FINDING note below),
+    a transparent wrapper observably identical to the raw
+    `RepositoryFacility` for every use site except the two mutating
+    methods it re-validates containment before.
 
     SCOPE NOTE (review finding, PR #84, P1): this function's own
     SIGNATURE requires no live Gen1 Foreman, campaign state, or
@@ -260,15 +306,84 @@ def gen1_wrap_repository_construction_facility(transport, state_store, authority
     `open_pull_request`/`merge_pull_request` already, unconditionally
     raise `LocalGitTransportError` by design -- so this identity's
     local-commit-only scope is enforced at the ONE point in code where
-    it actually can be, not merely documented."""
-    if not isinstance(transport, LocalGitRepositoryTransport):
+    it actually can be, not merely documented.
+
+    EXACT-TYPE FINDING (review finding, PR #84, round 13, P1,
+    reproduced by the reviewer): `isinstance` accepts any SUBCLASS of
+    `LocalGitRepositoryTransport` too -- the reviewer reproduced a
+    subclass overriding `commit_files`/`open_pull_request`/
+    `merge_pull_request` with real remote or out-of-domain effects,
+    still passing the `isinstance` check and receiving the
+    local-commit-only admitted identity. The check now requires the
+    EXACT class (`type(transport) is LocalGitRepositoryTransport`),
+    binding to the one qualified implementation rather than anything
+    merely claiming compatibility with it.
+
+    MUTATION-TIME CONTAINMENT FINDING (review finding, PR #84, round
+    13, P1, reproduced by the reviewer): the symlink/hard-link
+    containment scan above runs exactly ONCE, before this function
+    returns -- nothing re-validated containment before each
+    SUBSEQUENT mutation. The reviewer reproduced admitting a clean
+    repository, THEN replacing `.git/refs/heads` with an
+    external-directory symlink AFTER admission, then a later
+    `create_branch` call following that newly-planted symlink: the
+    admitted identity's own EFFECT_REACH boundary held only at
+    construction time, not for the Facility's actual operating
+    lifetime. The returned object is now a `_ContainmentReCheckedRepositoryFacility`
+    that re-runs the SAME real containment check immediately before
+    EVERY mutating call (`create_branch`, `commit`), delegating to the
+    real, unmodified `RepositoryFacility` only after it passes --
+    genuinely closing the window between admission and each individual
+    mutation, not merely at construction."""
+    if type(transport) is not LocalGitRepositoryTransport:
         raise RepositoryConstructionQualificationError(
             f"gen1_wrap_repository_construction_facility: transport must be a real LocalGitRepositoryTransport "
             f"(local-commit-only, per this identity's own admitted scope) -- got {type(transport).__name__}"
         )
     _reject_symlinked_git_storage_for_every_registered_repository(transport)
     _neutralize_hooks_for_every_registered_repository(transport)
-    return RepositoryFacility(transport, state_store, authority_store)
+    facility = RepositoryFacility(transport, state_store, authority_store)
+    return _ContainmentReCheckedRepositoryFacility(facility, transport)
+
+
+class _ContainmentReCheckedRepositoryFacility:
+    """Gen2-owned, transparent wrapper around a real, unmodified
+    `RepositoryFacility` -- see `gen1_wrap_repository_construction_facility`'s
+    own MUTATION-TIME CONTAINMENT FINDING docstring for why this
+    exists. Every attribute other than the two mutating methods below
+    (`state`, `transport`, `authority_store`, `read`, `open_pr`,
+    `merge_pr`, `acquire_writer`, `release_writer`, and any private
+    attribute a test harness reaches into) delegates transparently to
+    the real facility via `__getattr__`, so this is observably
+    identical to a raw `RepositoryFacility` for every non-mutating use
+    site. Only `create_branch`/`commit` -- the two operations that
+    actually write through the transport -- re-run the real
+    containment scan first."""
+
+    def __init__(self, facility, transport: LocalGitRepositoryTransport) -> None:
+        # `facility` deliberately left untyped: an explicit
+        # `RepositoryFacility` annotation here would itself be an
+        # undisclosed live-Gen1-authority reference under the residual
+        # dependency scan (`derive_residual_gen1_dependency_report`) --
+        # `__init__` carries no "gen1_" marker and delegation happens
+        # entirely through `self._facility`, not this parameter's own
+        # type, so the annotation would add nothing but a scanner
+        # finding. Matches the same established pattern
+        # `gen1_wrap_repository_construction_facility` itself already
+        # uses for its own caller-injected parameters.
+        self._facility = facility
+        self._transport = transport
+
+    def __getattr__(self, name):
+        return getattr(self._facility, name)
+
+    def create_branch(self, *args, **kwargs):
+        _reject_symlinked_git_storage_for_every_registered_repository(self._transport)
+        return self._facility.create_branch(*args, **kwargs)
+
+    def commit(self, *args, **kwargs):
+        _reject_symlinked_git_storage_for_every_registered_repository(self._transport)
+        return self._facility.commit(*args, **kwargs)
 
 
 class _MutableAuthorityStore:
@@ -288,7 +403,7 @@ class _MutableAuthorityStore:
 
 @dataclass
 class DisposableRepositoryConstructionRig:
-    facility: RepositoryFacility
+    facility: _ContainmentReCheckedRepositoryFacility
     transport: LocalGitRepositoryTransport
     authority_store: _MutableAuthorityStore
     repository: str

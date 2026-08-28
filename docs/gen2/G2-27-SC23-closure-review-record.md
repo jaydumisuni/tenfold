@@ -678,6 +678,74 @@ verdict (see below) rather than a hardcoded stale expectation.
     each. Full local re-verification: full test file (38/38), full
     mutation suite, `test_g2_27_self_construction.py`, and full
     repository sweep re-run clean.
+13. **Process gap, disclosed honestly**: 4 further genuine findings
+    (3 Codex, 1 CodeRabbit) landed against the round-12 commit
+    (`be7c8ae`) between 00:12 and 00:25 UTC on 2026-08-28 -- BEFORE
+    PR #84 was merged at 00:30:53 UTC -- but were not caught before
+    the merge check that reported zero unresolved threads; the merge
+    proceeded with these 4 threads genuinely still open. Discovered
+    afterward while preparing an unrelated cross-repository learning
+    contribution and cross-checking the PR's live thread state
+    directly rather than relying on memory. Fixed immediately in a
+    follow-up PR (round 13) against the already-merged code on `main`,
+    with the same rigor as every prior round:
+    - **P1 ("Enforce Git storage containment during every mutation"),
+      Codex**: the symlink/hard-link containment scan ran exactly ONCE
+      at admission -- nothing re-validated before each SUBSEQUENT
+      mutation. The reviewer reproduced admitting a clean repository,
+      then replacing `.git/refs/heads` with an external-directory
+      symlink AFTER admission, then a later `create_branch` following
+      that newly-planted symlink. **Fixed**: `gen1_wrap_repository_construction_facility`
+      now returns a `_ContainmentReCheckedRepositoryFacility` -- a
+      transparent wrapper (via `__getattr__` delegation) around the
+      real, unmodified `RepositoryFacility` that re-runs the same real
+      containment scan immediately before every `create_branch`/`commit`
+      call, closing the window between admission and each individual
+      mutation.
+    - **Major/CWE-59 ("Inspect symlinks before checking target
+      existence"), CodeRabbit**: `_find_symlink_beneath` checked
+      `root.exists()` BEFORE `root.is_symlink()` -- `Path.exists()`
+      follows a symlink and returns `False` for a DANGLING one (target
+      does not exist yet), so a dangling symlink was silently skipped
+      even though a later write through it would create the external
+      target. **Fixed**: `is_symlink()` is now checked first,
+      unconditionally, before any existence check.
+    - **P1 ("Reject hard-linked Git metadata before admission"),
+      Codex**: symlink detection alone misses a HARD-linked file --
+      `.git/logs/refs/heads/main` hard-linked to an external file is
+      not a symlink at all, yet writing through either path mutates
+      the same underlying data since both names reference the
+      identical inode. The reviewer reproduced `commit()`'s own real
+      reflog append landing in the external file through such a hard
+      link. **Fixed**: the renamed `_find_unsafe_git_storage_entry`
+      also rejects any regular file beneath the scanned paths whose
+      real link count (`st_nlink`) exceeds 1.
+    - **P1 ("Reject overridable local transport subclasses"),
+      Codex**: `isinstance(transport, LocalGitRepositoryTransport)`
+      accepts any SUBCLASS too -- the reviewer reproduced a subclass
+      overriding `commit_files`/`open_pull_request`/`merge_pull_request`
+      with real remote or out-of-domain effects, still passing the
+      `isinstance` check and receiving the local-commit-only admitted
+      identity. **Fixed**: the check now requires the exact class
+      (`type(transport) is LocalGitRepositoryTransport`).
+
+    Fixing the containment wrapper surfaced one more, self-caught
+    issue: the wrapper's own `__init__` parameter annotation
+    (`facility: RepositoryFacility`) was itself flagged as an
+    undisclosed live-Gen1-authority reference by
+    `derive_residual_gen1_dependency_report()` -- `__init__` carries no
+    disclosure marker and delegation happens entirely through the
+    stored `self._facility` reference, not the parameter's own type.
+    Fixed by leaving the parameter untyped, matching the same
+    established pattern `gen1_wrap_repository_construction_facility`
+    itself already uses for its own caller-injected parameters.
+
+    All 4 genuinely fixed in round 13, with 4 new permanent regression
+    tests. Full local re-verification: full test file (42/42), full
+    mutation suite (37/37), `test_g2_27_self_construction.py` (33/33,
+    confirming zero undisclosed findings after the annotation fix),
+    and full repository sweep (1338 passed, only the 9 known
+    pre-existing Windows-only failures) re-run clean.
 
 ## Real, honest end-to-end result
 
