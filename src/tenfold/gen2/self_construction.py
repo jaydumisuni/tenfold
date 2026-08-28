@@ -698,44 +698,58 @@ def _names_used_by_function(tree: ast.AST, imported_names: dict[str, str]) -> di
     nested within it) -- observably identical results, real
     algorithmic improvement.
 
-    Review finding (PR #85, P2, reproduced by the reviewer): a
+    Review finding (PR #85, round 2, P2, reproduced by the reviewer): a
     RECURSIVE post-order traversal is bounded by Python's own call-
     stack recursion limit (~1000 by default) -- a scanned module
     containing a legitimately deep AST (e.g. a long chained
     expression) would raise `RecursionError`, taking down the whole
     self-construction gate report, a real regression against the
     original `ast.walk`-based implementation (iterative, no such
-    bound). This now uses an explicit stack for the post-order walk
-    instead of the Python call stack, matching `ast.walk`'s own
-    robustness -- bounded only by available memory, not recursion
-    depth."""
+    bound). This uses an explicit stack for the traversal instead of
+    the Python call stack, matching `ast.walk`'s own robustness --
+    bounded only by available memory, not recursion depth.
+
+    Review finding (PR #85, round 3, P2, reproduced by the reviewer):
+    an earlier iteration of this explicit-stack version stored a
+    combined descendant SET at EVERY AST node (not just function
+    nodes) to reassemble each function's result bottom-up -- a
+    function referencing many DISTINCT aliases across a large
+    expression made that set genuinely grow at every ancestor node,
+    quadratic in time and memory rather than O(n) (the reviewer
+    measured ~376MB for one pathological function versus ~19MB for the
+    original `ast.walk`-based version). This version never stores a
+    set on non-function nodes at all: it tracks only a STACK of
+    currently-open enclosing function nodes, and on each direct hit
+    (`Name`/`ImportFrom` match) adds the name DIRECTLY to every
+    function currently on that stack -- exactly the same "each
+    enclosing function's own full-subtree walk would have found this"
+    semantics as the original, but as O(1) additions to a small,
+    bounded number of already-allocated sets (one per function, sized
+    only by its own genuine matches) instead of copying/unioning a
+    growing set through every intermediate node."""
     results: dict[ast.AST, set[str]] = {}
-    combined: dict[ast.AST, set[str]] = {}
+    function_stack: list[ast.AST] = []
     stack: list[tuple[ast.AST, bool]] = [(tree, False)]
     while stack:
-        node, expanded = stack.pop()
-        if not expanded:
-            stack.append((node, True))
-            for child in ast.iter_child_nodes(node):
-                stack.append((child, False))
+        node, exiting = stack.pop()
+        if exiting:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                function_stack.pop()
             continue
-        found: set[str] = set()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            results.setdefault(node, set())
+            function_stack.append(node)
         if isinstance(node, ast.Name) and node.id in imported_names:
-            found.add(node.id)
+            for func in function_stack:
+                results[func].add(node.id)
         elif isinstance(node, ast.ImportFrom) and node.module in GEN1_LIVE_AUTHORITY_MODULES:
             for alias in node.names:
-                found.add(alias.asname or alias.name)
-        # `combined[child]`, never `.pop`: CPython interns data-free
-        # marker nodes (ast.Load/Store/Del context objects, and
-        # comparison/boolean/arithmetic operator singletons) as SHARED
-        # instances reused across every occurrence in the parsed tree
-        # -- popping on first use would KeyError on a second parent
-        # referencing that same shared child.
+                name = alias.asname or alias.name
+                for func in function_stack:
+                    results[func].add(name)
+        stack.append((node, True))
         for child in ast.iter_child_nodes(node):
-            found |= combined[child]
-        combined[node] = found
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            results[node] = found
+            stack.append((child, False))
     return results
 
 
@@ -843,33 +857,37 @@ def _function_subtree_calls(tree: ast.AST, function_name: str) -> dict[ast.AST, 
     order-independent (the caller de-duplicates/sorts the final
     output).
 
-    Review finding (PR #85, P2, reproduced by the reviewer): the same
-    RECURSIVE-post-order-traversal regression `_names_used_by_function`
-    had -- bounded by Python's own call-stack recursion limit, unlike
-    the original `ast.walk`. This now uses an explicit stack instead of
-    the Python call stack too."""
+    Review finding (PR #85, round 2, P2, reproduced by the reviewer):
+    the same RECURSIVE-post-order-traversal regression
+    `_names_used_by_function` had -- bounded by Python's own call-stack
+    recursion limit, unlike the original `ast.walk`. Uses an explicit
+    stack instead of the Python call stack too.
+
+    Same round-3 restructuring as `_names_used_by_function`: tracks
+    only a stack of currently-open enclosing function nodes rather
+    than storing a value at every AST node, setting every currently-
+    open function's own result True directly on a match, instead of
+    unioning a value up through every intermediate node."""
     results: dict[ast.AST, bool] = {}
-    combined: dict[ast.AST, bool] = {}
+    function_stack: list[ast.AST] = []
     stack: list[tuple[ast.AST, bool]] = [(tree, False)]
     while stack:
-        node, expanded = stack.pop()
-        if not expanded:
-            stack.append((node, True))
-            for child in ast.iter_child_nodes(node):
-                stack.append((child, False))
+        node, exiting = stack.pop()
+        if exiting:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                function_stack.pop()
             continue
-        found = False
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            results.setdefault(node, False)
+            function_stack.append(node)
         if isinstance(node, ast.Call):
             called_name = node.func.id if isinstance(node.func, ast.Name) else node.func.attr if isinstance(node.func, ast.Attribute) else None
-            found = called_name == function_name
-        # `combined[child]`, never `.pop`: see _names_used_by_function's
-        # own comment -- CPython interns data-free marker/operator
-        # nodes as shared instances reused across the parsed tree.
+            if called_name == function_name:
+                for func in function_stack:
+                    results[func] = True
+        stack.append((node, True))
         for child in ast.iter_child_nodes(node):
-            found |= combined[child]
-        combined[node] = found
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            results[node] = found
+            stack.append((child, False))
     return results
 
 

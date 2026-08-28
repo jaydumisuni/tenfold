@@ -171,6 +171,45 @@ def test_g2_27_reachability_hardening_handles_a_deeply_nested_caller_without_rec
     assert "ordinary_construction_step" in reference_findings[0].disclosure_reason
 
 
+def test_g2_27_scan_does_not_quadratically_blow_up_memory_on_many_distinct_aliases(tmp_path) -> None:
+    """Review finding (PR #85, round 3, P2, reproduced by the reviewer):
+    an earlier fix stored a combined descendant set at EVERY AST node
+    to reassemble each function's result bottom-up -- a function
+    referencing many DISTINCT aliases across one large expression made
+    that set genuinely grow at every ancestor node (the reviewer
+    measured ~376MB for one pathological function of 4000 aliases,
+    versus ~19MB for the original ast.walk-based version). This
+    reproduces the same shape (a long addition chain over N distinct
+    aliased imports inside one function) and asserts peak traced memory
+    for the scan itself stays a small, bounded multiple of the input
+    size -- proving no set is copied/grown once per AST node."""
+    import tracemalloc
+    import types
+
+    n = 2000
+    imports = "\n".join(f"from tenfold.foreman import Foreman as alias_{i}" for i in range(n))
+    chain = " + ".join(f"alias_{i}" for i in range(n))
+    source = f"{imports}\n\ndef big_function(campaign, states):\n    return {chain}\n"
+    fake_module = tmp_path / "fake_wide_module.py"
+    fake_module.write_text(source, encoding="utf-8")
+    fake = types.ModuleType("fake_wide_module")
+    fake.__file__ = str(fake_module)
+
+    tracemalloc.start()
+    try:
+        findings = scan_module_for_gen1_authority_dependency("fake_wide_module", fake)
+    finally:
+        _current, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+
+    assert len(findings) == n
+    # Genuinely bounded (a few dozen bytes per name, not per AST node):
+    # 2000 names should need well under 10MB; the quadratic regression
+    # this guards against used ~94KB PER NAME (376MB / 4000) at the
+    # reviewer's scale -- an order of magnitude over this ceiling.
+    assert peak < 10_000_000, f"peak traced memory {peak} bytes -- suggests the quadratic per-node set copy has regressed"
+
+
 def test_g2_27_gen1_live_authority_modules_excludes_tenfold_gen2_facility() -> None:
     """Round-trip sanity: the substring 'facility' must not accidentally
     match tenfold.gen2's OWN facility module -- confirms the scan only
