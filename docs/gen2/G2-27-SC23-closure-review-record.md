@@ -1037,6 +1037,64 @@ verdict (see below) rather than a hardcoded stale expectation.
     this entry and the round-16 entry above both originally said
     "re-run clean" without naming the known, pre-existing, unrelated
     failure count -- corrected here and there for precision.)
+18. A fresh Codex pass against the round-17 commit found 1 further P1
+    finding:
+    - **P1 ("Seal transport helper overrides before mutation"),
+      Codex**: rounds 14-15 sealed a growing list of specific PUBLIC
+      method names (`resolve_ref`, `read_file`, `create_branch`,
+      `commit_files`, `open_pull_request`, `merge_pull_request`) one at
+      a time. The reviewer reproduced assigning `transport._run`
+      instead -- the PRIVATE helper every one of those public methods
+      actually delegates its real subprocess work through -- passing
+      every named-method check while still performing an
+      out-of-repository write before ever reaching git. **Fixed**:
+      replaced the growing method-name allowlist entirely with the
+      inverse, comprehensive check: a genuinely unmodified
+      `LocalGitRepositoryTransport` instance's own `__dict__` contains
+      EXACTLY the four data attributes its real `__init__` sets (`_git`,
+      `_author_name`, `_author_email`, `_repositories`, confirmed
+      empirically) and nothing else; any additional instance attribute
+      at all -- a shadowed public method, a shadowed private helper, or
+      anything else -- is now rejected outright, without needing to
+      name it in advance (`_EXPECTED_TRANSPORT_INSTANCE_ATTRIBUTES`,
+      replacing the prior `_SEALED_TRANSPORT_METHOD_NAMES` tuple). New
+      permanent test reproduces the exact `_run` shadow.
+
+    Fixed in commit `bb02dce`, with 1 new permanent regression test.
+    Full local re-verification: full test file (55/55), full mutation
+    suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1351 passed, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
+19. A fresh Codex + CodeRabbit pass against the round-18 commit
+    (`bb02dce`) found 1 further genuine finding (CodeRabbit, Major):
+    - **Major ("Pin registered repository identities at admission"),
+      CodeRabbit**: the round-18 instance-attribute allowlist validates
+      attribute NAMES only -- `_repositories` is itself one of the four
+      expected names, so reassigning what it POINTS AT (a different,
+      independently clean `_RegisteredRepository`) after admission was
+      invisible to that check. `LocalGitRepositoryTransport._repo` only
+      validates a registration's internal self-consistency against
+      ITSELF, not against what was actually admitted, so a swapped
+      registration passed every existing check and a later
+      `create_branch`/`commit` would silently operate on a repository
+      that was never scanned for symlinked git storage or hook
+      neutralization. **Fixed**: every registration is now snapshotted
+      at admission time (`established_repositories`, captured in
+      `gen1_wrap_repository_construction_facility` before the identity
+      is ever handed back to a caller) and re-verified, exactly, before
+      every mutation via a new `_reject_altered_registered_repositories`
+      check inside `_revalidate_before_mutation` -- any added, removed,
+      or reassigned registration is rejected outright, the same
+      treatment as a symlinked git directory. New permanent regression
+      test (`test_sc23_wrapper_rejects_a_reassigned_repository_registration`)
+      reproduces the swap using a second, independently-registered real
+      transport rather than the private dataclass constructor.
+
+    Fixed in commit `<pending>`, with 1 new permanent regression test.
+    Full local re-verification: full test file (56/56), full mutation
+    suite (37/37), `test_g2_27_self_construction.py` (pending), and
+    full repository sweep (pending, only the 9 known pre-existing
+    Windows-only failures expected).
 
 ## Real, honest end-to-end result
 

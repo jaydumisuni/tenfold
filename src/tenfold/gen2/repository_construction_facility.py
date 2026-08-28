@@ -568,10 +568,11 @@ def gen1_wrap_repository_construction_facility(transport, state_store, authority
             f"(local-commit-only, per this identity's own admitted scope) -- got {type(transport).__name__}"
         )
     _reject_instance_overridden_transport_methods(transport)
+    established_repositories = dict(transport._repositories)  # noqa: SLF001 -- genuine safety enforcement; see _reject_altered_registered_repositories's own docstring
     _reject_symlinked_git_storage_for_every_registered_repository(transport)
     established_no_hooks_dirs = _neutralize_hooks_for_every_registered_repository(transport)
     facility = RepositoryFacility(transport, state_store, authority_store)
-    return _ContainmentReCheckedRepositoryFacility(facility, transport, established_no_hooks_dirs)
+    return _ContainmentReCheckedRepositoryFacility(facility, transport, established_no_hooks_dirs, established_repositories)
 
 
 #: Review finding (PR #86, round 18, P1, reproduced by the reviewer):
@@ -627,6 +628,36 @@ def _reject_instance_overridden_transport_methods(transport: LocalGitRepositoryT
         )
 
 
+def _reject_altered_registered_repositories(
+    transport: LocalGitRepositoryTransport,
+    established_repositories: dict,
+) -> None:
+    """Review finding (PR #86, round 19, Major, CodeRabbit): round 18's
+    instance-attribute allowlist validates attribute NAMES only --
+    `_repositories` is itself one of the four expected names, so
+    replacing what it POINTS AT is invisible to that check. A caller
+    can reassign `transport._repositories[name]` to a different,
+    independently clean `_RegisteredRepository` (a different root,
+    device, inode) after admission; `LocalGitRepositoryTransport._repo`
+    only checks the CURRENT entry for internal self-consistency, not
+    against what was actually admitted, so the swapped registration
+    passes every existing check and a later `create_branch`/`commit`
+    silently operates on a repository that was never scanned for
+    symlinked git storage or hook neutralization. Every registration's
+    identity is now pinned at admission time (`established_repositories`,
+    a snapshot of `transport._repositories` taken before this identity
+    is ever handed back to a caller) and re-verified, exactly, before
+    every mutation -- any added, removed, or reassigned registration is
+    rejected outright, the same treatment as a symlinked git directory."""
+    current = transport._repositories  # noqa: SLF001 -- genuine safety enforcement; see docstring
+    if current != established_repositories:
+        raise RepositoryConstructionQualificationError(
+            "_reject_altered_registered_repositories: transport._repositories no longer matches the "
+            "identities admitted at construction time (a registration was added, removed, or reassigned "
+            "to a different repository) -- rejecting the same as a symlinked git directory"
+        )
+
+
 class _ContainmentReCheckedRepositoryFacility:
     """Gen2-owned, transparent wrapper around a real, unmodified
     `RepositoryFacility` -- see `gen1_wrap_repository_construction_facility`'s
@@ -645,7 +676,13 @@ class _ContainmentReCheckedRepositoryFacility:
     `merge_pull_request` unconditionally raise by design -- only an
     instance-level override could make them do anything else)."""
 
-    def __init__(self, facility, transport: LocalGitRepositoryTransport, established_no_hooks_dirs: "dict[str, _EstablishedHooksNeutralization]") -> None:
+    def __init__(
+        self,
+        facility,
+        transport: LocalGitRepositoryTransport,
+        established_no_hooks_dirs: "dict[str, _EstablishedHooksNeutralization]",
+        established_repositories: dict,
+    ) -> None:
         # `facility` deliberately left untyped: an explicit
         # `RepositoryFacility` annotation here would itself be an
         # undisclosed live-Gen1-authority reference under the residual
@@ -659,6 +696,7 @@ class _ContainmentReCheckedRepositoryFacility:
         self._facility = facility
         self._transport = transport
         self._established_no_hooks_dirs = established_no_hooks_dirs
+        self._established_repositories = established_repositories
 
     def __getattr__(self, name):
         return getattr(self._facility, name)
@@ -702,6 +740,7 @@ class _ContainmentReCheckedRepositoryFacility:
     def _revalidate_before_mutation(self) -> None:
         transport = self._current_transport()
         _reject_instance_overridden_transport_methods(transport)
+        _reject_altered_registered_repositories(transport, self._established_repositories)
         _reject_symlinked_git_storage_for_every_registered_repository(transport)
         # Performance finding (PR #86, round 14): only pay for a fresh
         # mkdtemp + git-config subprocess spawn per registered

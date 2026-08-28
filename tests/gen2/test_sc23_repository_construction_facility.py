@@ -999,6 +999,39 @@ def test_sc23_wrapper_rejects_an_instance_overridden_private_helper(tmp_path) ->
         facility.commit(None, repository="existing", branch="main", owner="assign-post", expected_head=initial_sha, files={"x.txt": b"x"}, message="x\n", operation_id="op-sealed-run-helper", foreman_epoch=1)
 
 
+def test_sc23_wrapper_rejects_a_reassigned_repository_registration(tmp_path) -> None:
+    """Review finding (PR #86, round 19, Major, CodeRabbit): the round-18
+    instance-attribute allowlist validates attribute NAMES only --
+    `_repositories` is itself an expected name, so reassigning what it
+    POINTS AT (a different, independently clean registration) after
+    admission was invisible to that check, and a later create_branch
+    would silently operate on a repository that was never scanned for
+    symlinked git storage. Every registration's identity is now pinned
+    at admission time and re-verified before every mutation."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    other_root = tmp_path / "other-repo"
+    _real_existing_repo(other_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    # Admission passed genuinely clean -- NOW reassign the "existing"
+    # registration to a different, independently clean repository's own
+    # registered entry, obtained via a second, unrelated, real
+    # transport (never touching the private _RegisteredRepository
+    # constructor directly).
+    other_transport = LocalGitRepositoryTransport({"other": other_root})
+    transport._repositories["existing"] = other_transport._repositories["other"]  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        facility.create_branch(None, repository="existing", branch="sc23/reassigned-registration", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-reassigned-registration", foreman_epoch=1)
+
+
 def test_sc23_wrapper_rejects_an_included_git_config(tmp_path) -> None:
     """Review finding (PR #86, round 16, P1, reproduced by the
     reviewer): the round-15 exact-byte-snapshot check is airtight
