@@ -901,6 +901,62 @@ verdict (see below) rather than a hardcoded stale expectation.
     (49/49), full mutation suite (37/37),
     `test_g2_27_self_construction.py` (33/33), and full repository
     sweep re-run clean.
+16. A fresh Codex pass against the round-15 commit found 2 further P1
+    findings, both showing the round-15 fixes were each real but still
+    incomplete in a different, specific way:
+    - **"Reject hooksPath values supplied through included config"**:
+      the round-15 exact-byte-snapshot fix is airtight against
+      tampering WITHIN `.git/config` itself, but git's own config
+      resolution also reads `[include]`/`[includeIf "..."]`
+      directives and merges values from whatever file they point at
+      -- a LATER `core.hooksPath` from an included file overrides the
+      local one, entirely outside what `.git/config`'s own bytes
+      reveal. The reviewer reproduced (Git 2.43.0)
+      `_hooks_neutralization_still_intact` reporting `True` while the
+      next mutation executed a `reference-transaction` hook sourced
+      from an included file. **Fixed**: rather than attempting to
+      correctly resolve arbitrary include/includeIf semantics
+      (multiple files, conditional gitdir/onbranch matching,
+      precedence) -- effectively re-deriving a real git-config
+      resolution engine, a losing battle where every variation fixed
+      invites another -- a new `_reject_included_git_config` check
+      rejects admission (and every mutation) outright if `.git/config`
+      declares an include directive AT ALL, via a simple, reliable
+      section-header search. A genuinely admitted, from-scratch
+      local-commit-only repository has no legitimate reason to use
+      includes (a construct meant for sharing config across MULTIPLE
+      repositories). Two new permanent tests cover both admission-time
+      and post-admission planting; one caught a genuine bug in the fix
+      itself before it shipped -- the original regex's trailing `\b`
+      word-boundary anchor silently failed to match `[includeIf
+      "..."]` (no word boundary exists between "include" and "If",
+      both being word characters), fixed by dropping the anchor.
+    - **"Bind revalidation to the transport actually delegated to"**:
+      every prior round re-validated the wrapper's own REMEMBERED
+      `self._transport` reference from construction time -- but
+      `RepositoryFacility.create_branch`/`commit` internally use
+      `self.transport` (Gen1's own plain, mutable attribute on the
+      real, inner facility), not this wrapper's memory of it. The
+      reviewer reproduced reassigning `facility._facility.transport`
+      to an injected object AFTER admission: the wrapper kept
+      validating the original, no-longer-relevant transport while the
+      real facility silently delegated every mutation to the
+      replacement. **Fixed**: every mutating/delegating method now
+      reads `self._facility.transport` FRESH via a new
+      `_current_transport()` helper and re-runs the FULL
+      admission-equivalent check set against whatever is currently
+      there -- including the exact-type check, not merely
+      containment/hooks/instance-overrides -- so a swap to anything
+      that is not a genuine, unmodified `LocalGitRepositoryTransport`
+      is rejected outright, and a swap to a different (even if
+      genuine) instance forces a full, fresh re-verification of ITS
+      OWN state rather than silently reusing stale results. New
+      permanent test reproduces the exact reassignment.
+
+    Both genuinely fixed in round 16, with 3 new permanent regression
+    tests. Full local re-verification: full test file (52/52), full
+    mutation suite (37/37), `test_g2_27_self_construction.py` (33/33),
+    and full repository sweep re-run clean.
 
 ## Real, honest end-to-end result
 

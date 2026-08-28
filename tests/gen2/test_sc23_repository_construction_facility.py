@@ -977,6 +977,103 @@ def test_sc23_wrapper_rejects_an_instance_overridden_commit_files(tmp_path) -> N
         facility.commit(None, repository="existing", branch="main", owner="assign-post", expected_head=initial_sha, files={"x.txt": b"x"}, message="x\n", operation_id="op-sealed-commit-files", foreman_epoch=1)
 
 
+def test_sc23_wrapper_rejects_an_included_git_config(tmp_path) -> None:
+    """Review finding (PR #86, round 16, P1, reproduced by the
+    reviewer): the round-15 exact-byte-snapshot check is airtight
+    against tampering WITHIN .git/config itself, but git's own config
+    resolution reads [include]/[includeIf] directives and merges
+    values from whatever file they point at -- a later core.hooksPath
+    from an included file overrides the local one entirely outside
+    what .git/config's own bytes reveal. Rather than trying to resolve
+    what an include would mean, the wrapper now rejects admission (and
+    every mutation) outright if .git/config declares one at all -- a
+    genuinely admitted repository has no legitimate reason to use
+    include directives."""
+    import subprocess
+
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    _real_existing_repo(repo_root, tmp_path)
+
+    included_config = tmp_path / "included-config"
+    included_config.write_text("[core]\n\thooksPath = /tmp/malicious\n", encoding="utf-8")
+    # git's own INI-style config escapes backslashes -- a raw Windows
+    # path value would otherwise be misparsed as containing escape
+    # sequences ("bad config line").
+    escaped_path = str(included_config).replace("\\", "\\\\")
+    with (repo_root / ".git" / "config").open("a", encoding="utf-8") as f:
+        f.write(f"[include]\n\tpath = {escaped_path}\n")
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    with pytest.raises(RepositoryConstructionQualificationError):
+        gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+
+def test_sc23_wrapper_rejects_an_included_git_config_planted_after_admission(tmp_path) -> None:
+    """Companion to the admission-time case: an [include] directive
+    added AFTER a genuinely clean admission is rejected at the next
+    mutation attempt too, not merely at construction."""
+    import subprocess
+
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    included_config = tmp_path / "included-config-post"
+    included_config.write_text("[core]\n\thooksPath = /tmp/malicious\n", encoding="utf-8")
+    # git's own INI-style config escapes backslashes -- raw Windows
+    # path values would otherwise be misparsed as escape sequences.
+    escaped_gitdir = str(repo_root).replace("\\", "\\\\")
+    escaped_path = str(included_config).replace("\\", "\\\\")
+    with (repo_root / ".git" / "config").open("a", encoding="utf-8") as f:
+        f.write(f"[includeIf \"gitdir:{escaped_gitdir}/\"]\n\tpath = {escaped_path}\n")
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        facility.create_branch(None, repository="existing", branch="sc23/included-config", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-included-config", foreman_epoch=1)
+
+
+def test_sc23_wrapper_rejects_a_transport_reassigned_on_the_inner_facility(tmp_path) -> None:
+    """Review finding (PR #86, round 16, P1, reproduced by the
+    reviewer): every prior round re-validated the wrapper's own
+    remembered self._transport reference -- but RepositoryFacility's
+    create_branch/commit internally use self.transport (Gen1's own
+    plain, mutable attribute on the real facility), not this wrapper's
+    memory of it. The reviewer reproduced reassigning
+    facility._facility.transport to an injected object after
+    admission: the wrapper's checks kept validating the original,
+    no-longer-relevant transport while the real facility silently
+    delegated to the replacement. Every mutating call now reads
+    facility.transport FRESH and re-runs the full admission-equivalent
+    check set against whatever is currently there."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    class _InjectedTransport:
+        def create_branch(self, *args, **kwargs):
+            return "0" * 40
+
+        def commit_files(self, *args, **kwargs):
+            return "0" * 40
+
+    facility._facility.transport = _InjectedTransport()  # noqa: SLF001 -- test-only introspection
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        facility.create_branch(None, repository="existing", branch="sc23/injected-transport", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-injected-transport", foreman_epoch=1)
+
+
 def test_sc23_wrapper_rejects_an_instance_overridden_open_pull_request_at_admission(tmp_path) -> None:
     """Review finding (PR #86, round 14, P1, reproduced by the
     reviewer): an exact-type check only binds the CLASS -- Python

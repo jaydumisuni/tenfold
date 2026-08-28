@@ -380,6 +380,62 @@ def _reject_symlinked_git_storage_for_every_registered_repository(transport: Loc
                     f"_reject_symlinked_git_storage_for_every_registered_repository: "
                     f"{name}'s .git/{internal} contains a symlink or hard link ({found}), escaping the registered repository root"
                 )
+        _reject_included_git_config(name, git_dir / "config")
+
+
+#: Self-caught bug (round 16): a trailing `\b` here would require a
+#: WORD boundary immediately after "include" -- but "includeIf" has no
+#: such boundary ("e" and "I" are both word characters), so `\binclude\b`
+#: silently failed to match `[includeIf "..."]` at all. No trailing
+#: boundary is needed: matching the literal prefix "[include" catches
+#: both `[include]` and `[includeIf ...]` correctly.
+_INCLUDE_SECTION_HEADER = re.compile(r"^\s*\[include", re.MULTILINE | re.IGNORECASE)
+
+
+def _reject_included_git_config(name: str, config_path: Path) -> None:
+    """Review finding (PR #86, round 16, P1, reproduced by the
+    reviewer): the round-15 exact-byte-snapshot fix for
+    `_hooks_neutralization_still_intact` is airtight against tampering
+    WITHIN `.git/config` itself, but git's OWN config resolution reads
+    `[include]`/`[includeIf "..."]` directives and merges values from
+    whatever file(s) they point at -- a LATER `core.hooksPath` from an
+    included file overrides the local one, entirely outside anything
+    `.git/config`'s own bytes reveal. The reviewer reproduced (Git
+    2.43.0) `_hooks_neutralization_still_intact` reporting `True` while
+    the next mutation executed a `reference-transaction` hook sourced
+    from an included file. Correctly resolving the COMPLETE effective
+    configuration (multiple included files, `includeIf` conditional
+    matching on gitdir/onbranch, precedence ordering) would mean
+    re-deriving a real, correct git-config resolution ENGINE in
+    Python -- exactly the kind of re-derivation this codebase avoids
+    (G2-00 SS15), and a losing battle besides: every variation fixed
+    invites another. `LocalGitRepositoryTransport` (Gen1-owned) always
+    reads `.git/config` and its includes for every git subprocess call
+    it makes, and offers no way for Gen2 code to override that without
+    modifying Gen1's own transport, out of this closure's wrapper-only
+    scope. Instead of trying to interpret what an include directive
+    WOULD resolve to, this reflects the same philosophy as the round-15
+    fix: make the check robust BY CONSTRUCTION rather than by
+    correctly modeling arbitrary semantics. A genuinely admitted,
+    from-scratch local-commit-only repository has no legitimate reason
+    to use `[include]`/`[includeIf]` at all (a construct meant for
+    sharing config across MULTIPLE repositories, not something `git
+    init` or ordinary single-repo use ever creates) -- so its mere
+    PRESENCE, detected via a simple, reliable section-header search
+    (not full config parsing), is rejected outright, at admission and
+    before every mutation, closing the vector without needing to
+    resolve what it would have meant."""
+    if config_path.is_symlink() or not config_path.is_file():
+        return  # handled by the caller's own symlink/hard-link check
+    try:
+        config_text = config_path.read_text(encoding="utf-8", errors="strict")
+    except OSError:
+        return
+    if _INCLUDE_SECTION_HEADER.search(config_text):
+        raise RepositoryConstructionQualificationError(
+            f"_reject_included_git_config: {name}'s .git/config declares an [include]/[includeIf] section -- "
+            f"rejected outright rather than resolving its effective value"
+        )
 
 
 def gen1_wrap_repository_construction_facility(transport, state_store, authority_store) -> "_ContainmentReCheckedRepositoryFacility":
@@ -578,16 +634,47 @@ class _ContainmentReCheckedRepositoryFacility:
     def __getattr__(self, name):
         return getattr(self._facility, name)
 
+    def _current_transport(self) -> LocalGitRepositoryTransport:
+        # Review finding (PR #86, round 16, P1, reproduced by the
+        # reviewer): every prior round re-validated `self._transport`
+        # -- the reference REMEMBERED at construction time. But
+        # `RepositoryFacility.create_branch`/`commit` internally use
+        # `self._facility.transport` (Gen1's own, plain, mutable
+        # attribute), not this wrapper's own memory of it. The
+        # reviewer reproduced reassigning `facility._facility.transport`
+        # to an injected object AFTER admission: this wrapper's checks
+        # kept validating the ORIGINAL, no-longer-relevant transport,
+        # while the real facility silently delegated every mutation to
+        # the replacement. Every mutating/delegating call now reads
+        # `self._facility.transport` FRESH and re-runs the FULL
+        # admission-equivalent check set (including the exact-type
+        # check, not merely containment/hooks/instance-overrides)
+        # against whatever is CURRENTLY there -- so a swap to anything
+        # that is not a genuine, unmodified `LocalGitRepositoryTransport`
+        # is rejected outright, and a swap to a DIFFERENT (even if
+        # genuine) instance forces a full, fresh re-verification of
+        # ITS OWN containment/hooks state rather than silently reusing
+        # stale results computed for the original.
+        current = self._facility.transport
+        if type(current) is not LocalGitRepositoryTransport:
+            raise RepositoryConstructionQualificationError(
+                f"_current_transport: facility.transport is no longer a real LocalGitRepositoryTransport "
+                f"(local-commit-only, per this identity's own admitted scope) -- got {type(current).__name__}"
+            )
+        self._transport = current
+        return current
+
     def _revalidate_before_mutation(self) -> None:
-        _reject_instance_overridden_transport_methods(self._transport)
-        _reject_symlinked_git_storage_for_every_registered_repository(self._transport)
+        transport = self._current_transport()
+        _reject_instance_overridden_transport_methods(transport)
+        _reject_symlinked_git_storage_for_every_registered_repository(transport)
         # Performance finding (PR #86, round 14): only pay for a fresh
         # mkdtemp + git-config subprocess spawn per registered
         # repository when the cheap, subprocess-free check finds
         # neutralization genuinely disturbed -- see
         # `_hooks_neutralization_still_intact`'s own docstring.
-        if not _hooks_neutralization_still_intact(self._transport, self._established_no_hooks_dirs):
-            self._established_no_hooks_dirs = _neutralize_hooks_for_every_registered_repository(self._transport)
+        if not _hooks_neutralization_still_intact(transport, self._established_no_hooks_dirs):
+            self._established_no_hooks_dirs = _neutralize_hooks_for_every_registered_repository(transport)
 
     def create_branch(self, *args, **kwargs):
         self._revalidate_before_mutation()
@@ -598,11 +685,11 @@ class _ContainmentReCheckedRepositoryFacility:
         return self._facility.commit(*args, **kwargs)
 
     def open_pr(self, *args, **kwargs):
-        _reject_instance_overridden_transport_methods(self._transport)
+        _reject_instance_overridden_transport_methods(self._current_transport())
         return self._facility.open_pr(*args, **kwargs)
 
     def merge_pr(self, *args, **kwargs):
-        _reject_instance_overridden_transport_methods(self._transport)
+        _reject_instance_overridden_transport_methods(self._current_transport())
         return self._facility.merge_pr(*args, **kwargs)
 
 
