@@ -1221,6 +1221,65 @@ verdict (see below) rather than a hardcoded stale expectation.
     suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
     repository sweep (1355 passed, only the 9 known pre-existing
     Windows-only failures, zero regressions).
+22. A fresh Codex pass against the round-21 commit (`f04def8`) found 2
+    further genuine P1 findings:
+    - **P1 ("Revalidate delegated reads before invoking transport"),
+      Codex**: `_ContainmentReCheckedRepositoryFacility`'s plain
+      `__getattr__` delegated `read` straight through to the real
+      facility -- `read` was never one of the four explicitly wrapped
+      methods, so it ran NONE of the class- or instance-level
+      transport-integrity checks the others do. The reviewer
+      reproduced a class-level `_run` replacement performing an
+      out-of-repository write during a fully-authorized `read`, with
+      the observation scenario remaining `QUALIFIED`. **Fixed**: `read`
+      is now wrapped with the same revalidation as `create_branch`/
+      `commit`. The revalidation method itself is renamed from
+      `_revalidate_before_mutation` to `_revalidate_transport_integrity`,
+      since it is no longer mutation-only. New permanent regression
+      test reproduces the exact class-level `_run` replacement against
+      `read`.
+    - **P1 ("Keep the admission snapshot caller-independent"),
+      Codex**: the round 19/20 trusted baseline
+      (`established_instance_state`/`established_no_hooks_dirs`) was
+      stored as a plain attribute on the WRAPPER
+      (`self._established_instance_state`/
+      `self._established_no_hooks_dirs`), reachable and mutable by any
+      caller holding the returned `facility`. The reviewer reproduced
+      reassigning `transport._git` AND
+      `facility._established_instance_state["_git"]` to the SAME
+      value, defeating the round-20 comparison entirely while the
+      qualification scenario remained `QUALIFIED` -- the same applies
+      to `established_no_hooks_dirs`, where a poisoned baseline would
+      make `_hooks_neutralization_still_intact` report a malicious
+      `.git/config` as unchanged, silently skipping re-neutralization.
+      **Fixed**: both pieces of trusted state moved OUT of any
+      attribute reachable through the `facility` object graph
+      entirely, into a new private, module-level, identity-keyed
+      `weakref.WeakKeyDictionary` (`_ADMITTED_TRANSPORT_STATE`),
+      populated only inside `gen1_wrap_repository_construction_facility`
+      before the wrapper is ever constructed, and read only via
+      `_admitted_state_for(transport)`. A caller holding only the
+      `facility` object has no attribute path to reach or overwrite
+      this state -- doing so now requires importing this module
+      directly and reaching into its own private globals, the same
+      disclosed trust model as the round-21 "attacker with code
+      execution before this module is imported" limitation, not a new
+      category of gap. Incidental benefit: a transport that was never
+      admitted (or was swapped for a different instance -- the
+      round-16 finding) now correctly finds no registry entry at all,
+      giving the lookup implicit transport-identity enforcement too.
+      New permanent regression test reproduces the reviewer's exact
+      poisoning move and confirms it is now inert; the existing
+      round-15 hooks-comment test (which introspected
+      `facility._established_no_hooks_dirs` directly) was updated to
+      read the same state via `_admitted_state_for` instead.
+
+    Fixed in commit `<pending>`, with 2 new permanent regression tests
+    (plus 1 existing test updated to use the new lookup). Full local
+    re-verification: full test file (61/61), full mutation suite
+    (37/37), `test_g2_27_self_construction.py` (pending), and full
+    repository sweep (pending, only the 9 known pre-existing
+    Windows-only failures expected).
 
 ## Real, honest end-to-end result
 

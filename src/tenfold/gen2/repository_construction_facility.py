@@ -44,6 +44,7 @@ import re
 import subprocess
 import tempfile
 import time
+import weakref
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -657,8 +658,14 @@ def gen1_wrap_repository_construction_facility(transport, state_store, authority
     established_instance_state["_repositories"] = dict(established_instance_state["_repositories"])
     _reject_symlinked_git_storage_for_every_registered_repository(transport)
     established_no_hooks_dirs = _neutralize_hooks_for_every_registered_repository(transport)
+    # Round 22 (see `_AdmittedTransportState`'s own docstring): this
+    # trusted state is registered in the module-private
+    # `_ADMITTED_TRANSPORT_STATE` registry, NOT passed into the
+    # wrapper's own constructor -- a caller holding only the returned
+    # facility has no attribute path to reach or overwrite it.
+    _ADMITTED_TRANSPORT_STATE[transport] = _AdmittedTransportState(established_instance_state, established_no_hooks_dirs)
     facility = RepositoryFacility(transport, state_store, authority_store)
-    return _ContainmentReCheckedRepositoryFacility(facility, transport, established_no_hooks_dirs, established_instance_state)
+    return _ContainmentReCheckedRepositoryFacility(facility, transport)
 
 
 #: Review finding (PR #86, round 18, P1, reproduced by the reviewer):
@@ -766,31 +773,86 @@ def _reject_altered_transport_instance_state(
         )
 
 
+@dataclass
+class _AdmittedTransportState:
+    """Review finding (PR #86, round 22, P1, Codex, reproduced by the
+    reviewer -- "Keep the admission snapshot caller-independent"): the
+    round 19/20 fix (`_reject_altered_transport_instance_state`) is
+    only as trustworthy as the snapshot it compares against -- and
+    that snapshot (`established_instance_state`) was stored as a plain
+    instance attribute on the WRAPPER, `self._established_instance_state`.
+    Any caller holding the returned `facility` object can simply
+    OVERWRITE the "trusted" baseline to match whatever tampering they
+    just did to the real transport, defeating the comparison entirely
+    without needing to touch the transport's class at all. The
+    reviewer reproduced exactly this: reassign `transport._git`, then
+    also reassign `facility._established_instance_state["_git"]` to
+    the same value, and the check trivially still "matches." The same
+    is true of `established_no_hooks_dirs`
+    (`self._established_no_hooks_dirs`): a caller-poisoned baseline
+    there would make `_hooks_neutralization_still_intact` report a
+    malicious `.git/config` as unchanged, silently skipping
+    re-neutralization.
+
+    Fixed by moving BOTH pieces of admission-time trusted state OUT of
+    any attribute reachable through the `facility` object graph
+    entirely, into `_ADMITTED_TRANSPORT_STATE` below -- a private,
+    MODULE-level registry the wrapper instance itself carries no
+    reference to. A caller holding only `facility` cannot reach it
+    through any attribute access on that object; doing so would
+    require importing this module directly and reaching into its own
+    private globals, a fundamentally more privileged action than
+    anything reachable through the facility's own public surface (the
+    same disclosed trust model as the round-21 "attacker with code
+    execution before this module is imported" limitation, not a new
+    category of gap)."""
+
+    instance_state: dict
+    no_hooks_dirs: "dict[str, _EstablishedHooksNeutralization]"
+
+
+#: Keyed by transport instance IDENTITY (a `WeakKeyDictionary` so an
+#: admitted transport that is later garbage-collected doesn't leak its
+#: registry entry forever). Looking up a transport that was never
+#: admitted through `gen1_wrap_repository_construction_facility` -- or
+#: was swapped for a different, even if genuine, instance (the round-16
+#: finding) -- correctly finds nothing, giving `_admitted_state_for`'s
+#: rejection double duty as an implicit transport-identity check too.
+_ADMITTED_TRANSPORT_STATE: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _admitted_state_for(transport: LocalGitRepositoryTransport) -> _AdmittedTransportState:
+    admitted = _ADMITTED_TRANSPORT_STATE.get(transport)
+    if admitted is None:
+        raise RepositoryConstructionQualificationError(
+            "_admitted_state_for: no admission-time state found for this transport instance -- "
+            "either it was never admitted through gen1_wrap_repository_construction_facility, "
+            "or it was swapped for a different instance after admission"
+        )
+    return admitted
+
+
 class _ContainmentReCheckedRepositoryFacility:
     """Gen2-owned, transparent wrapper around a real, unmodified
     `RepositoryFacility` -- see `gen1_wrap_repository_construction_facility`'s
     own MUTATION-TIME CONTAINMENT FINDING and ROUND 14 FOLLOW-UP
-    FINDINGS docstrings for why this exists. Every attribute other
-    than the four methods below (`state`, `transport`,
-    `authority_store`, `read`, `acquire_writer`, `release_writer`, and
-    any private attribute a test harness reaches into) delegates
-    transparently to the real facility via `__getattr__`, so this is
-    observably identical to a raw `RepositoryFacility` for every
-    non-delegating use site. `create_branch`/`commit` re-run the real
-    containment scan AND re-apply hook neutralization immediately
-    before delegating; `open_pr`/`merge_pr` re-run the transport
-    instance-override check (the only one relevant to them, since
-    `LocalGitRepositoryTransport`'s own real `open_pull_request`/
-    `merge_pull_request` unconditionally raise by design -- only an
-    instance-level override could make them do anything else)."""
+    FINDINGS docstrings for why this exists. `state`, `authority_store`,
+    `acquire_writer`, `release_writer`, and any private attribute a
+    test harness reaches into delegate transparently via `__getattr__`
+    (these never touch the transport, so no revalidation applies).
+    `create_branch`/`commit`/`read` (round 22 -- see
+    `_revalidate_transport_integrity`'s own docstring for why `read`
+    is included despite not mutating anything) re-run the real
+    containment scan, the class- and instance-level transport-identity
+    checks, AND re-apply hook neutralization immediately before
+    delegating; `open_pr`/`merge_pr` re-run only the class- and
+    instance-level transport-identity checks (the only ones relevant
+    to them, since `LocalGitRepositoryTransport`'s own real
+    `open_pull_request`/`merge_pull_request` unconditionally raise by
+    design -- only a class- or instance-level override could make them
+    do anything else)."""
 
-    def __init__(
-        self,
-        facility,
-        transport: LocalGitRepositoryTransport,
-        established_no_hooks_dirs: "dict[str, _EstablishedHooksNeutralization]",
-        established_instance_state: dict,
-    ) -> None:
+    def __init__(self, facility, transport: LocalGitRepositoryTransport) -> None:
         # `facility` deliberately left untyped: an explicit
         # `RepositoryFacility` annotation here would itself be an
         # undisclosed live-Gen1-authority reference under the residual
@@ -801,10 +863,18 @@ class _ContainmentReCheckedRepositoryFacility:
         # finding. Matches the same established pattern
         # `gen1_wrap_repository_construction_facility` itself already
         # uses for its own caller-injected parameters.
+        #
+        # Round 22 (see `_AdmittedTransportState`'s own docstring):
+        # `established_no_hooks_dirs`/`established_instance_state` are
+        # deliberately NOT stored here anymore -- any attribute on
+        # `self` is reachable (and mutable) by any caller holding this
+        # object, which is exactly what let the round-22 finding
+        # poison the trusted baseline. Both now live only in the
+        # module-private `_ADMITTED_TRANSPORT_STATE` registry,
+        # populated by `gen1_wrap_repository_construction_facility`
+        # before this wrapper is ever constructed.
         self._facility = facility
         self._transport = transport
-        self._established_no_hooks_dirs = established_no_hooks_dirs
-        self._established_instance_state = established_instance_state
 
     def __getattr__(self, name):
         return getattr(self._facility, name)
@@ -826,9 +896,10 @@ class _ContainmentReCheckedRepositoryFacility:
         # CURRENTLY there -- so a swap to anything that is not a
         # genuine, unmodified `LocalGitRepositoryTransport` is rejected
         # outright, at every call site (`open_pr`/`merge_pr` included).
-        # `_revalidate_before_mutation` (called by `create_branch`/
-        # `commit` only) additionally re-runs the full containment/
-        # hooks/instance-override check set on top of this, so a swap
+        # `_revalidate_transport_integrity` (called by `create_branch`/
+        # `commit`/`read` -- round 22 -- only) additionally re-runs the
+        # full containment/hooks/instance-override check set on top of
+        # this, so a swap
         # to a DIFFERENT (even if genuine) instance also forces a
         # full, fresh re-verification of ITS OWN containment/hooks
         # state there -- but THIS method, by itself, only re-verifies
@@ -845,8 +916,20 @@ class _ContainmentReCheckedRepositoryFacility:
         self._transport = current
         return current
 
-    def _revalidate_before_mutation(self) -> None:
+    def _revalidate_transport_integrity(self) -> None:
+        # Renamed from `_revalidate_before_mutation` (round 22,
+        # Codex -- "Revalidate delegated reads before invoking
+        # transport"): `read` is not a mutation, but it still
+        # delegates through the transport's own `_run` helper just
+        # like `create_branch`/`commit` do -- the reviewer reproduced
+        # a class-level `_run` replacement performing an
+        # out-of-repository write during a fully-authorized `read`,
+        # entirely bypassing the round 14-21 checks because `read` was
+        # never wrapped at all, only ever reaching `self._facility.read`
+        # via plain `__getattr__` delegation. The name no longer
+        # implies "mutation only."
         transport = self._current_transport()
+        admitted = _admitted_state_for(transport)
         _reject_altered_transport_class_implementation()
         # `_reject_altered_transport_instance_state`'s key-set check is
         # a strict superset of `_reject_instance_overridden_transport_methods`
@@ -855,23 +938,30 @@ class _ContainmentReCheckedRepositoryFacility:
         # captured only after that check already passed at admission),
         # plus it additionally pins every attribute's VALUE -- so one
         # call here covers both without redundancy.
-        _reject_altered_transport_instance_state(transport, self._established_instance_state)
+        _reject_altered_transport_instance_state(transport, admitted.instance_state)
         _reject_symlinked_git_storage_for_every_registered_repository(transport)
         # Performance finding (PR #86, round 14): only pay for a fresh
         # mkdtemp + git-config subprocess spawn per registered
         # repository when the cheap, subprocess-free check finds
         # neutralization genuinely disturbed -- see
-        # `_hooks_neutralization_still_intact`'s own docstring.
-        if not _hooks_neutralization_still_intact(transport, self._established_no_hooks_dirs):
-            self._established_no_hooks_dirs = _neutralize_hooks_for_every_registered_repository(transport)
+        # `_hooks_neutralization_still_intact`'s own docstring. The
+        # refreshed dirs are written back into the SAME registry entry
+        # (never a `self.` attribute -- see `_AdmittedTransportState`'s
+        # own docstring for why).
+        if not _hooks_neutralization_still_intact(transport, admitted.no_hooks_dirs):
+            admitted.no_hooks_dirs = _neutralize_hooks_for_every_registered_repository(transport)
 
     def create_branch(self, *args, **kwargs):
-        self._revalidate_before_mutation()
+        self._revalidate_transport_integrity()
         return self._facility.create_branch(*args, **kwargs)
 
     def commit(self, *args, **kwargs):
-        self._revalidate_before_mutation()
+        self._revalidate_transport_integrity()
         return self._facility.commit(*args, **kwargs)
+
+    def read(self, *args, **kwargs):
+        self._revalidate_transport_integrity()
+        return self._facility.read(*args, **kwargs)
 
     def open_pr(self, *args, **kwargs):
         _reject_altered_transport_class_implementation()

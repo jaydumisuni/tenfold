@@ -928,10 +928,18 @@ def test_sc23_wrapper_detects_a_trusted_path_hidden_in_a_config_comment(rig) -> 
 
     Review finding (PR #86, round 17, Minor, CodeRabbit): rewritten to
     assert the mutation genuinely succeeds -- see
-    `_real_create_branch_on_rig`."""
+    `_real_create_branch_on_rig`.
+
+    Review finding (PR #86, round 22, P1, Codex): the established
+    no-hooks-dir state moved out of `facility._established_no_hooks_dirs`
+    (a caller-mutable wrapper attribute -- the round-22 finding this
+    fix closed) into the module-private `_ADMITTED_TRANSPORT_STATE`
+    registry, reachable only via `_admitted_state_for`."""
     import subprocess
 
-    established = rig.facility._established_no_hooks_dirs  # noqa: SLF001 -- test-only introspection
+    from tenfold.gen2.repository_construction_facility import _admitted_state_for
+
+    established = _admitted_state_for(rig.transport).no_hooks_dirs
     no_hooks_dir = established[rig.repository].no_hooks_dir
 
     malicious_hooks_dir = rig.repo_root.parent / "malicious-hooks-comment"
@@ -1036,6 +1044,73 @@ def test_sc23_wrapper_rejects_a_class_level_overridden_transport_method(tmp_path
             facility.commit(None, repository="existing", branch="main", owner="assign-post", expected_head=initial_sha, files={"x.txt": b"x"}, message="x\n", operation_id="op-sealed-run-class", foreman_epoch=1)
     finally:
         LocalGitRepositoryTransport._run = original_run
+
+
+def test_sc23_wrapper_revalidates_read_against_a_class_level_overridden_transport_method(tmp_path) -> None:
+    """Review finding (PR #86, round 22, P1, Codex, reproduced by the
+    reviewer -- "Revalidate delegated reads before invoking
+    transport"): `read` fell through `_ContainmentReCheckedRepositoryFacility`'s
+    plain `__getattr__` delegation, so it never ran any of the class-
+    or instance-level transport-integrity checks the four explicitly
+    wrapped methods do. The reviewer reproduced a class-level `_run`
+    replacement performing an out-of-repository write during a
+    fully-authorized `read`, with the observation scenario remaining
+    `QUALIFIED`. `read` is now wrapped with the same
+    `_revalidate_transport_integrity` check as `create_branch`/`commit`."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    original_run = LocalGitRepositoryTransport._run
+    try:
+        LocalGitRepositoryTransport._run = lambda self, *args, **kwargs: b"0" * 40  # noqa: SLF001 -- test-only, reproducing the reviewer's exact class-level attack
+
+        with pytest.raises(RepositoryConstructionQualificationError):
+            facility.read(None, repository="existing", path="README.md", ref="main", expected_sha=initial_sha, request_id="req-sealed-read-class", foreman_epoch=1)
+    finally:
+        LocalGitRepositoryTransport._run = original_run
+
+
+def test_sc23_wrapper_established_state_cannot_be_poisoned_via_the_facility(tmp_path) -> None:
+    """Review finding (PR #86, round 22, P1, Codex, reproduced by the
+    reviewer -- "Keep the admission snapshot caller-independent"): the
+    round 19/20 trusted baseline was stored as a plain wrapper
+    attribute (`self._established_instance_state`), reachable and
+    mutable by any caller holding the returned `facility`. The
+    reviewer reproduced reassigning `transport._git` AND
+    `facility._established_instance_state["_git"]` to the same value,
+    defeating the comparison entirely while the qualification scenario
+    remained `QUALIFIED`. Both pieces of trusted state now live only
+    in a module-private registry the wrapper carries no attribute
+    pointing at, so attempting the exact same reviewer reproduction
+    has no effect: `create_branch` still rejects the tampered
+    transport."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    transport._git = "not-a-real-git-executable"  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+    # Attempt the reviewer's exact poisoning move: reach into the
+    # facility and try to make the "trusted" baseline match the
+    # tampering. Since the wrapper no longer stores this state as one
+    # of its own attributes, this merely creates a harmless, never-read
+    # instance attribute of that name -- `__getattr__` only fires for
+    # MISSING attributes, so this assignment succeeds but is inert.
+    facility._established_instance_state = {"_git": "not-a-real-git-executable"}
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        facility.create_branch(None, repository="existing", branch="sc23/poisoned-baseline", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-poisoned-baseline", foreman_epoch=1)
 
 
 def test_sc23_wrapper_rejects_a_reassigned_repository_registration(tmp_path) -> None:
