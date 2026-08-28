@@ -137,6 +137,40 @@ def test_g2_27_reachability_hardening_downgrades_a_marker_named_function_genuine
     assert "ordinary_construction_step" in reference_findings[0].disclosure_reason
 
 
+def test_g2_27_reachability_hardening_handles_a_deeply_nested_caller_without_recursion_error(monkeypatch, tmp_path) -> None:
+    """Review finding (PR #85, P2, reproduced by the reviewer):
+    `_find_undisclosed_callers_of`'s own post-order traversal had the
+    same recursive, call-stack-bounded regression -- a scanned module
+    whose undisclosed caller contains a legitimately deep expression
+    would raise RecursionError. Now an explicit iterative stack,
+    matching ast.walk's own robustness."""
+    import tenfold.gen2.self_construction as sc
+
+    deep_chain = "1" + "+1" * 1500  # deeper than the default recursion limit
+    fake_module = tmp_path / "fake_deep_reachability_module.py"
+    fake_module.write_text(
+        "from tenfold.foreman import Foreman\n\n"
+        "def gen1_reference_frontier(campaign, states):\n"
+        "    foreman = Foreman.restore(campaign, states)\n"
+        "    return foreman.frontier()\n\n"
+        "def ordinary_construction_step(campaign, states):\n"
+        f"    total = {deep_chain}\n"
+        "    return gen1_reference_frontier(campaign, states), total\n",
+        encoding="utf-8",
+    )
+    import types
+
+    fake = types.ModuleType("fake_deep_reachability_module")
+    fake.__file__ = str(fake_module)
+    monkeypatch.setitem(sc._SCANNED_MODULES, "fake_deep_reachability_module", fake)
+
+    findings = sc.derive_residual_gen1_dependency_report()
+    reference_findings = [f for f in findings if f.module == "tenfold.gen2.fake_deep_reachability_module" and f.function == "gen1_reference_frontier"]
+    assert len(reference_findings) == 1
+    assert reference_findings[0].disclosed is False
+    assert "ordinary_construction_step" in reference_findings[0].disclosure_reason
+
+
 def test_g2_27_gen1_live_authority_modules_excludes_tenfold_gen2_facility() -> None:
     """Round-trip sanity: the substring 'facility' must not accidentally
     match tenfold.gen2's OWN facility module -- confirms the scan only
@@ -148,6 +182,36 @@ def test_g2_27_gen1_live_authority_modules_excludes_tenfold_gen2_facility() -> N
 
     findings = scan_module_for_gen1_authority_dependency("full_system_qualification", fsq)
     assert findings == (), "full_system_qualification imports tenfold.gen2.facility, not tenfold.facility -- must not be flagged"
+
+
+def test_g2_27_scan_handles_a_module_with_a_deeply_nested_expression_without_recursion_error(tmp_path) -> None:
+    """Review finding (PR #85, P2, reproduced by the reviewer): a
+    recursive post-order AST traversal is bounded by Python's own
+    call-stack recursion limit (~1000 by default) -- a scanned module
+    containing a legitimately deep expression (e.g. a long chained
+    arithmetic expression) would raise RecursionError, taking down the
+    whole self-construction gate report. The scan is now implemented
+    as an explicit iterative stack, matching ast.walk's own robustness
+    -- bounded only by available memory, not recursion depth."""
+    import types
+
+    deep_chain = "1" + "+1" * 1500  # deeper than the default recursion limit
+    fake_module = tmp_path / "fake_deep_module.py"
+    fake_module.write_text(
+        "from tenfold.foreman import Foreman\n\n"
+        "def deeply_nested_expression_holder(campaign, states):\n"
+        f"    total = {deep_chain}\n"
+        "    foreman = Foreman.restore(campaign, states)\n"
+        "    return foreman.frontier(), total\n",
+        encoding="utf-8",
+    )
+    fake = types.ModuleType("fake_deep_module")
+    fake.__file__ = str(fake_module)
+
+    findings = scan_module_for_gen1_authority_dependency("fake_deep_module", fake)
+    assert len(findings) == 1
+    assert findings[0].function == "deeply_nested_expression_holder"
+    assert findings[0].disclosed is False
 
 
 def test_g2_27_derive_residual_gen1_dependency_report_is_real_and_nonempty() -> None:
