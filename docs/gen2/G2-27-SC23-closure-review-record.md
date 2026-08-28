@@ -1274,12 +1274,12 @@ verdict (see below) rather than a hardcoded stale expectation.
       `facility._established_no_hooks_dirs` directly) was updated to
       read the same state via `_admitted_state_for` instead.
 
-    Fixed in commit `<pending>`, with 2 new permanent regression tests
+    Fixed in commit `ff984b2`, with 2 new permanent regression tests
     (plus 1 existing test updated to use the new lookup). Full local
     re-verification: full test file (61/61), full mutation suite
-    (37/37), `test_g2_27_self_construction.py` (pending), and full
-    repository sweep (pending, only the 9 known pre-existing
-    Windows-only failures expected).
+    (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1357 passed, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
 
 ## Real, honest end-to-end result
 
