@@ -999,6 +999,45 @@ def test_sc23_wrapper_rejects_an_instance_overridden_private_helper(tmp_path) ->
         facility.commit(None, repository="existing", branch="main", owner="assign-post", expected_head=initial_sha, files={"x.txt": b"x"}, message="x\n", operation_id="op-sealed-run-helper", foreman_epoch=1)
 
 
+def test_sc23_wrapper_rejects_a_class_level_overridden_transport_method(tmp_path) -> None:
+    """Review finding (PR #86, round 21, P1, Codex, reproduced by the
+    reviewer -- "Bind the transport class implementation before
+    mutation"): every earlier instance-level check (rounds 14, 18, 19,
+    20) validates `vars(transport)` -- the INSTANCE's own `__dict__` --
+    but `LocalGitRepositoryTransport._run = malicious_fn` (assigned on
+    the CLASS, not any particular instance) leaves every instance's
+    own `__dict__` completely untouched; Python's attribute lookup
+    falls through to the class, so the malicious `_run` is what the
+    admitted instance actually calls too. The reviewer reproduced this
+    passing every existing check, then a fully-authorized `create_branch`
+    invoking the replacement before ever reaching real git. The class's
+    own `__dict__` is now pinned against a snapshot taken when this
+    module was first imported, and re-verified before every admission
+    and mutation."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    # `_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES` is a MODULE-LEVEL snapshot,
+    # shared process-wide across every test -- unlike the instance-level
+    # attacks above, this one must be restored in a `finally`, or every
+    # OTHER test running afterward in this process would permanently
+    # fail the class-implementation check too.
+    original_run = LocalGitRepositoryTransport._run
+    try:
+        LocalGitRepositoryTransport._run = lambda self, *args, **kwargs: b"0" * 40  # noqa: SLF001 -- test-only, reproducing the reviewer's exact class-level attack
+
+        with pytest.raises(RepositoryConstructionQualificationError):
+            facility.commit(None, repository="existing", branch="main", owner="assign-post", expected_head=initial_sha, files={"x.txt": b"x"}, message="x\n", operation_id="op-sealed-run-class", foreman_epoch=1)
+    finally:
+        LocalGitRepositoryTransport._run = original_run
+
+
 def test_sc23_wrapper_rejects_a_reassigned_repository_registration(tmp_path) -> None:
     """Review finding (PR #86, round 19, Major, CodeRabbit): the round-18
     instance-attribute allowlist validates attribute NAMES only --

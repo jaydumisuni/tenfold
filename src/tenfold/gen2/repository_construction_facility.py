@@ -78,6 +78,59 @@ CAMPAIGN_ID = "gen2-sc23-repository-construction-qualification"
 NODE_ID = "gen2-sc23-scratch-node"
 REPOSITORY_NAME = "scratch"
 
+#: Review finding (PR #86, round 21, P1, Codex, reproduced by the
+#: reviewer -- "Bind the transport class implementation before
+#: mutation"): every instance-level check so far (rounds 14, 18, 19,
+#: 20) validates `vars(transport)` -- the INSTANCE's own `__dict__` --
+#: but `LocalGitRepositoryTransport._run = malicious_fn` (assigned on
+#: the CLASS, not any particular instance) leaves every instance's own
+#: `__dict__` completely untouched; Python's attribute lookup falls
+#: through to the class for anything the instance doesn't shadow
+#: itself, so the malicious `_run` is what every instance -- including
+#: the one genuinely admitted -- actually calls. The reviewer
+#: reproduced exactly this passing every existing check, then a
+#: fully-authorized `create_branch` invoking the replacement before
+#: ever reaching real git. Captured here, at THIS module's own import
+#: time -- necessarily before any admission call in every legitimate
+#: call path, since a caller must import this module to reach
+#: `gen1_wrap_repository_construction_facility` at all -- so
+#: `_reject_altered_transport_class_implementation` has a trusted
+#: baseline to compare the class's OWN `__dict__` against before every
+#: admission and mutation. (This does not defend against an attacker
+#: who already has code execution BEFORE this module is ever imported
+#: -- the same disclosed, construction-time-review trust model every
+#: other check in this file already relies on, not a new category of
+#: gap.)
+_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES = dict(vars(LocalGitRepositoryTransport))
+
+
+def _reject_altered_transport_class_implementation() -> None:
+    """See `_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES`'s own docstring for
+    the finding this closes. Compares `LocalGitRepositoryTransport`'s
+    OWN `__dict__` (methods, not instance state -- functions compare
+    by identity, so any rebinding to a different object is caught)
+    against the snapshot taken when this module was first imported;
+    any method added, removed, or reassigned is rejected outright.
+    Called at admission and before every mutating or transport-
+    delegating call (`create_branch`, `commit`, `open_pr`, `merge_pr`
+    all reach this), since a class-level replacement of
+    `open_pull_request`/`merge_pull_request` would otherwise defeat
+    the reasoning those two rely on -- that the real, unmodified
+    methods unconditionally raise by design."""
+    current = dict(vars(LocalGitRepositoryTransport))
+    changed = sorted(set(current) ^ set(_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES))
+    changed += sorted(
+        name
+        for name in set(current) & set(_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES)
+        if current[name] is not _TRUSTED_TRANSPORT_CLASS_ATTRIBUTES[name]
+    )
+    if changed:
+        raise RepositoryConstructionQualificationError(
+            f"_reject_altered_transport_class_implementation: LocalGitRepositoryTransport's own class "
+            f"implementation no longer matches what was admitted at import time ({', '.join(sorted(set(changed)))}), "
+            f"breaking the local-commit-only boundary for every instance of the class"
+        )
+
 
 @dataclass(frozen=True)
 class _RepositoryConstructionFacilityIdentity:
@@ -589,6 +642,7 @@ def gen1_wrap_repository_construction_facility(transport, state_store, authority
             f"gen1_wrap_repository_construction_facility: transport must be a real LocalGitRepositoryTransport "
             f"(local-commit-only, per this identity's own admitted scope) -- got {type(transport).__name__}"
         )
+    _reject_altered_transport_class_implementation()
     _reject_instance_overridden_transport_methods(transport)
     # `dict(vars(transport))` only copies the OUTER __dict__ -- the
     # value at `_repositories` would still be the SAME mutable dict
@@ -793,6 +847,7 @@ class _ContainmentReCheckedRepositoryFacility:
 
     def _revalidate_before_mutation(self) -> None:
         transport = self._current_transport()
+        _reject_altered_transport_class_implementation()
         # `_reject_altered_transport_instance_state`'s key-set check is
         # a strict superset of `_reject_instance_overridden_transport_methods`
         # (the established snapshot's own key set is always exactly
@@ -819,10 +874,12 @@ class _ContainmentReCheckedRepositoryFacility:
         return self._facility.commit(*args, **kwargs)
 
     def open_pr(self, *args, **kwargs):
+        _reject_altered_transport_class_implementation()
         _reject_instance_overridden_transport_methods(self._current_transport())
         return self._facility.open_pr(*args, **kwargs)
 
     def merge_pr(self, *args, **kwargs):
+        _reject_altered_transport_class_implementation()
         _reject_instance_overridden_transport_methods(self._current_transport())
         return self._facility.merge_pr(*args, **kwargs)
 

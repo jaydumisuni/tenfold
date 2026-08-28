@@ -1179,6 +1179,48 @@ verdict (see below) rather than a hardcoded stale expectation.
     suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
     repository sweep (1354 passed, only the 9 known pre-existing
     Windows-only failures, zero regressions).
+21. A fresh Codex pass against the round-20 commit (`914cbdc`) found 1
+    further genuine P1 finding:
+    - **P1 ("Bind the transport class implementation before
+      mutation"), Codex**: every instance-level check through round 20
+      validates `vars(transport)` -- the INSTANCE's own `__dict__` --
+      but `LocalGitRepositoryTransport._run = malicious_fn` assigned
+      on the CLASS itself leaves every instance's own `__dict__`
+      completely untouched; Python's attribute lookup falls through to
+      the class for anything the instance doesn't shadow itself, so
+      the malicious `_run` is what the admitted instance actually
+      calls too. The reviewer reproduced this passing every existing
+      check, then a fully-authorized `create_branch` invoking the
+      replacement before ever reaching real git. **Fixed**:
+      `LocalGitRepositoryTransport`'s own `__dict__` is now snapshotted
+      once (`_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES`), at THIS module's
+      own import time -- necessarily before any admission call in
+      every legitimate call path, since a caller must import this
+      module to reach `gen1_wrap_repository_construction_facility` at
+      all -- and re-verified via a new
+      `_reject_altered_transport_class_implementation` check at
+      admission, before every `create_branch`/`commit` revalidation,
+      AND inside `open_pr`/`merge_pr`. The last of these matters
+      specifically: a class-level replacement of
+      `open_pull_request`/`merge_pull_request` would otherwise defeat
+      the very reasoning those two methods' own instance-only checks
+      rely on -- that the real, unmodified class methods
+      unconditionally raise by design. DISCLOSED LIMITATION (same
+      trust model as every other check in this file, not a new
+      category of gap): this does not defend against an attacker who
+      already has code execution BEFORE this module is ever imported
+      -- the snapshot can only be as trustworthy as the process state
+      at the moment it is taken. New permanent regression test
+      reproduces the exact class-level `_run` replacement, restoring
+      the class in a `finally` block since (unlike every earlier
+      instance-level attack) this snapshot is process-wide shared
+      state, not confined to one test's own transport instance.
+
+    Fixed in commit `<pending>`, with 1 new permanent regression test.
+    Full local re-verification: full test file (59/59), full mutation
+    suite (37/37), `test_g2_27_self_construction.py` (pending), and
+    full repository sweep (pending, only the 9 known pre-existing
+    Windows-only failures expected).
 
 ## Real, honest end-to-end result
 
