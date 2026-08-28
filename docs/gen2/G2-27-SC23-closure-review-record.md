@@ -1496,12 +1496,12 @@ verdict (see below) rather than a hardcoded stale expectation.
     now proves directly rather than relying on an incidental
     `AttributeError` from Gen1's own code.
 
-    Fixed in commit `<pending>`, with 3 new permanent regression
+    Fixed in commit `7fb5099`, with 3 new permanent regression
     tests (plus 2 existing tests updated). Full local re-verification:
     full test file (69/69), full mutation suite (37/37),
     `test_g2_27_self_construction.py` (33/33), and full repository
-    sweep (pending, only the 9 known pre-existing Windows-only
-    failures expected).
+    sweep (1365 passed, only the 9 known pre-existing Windows-only
+    failures, zero regressions).
 
 ## Real, honest end-to-end result
 
