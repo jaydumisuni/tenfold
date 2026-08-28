@@ -1032,6 +1032,59 @@ def test_sc23_wrapper_rejects_a_reassigned_repository_registration(tmp_path) -> 
         facility.create_branch(None, repository="existing", branch="sc23/reassigned-registration", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-reassigned-registration", foreman_epoch=1)
 
 
+def test_sc23_wrapper_rejects_a_commondir_file_planted_after_admission(tmp_path) -> None:
+    """Review finding (PR #86, round 20, P1, Codex, reproduced by the
+    reviewer): a `.git/commondir` file (normally used for linked
+    worktrees) redirects where git's EFFECTIVE objects/refs/logs/hooks
+    storage actually lives, entirely independent of whether the
+    literal `objects`/`refs`/`logs`/`config` paths under THIS `.git`
+    are clean. The reviewer reproduced the containment and hooks scans
+    both passing, followed by create_branch writing into the external
+    directory commondir pointed at. Its mere presence is now rejected
+    outright."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    external_common_dir = tmp_path / "external-common-dir"
+    external_common_dir.mkdir()
+    (repo_root / ".git" / "commondir").write_text(str(external_common_dir) + "\n", encoding="utf-8")
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        facility.create_branch(None, repository="existing", branch="sc23/commondir-redirect", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-commondir-redirect", foreman_epoch=1)
+
+
+def test_sc23_wrapper_rejects_a_reassigned_transport_git_executable(tmp_path) -> None:
+    """Review finding (PR #86, round 20, P1, Codex, reproduced by the
+    reviewer -- "Bind allowed transport attribute values"): the
+    round-19 fix pinned `_repositories`' VALUES but left `_git`,
+    `_author_name`, and `_author_email` covered by name only.
+    `_git` is one of the four allowed names, so reassigning it to a
+    different executable after admission stayed invisible to the
+    round-18/19 checks -- the reviewer reproduced the injected
+    executable running (in place of real git) during a fully-authorized
+    create_branch. Every transport attribute's VALUE is now pinned at
+    admission time, not just its name."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    transport._git = "not-a-real-git-executable"  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        facility.create_branch(None, repository="existing", branch="sc23/reassigned-git-executable", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-reassigned-git-executable", foreman_epoch=1)
+
+
 def test_sc23_wrapper_rejects_an_included_git_config(tmp_path) -> None:
     """Review finding (PR #86, round 16, P1, reproduced by the
     reviewer): the round-15 exact-byte-snapshot check is airtight

@@ -381,6 +381,28 @@ def _reject_symlinked_git_storage_for_every_registered_repository(transport: Loc
                 f"_reject_symlinked_git_storage_for_every_registered_repository: "
                 f"{name}'s .git directory itself is a symlink, escaping the registered repository root"
             )
+        # COMMONDIR FINDING (review finding, PR #86, round 20, P1,
+        # Codex, reproduced by the reviewer): git's own repository
+        # layout lets `.git/commondir` redirect where the EFFECTIVE
+        # objects/refs/logs/hooks storage actually lives (normally used
+        # for linked worktrees) -- entirely independent of whether
+        # `objects`/`refs`/`logs`/`config` under THIS `.git` are
+        # themselves clean. The reviewer reproduced this scan and the
+        # hooks-integrity check both passing, followed by a real
+        # `create_branch` writing the new ref into the external
+        # directory `commondir` pointed at rather than the registered
+        # repository's own `.git`. Same "detect presence, don't
+        # interpret" philosophy as `_reject_alternate_git_config_sources`
+        # -- a genuinely admitted, from-scratch, single-worktree
+        # repository has no legitimate reason to carry a `commondir`
+        # file at all, so its mere presence is rejected outright rather
+        # than resolving what it points at.
+        if (git_dir / "commondir").exists():
+            raise RepositoryConstructionQualificationError(
+                f"_reject_symlinked_git_storage_for_every_registered_repository: "
+                f"{name}'s .git directory declares a commondir file -- rejected outright rather than "
+                f"resolving the effective common directory it redirects to"
+            )
         for internal in ("objects", "refs", "logs", "config"):
             found = _find_unsafe_git_storage_entry(git_dir / internal)
             if found is not None:
@@ -568,11 +590,21 @@ def gen1_wrap_repository_construction_facility(transport, state_store, authority
             f"(local-commit-only, per this identity's own admitted scope) -- got {type(transport).__name__}"
         )
     _reject_instance_overridden_transport_methods(transport)
-    established_repositories = dict(transport._repositories)  # noqa: SLF001 -- genuine safety enforcement; see _reject_altered_registered_repositories's own docstring
+    # `dict(vars(transport))` only copies the OUTER __dict__ -- the
+    # value at `_repositories` would still be the SAME mutable dict
+    # object `transport._repositories` itself, so a later in-place
+    # mutation (`transport._repositories[name] = ...`) would silently
+    # mutate this "established" snapshot too, defeating the whole
+    # point (self-caught while re-verifying the round-19 regression
+    # test against this round's consolidation). `_repositories` is
+    # copied independently; `_git`/`_author_name`/`_author_email` are
+    # plain immutable strings, so no further copying is needed there.
+    established_instance_state = dict(vars(transport))  # noqa: SLF001 -- genuine safety enforcement; see _reject_altered_transport_instance_state's own docstring
+    established_instance_state["_repositories"] = dict(established_instance_state["_repositories"])
     _reject_symlinked_git_storage_for_every_registered_repository(transport)
     established_no_hooks_dirs = _neutralize_hooks_for_every_registered_repository(transport)
     facility = RepositoryFacility(transport, state_store, authority_store)
-    return _ContainmentReCheckedRepositoryFacility(facility, transport, established_no_hooks_dirs, established_repositories)
+    return _ContainmentReCheckedRepositoryFacility(facility, transport, established_no_hooks_dirs, established_instance_state)
 
 
 #: Review finding (PR #86, round 18, P1, reproduced by the reviewer):
@@ -628,33 +660,55 @@ def _reject_instance_overridden_transport_methods(transport: LocalGitRepositoryT
         )
 
 
-def _reject_altered_registered_repositories(
+def _reject_altered_transport_instance_state(
     transport: LocalGitRepositoryTransport,
-    established_repositories: dict,
+    established_instance_state: dict,
 ) -> None:
-    """Review finding (PR #86, round 19, Major, CodeRabbit): round 18's
+    """Review finding (PR #86, round 19, Major, CodeRabbit -- "Pin
+    registered repository identities at admission"): round 18's
     instance-attribute allowlist validates attribute NAMES only --
     `_repositories` is itself one of the four expected names, so
-    replacing what it POINTS AT is invisible to that check. A caller
-    can reassign `transport._repositories[name]` to a different,
-    independently clean `_RegisteredRepository` (a different root,
-    device, inode) after admission; `LocalGitRepositoryTransport._repo`
-    only checks the CURRENT entry for internal self-consistency, not
-    against what was actually admitted, so the swapped registration
-    passes every existing check and a later `create_branch`/`commit`
-    silently operates on a repository that was never scanned for
-    symlinked git storage or hook neutralization. Every registration's
-    identity is now pinned at admission time (`established_repositories`,
-    a snapshot of `transport._repositories` taken before this identity
-    is ever handed back to a caller) and re-verified, exactly, before
-    every mutation -- any added, removed, or reassigned registration is
-    rejected outright, the same treatment as a symlinked git directory."""
-    current = transport._repositories  # noqa: SLF001 -- genuine safety enforcement; see docstring
-    if current != established_repositories:
+    replacing what it POINTS AT (a different, independently clean
+    `_RegisteredRepository`) was invisible to that check.
+    `LocalGitRepositoryTransport._repo` only checks a registration's
+    internal self-consistency against ITSELF, not against what was
+    actually admitted, so a swapped registration passed every existing
+    check and a later `create_branch`/`commit` silently operated on a
+    repository that was never scanned for symlinked git storage or
+    hook neutralization.
+
+    Review finding (PR #86, round 20, P1, Codex, reproduced by the
+    reviewer -- "Bind allowed transport attribute values"): the
+    round-19 fix pinned `_repositories`' VALUES but left `_git`,
+    `_author_name`, and `_author_email` covered by name only. The
+    reviewer reproduced reassigning `transport._git` to a malicious
+    executable after admission -- still one of the four allowed
+    NAMES, so the round-18/19 checks stayed silent, and the injected
+    executable ran (in place of the real `git` binary) the next time
+    `_run` used `self._git` during a fully-authorized `create_branch`.
+
+    Both are the same underlying gap: an allowlist of attribute NAMES
+    proves nothing about the VALUES behind them. Generalized once,
+    covering all four: `established_instance_state` is a snapshot of
+    `vars(transport)` -- names AND values -- taken at admission time
+    (after `_reject_instance_overridden_transport_methods` has already
+    confirmed the incoming instance carries no unexpected names), and
+    every mutation now re-verifies `vars(transport)` is EXACTLY that
+    snapshot -- no attribute added, removed, or reassigned to a
+    different value, whatever its name."""
+    current = vars(transport)
+    unexpected_or_missing = sorted(set(current) ^ set(established_instance_state))
+    if unexpected_or_missing:
         raise RepositoryConstructionQualificationError(
-            "_reject_altered_registered_repositories: transport._repositories no longer matches the "
-            "identities admitted at construction time (a registration was added, removed, or reassigned "
-            "to a different repository) -- rejecting the same as a symlinked git directory"
+            f"_reject_altered_transport_instance_state: transport instance attributes no longer match "
+            f"the set admitted at construction time ({', '.join(unexpected_or_missing)}), "
+            f"breaking the local-commit-only boundary"
+        )
+    changed = sorted(name for name in established_instance_state if current[name] != established_instance_state[name])
+    if changed:
+        raise RepositoryConstructionQualificationError(
+            f"_reject_altered_transport_instance_state: transport instance attribute value(s) changed "
+            f"since construction time ({', '.join(changed)}) -- rejecting the same as a symlinked git directory"
         )
 
 
@@ -681,7 +735,7 @@ class _ContainmentReCheckedRepositoryFacility:
         facility,
         transport: LocalGitRepositoryTransport,
         established_no_hooks_dirs: "dict[str, _EstablishedHooksNeutralization]",
-        established_repositories: dict,
+        established_instance_state: dict,
     ) -> None:
         # `facility` deliberately left untyped: an explicit
         # `RepositoryFacility` annotation here would itself be an
@@ -696,7 +750,7 @@ class _ContainmentReCheckedRepositoryFacility:
         self._facility = facility
         self._transport = transport
         self._established_no_hooks_dirs = established_no_hooks_dirs
-        self._established_repositories = established_repositories
+        self._established_instance_state = established_instance_state
 
     def __getattr__(self, name):
         return getattr(self._facility, name)
@@ -739,8 +793,14 @@ class _ContainmentReCheckedRepositoryFacility:
 
     def _revalidate_before_mutation(self) -> None:
         transport = self._current_transport()
-        _reject_instance_overridden_transport_methods(transport)
-        _reject_altered_registered_repositories(transport, self._established_repositories)
+        # `_reject_altered_transport_instance_state`'s key-set check is
+        # a strict superset of `_reject_instance_overridden_transport_methods`
+        # (the established snapshot's own key set is always exactly
+        # `_EXPECTED_TRANSPORT_INSTANCE_ATTRIBUTES`, since it was
+        # captured only after that check already passed at admission),
+        # plus it additionally pins every attribute's VALUE -- so one
+        # call here covers both without redundancy.
+        _reject_altered_transport_instance_state(transport, self._established_instance_state)
         _reject_symlinked_git_storage_for_every_registered_repository(transport)
         # Performance finding (PR #86, round 14): only pay for a fresh
         # mkdtemp + git-config subprocess spawn per registered

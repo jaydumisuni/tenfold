@@ -1096,6 +1096,90 @@ verdict (see below) rather than a hardcoded stale expectation.
     repository sweep (1352 passed, only the 9 known pre-existing
     Windows-only failures, zero regressions).
 
+    PROCESS NOTE (self-caught): Codex's own pass against the round-18
+    commit landed 2 further genuine P1 findings a few minutes after
+    CodeRabbit's finding above, both timestamped after this round's
+    fix/reply cycle had already begun. The background poll used to
+    detect new review activity exits as soon as ANY unresolved thread
+    appears, so it fired on CodeRabbit's finding alone and this round
+    was closed out (committed, replied, resolved, fresh review
+    requested) before Codex's two findings were ever read -- an echo
+    of the same class of gap that caused the PR #84 incident this
+    entire closure record exists to remediate, just caught this time
+    by discovering the still-unresolved threads immediately on the
+    NEXT poll rather than after a merge. Both findings are genuine and
+    are fixed below as round 20, against the SAME round-18 commit
+    (`bb02dce`) CodeRabbit's finding was also against -- not a
+    regression introduced by the round-19 fix itself.
+20. The 2 Codex findings described in the round-19 process note above,
+    both P1, both reproduced by the reviewer, both against commit
+    `bb02dce`:
+    - **P1 ("Reject Git common-directory redirection"), Codex**: git's
+      own repository layout lets a `.git/commondir` file (normally used
+      for linked worktrees) redirect where the EFFECTIVE
+      objects/refs/logs/hooks storage actually lives, entirely
+      independent of whether the literal `objects`/`refs`/`logs`/
+      `config` paths under THIS `.git` are themselves clean. The
+      reviewer reproduced the containment scan and hooks-integrity
+      check both passing, followed by a real `create_branch` writing
+      the new ref into the external directory `commondir` pointed at.
+      **Fixed**: mere presence of `.git/commondir` is now rejected
+      outright inside
+      `_reject_symlinked_git_storage_for_every_registered_repository`
+      -- the same "detect presence, don't interpret" philosophy as the
+      round-16/17 include/`config.worktree` checks, since a genuinely
+      admitted, from-scratch, single-worktree repository has no
+      legitimate reason to carry one. New permanent regression test
+      plants a `commondir` file pointing at an external directory
+      after admission.
+    - **P1 ("Bind allowed transport attribute values"), Codex**: the
+      round-19 fix pinned `_repositories`' VALUES but left `_git`,
+      `_author_name`, and `_author_email` covered by NAME only -- all
+      four are among the round-18 allowlist's expected names, so
+      reassigning `transport._git` to a different executable after
+      admission stayed invisible to every existing check. The reviewer
+      reproduced the injected executable running (in place of the real
+      `git` binary) during a fully-authorized `create_branch`. **Fixed**:
+      generalized once, covering all four attributes uniformly --
+      `_reject_altered_registered_repositories` (round 19) is replaced
+      by `_reject_altered_transport_instance_state`, which snapshots
+      `vars(transport)` (names AND values) at admission
+      (`established_instance_state`, replacing `established_repositories`)
+      and re-verifies the EXACT snapshot before every mutation; any
+      attribute added, removed, or reassigned to a different value is
+      rejected, whatever its name. This also makes the round-18
+      `_reject_instance_overridden_transport_methods` call inside
+      `_revalidate_before_mutation` redundant (the new check's key-set
+      comparison is a strict superset, since the established snapshot's
+      own keys are always exactly what that function checks), so
+      `_revalidate_before_mutation` now calls only the one, more
+      comprehensive check there; `_reject_instance_overridden_transport_methods`
+      itself is unchanged and still used at admission time and by
+      `open_pr`/`merge_pr`, where no full instance-state snapshot exists
+      or is needed. New permanent regression test reassigns `transport._git`
+      to a non-git executable.
+
+      SELF-CAUGHT BUG while re-verifying this fix: the first version of
+      `established_instance_state` was built as `dict(vars(transport))`
+      -- a shallow copy of the OUTER `__dict__` only, so the value at
+      `_repositories` was still the SAME mutable dict object as
+      `transport._repositories` itself. The round-19 regression test
+      (`test_sc23_wrapper_rejects_a_reassigned_repository_registration`)
+      failed under this version -- not because the finding was
+      unfixed, but because mutating `transport._repositories` in place
+      silently mutated the "established" snapshot right along with it,
+      so the comparison trivially still matched. Fixed by copying
+      `_repositories` independently
+      (`established_instance_state["_repositories"] = dict(...)`)
+      before storing the snapshot; `_git`/`_author_name`/`_author_email`
+      need no such copy since they are plain immutable strings.
+
+    Fixed in commit `<pending>`, with 2 new permanent regression tests.
+    Full local re-verification: full test file (58/58), full mutation
+    suite (37/37), `test_g2_27_self_construction.py` (pending), and
+    full repository sweep (pending, only the 9 known pre-existing
+    Windows-only failures expected).
+
 ## Real, honest end-to-end result
 
 Running `execute_self_construction_gate()` for real against the live
