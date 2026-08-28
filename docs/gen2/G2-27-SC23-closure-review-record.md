@@ -703,6 +703,47 @@ an internally-`True` report does not, by itself, flip the final verdict.
 Genuine external `eligible_for_satisfaction` is a separate, real,
 currently-unmet requirement.
 
+### External assurance follow-up (PR #85)
+
+The Sergeant `NEEDS_WORK` verdict above cited two findings: "Nested
+iteration pattern may create scaling risk" and "Changed exported
+symbols are called from other files." Sergeant reviews a FIXED,
+frozen file set from G2-27's own original construction
+(`_G2_27_CHANGED_FILES` in `self_construction.py`) -- unrelated to
+SC-23's own new module, and predating this session's SC-16/SC-23 work
+entirely.
+
+Genuinely investigated and fixed the concrete, identifiable
+candidate: `scan_module_for_gen1_authority_dependency` and
+`_find_undisclosed_callers_of` both re-walked every function's entire
+AST subtree once per enclosing function
+(`for func_node in ast.walk(tree): for inner in ast.walk(func_node)`),
+redundant and matching the finding's own description exactly. Fixed
+across 3 real, independently adversarial-reviewed rounds (PR #85,
+merged `a3d2b1b`): a single-pass traversal eliminating the redundant
+re-walk; then an iterative (not recursive) rewrite after Codex
+reproduced a `RecursionError` on a legitimately deep AST; then a
+third rewrite (tracking only an enclosing-function stack rather than
+a per-node combined set) after Codex reproduced a genuine quadratic
+memory blowup in the second version. All three fixes verified via the
+full existing test suite plus new permanent regression tests (deep
+nesting, quadratic-memory reproduction with `tracemalloc`).
+
+Re-running the real gate after PR #85 merged: **the Sergeant verdict
+and both findings are byte-for-byte unchanged** from before any of
+these fixes. A targeted check of the other 6 frozen files (the two
+remaining Rust crates, `authority_transfer_bridge.py`,
+`mutation_fixtures.py`) found no comparable nested-iteration pattern.
+This is now treated as a genuine external condition, not a
+code-fixable defect: 3 substantive, adversarially-reviewed changes
+targeting the finding's own literal description produced zero
+observable change in Sergeant's verdict, and the finding carries no
+file/line specificity to act on further. PR #85's own fixes are kept
+regardless (real, independently verified improvements to a
+security-critical scan), but this Sergeant gate itself is not
+expected to resolve through further incremental code changes to this
+file set.
+
 ## Does not enable
 
 - self-construction -- the FINAL, authoritative `self_construction_capable`
