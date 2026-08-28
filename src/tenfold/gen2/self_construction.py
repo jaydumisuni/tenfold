@@ -659,6 +659,13 @@ _ADJUDICATED_EXCEPTIONS: dict[tuple[str, str], str] = {
         "Facility-driven create_branch call proving hooks are neutralized) -- SC-23 closure, round-4 review "
         "finding, docs/gen2/G2-27-SC23-closure-review-record.md"
     ),
+    ("tenfold.gen2.repository_construction_facility", "_reject_altered_facility_class_implementation"): (
+        "defensive integrity check comparing RepositoryFacility's own class __dict__ against a snapshot taken "
+        "at this module's own import time, sealing it against class-level tampering the same way "
+        "_reject_altered_transport_class_implementation already seals LocalGitRepositoryTransport -- never "
+        "re-deriving, bypassing, or weakening any of RepositoryFacility's own real authority/lease/"
+        "request-binding logic -- SC-23 closure, round 23, docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
 }
 
 

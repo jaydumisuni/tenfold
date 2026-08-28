@@ -1280,6 +1280,72 @@ verdict (see below) rather than a hardcoded stale expectation.
     (37/37), `test_g2_27_self_construction.py` (33/33), and full
     repository sweep (1357 passed, only the 9 known pre-existing
     Windows-only failures, zero regressions).
+23. A fresh Codex pass against the round-22 commit (`e88717a`) found 2
+    further genuine P1 findings:
+    - **P1 ("Check the transport class before the weak-key lookup"),
+      Codex**: `_admitted_state_for`'s `WeakKeyDictionary.get()` call
+      internally hashes the transport, invoking its own (potentially
+      rebound) `__hash__` -- and `_revalidate_transport_integrity`
+      reached that lookup BEFORE the class-implementation check had a
+      chance to reject a rebound `__hash__`. The reviewer reproduced a
+      replacement `__hash__` performing an out-of-repository write:
+      the call correctly raised `RepositoryConstructionQualificationError`
+      moments later, but only AFTER the side effect had already
+      occurred -- the check was correct, but too late. **Fixed**:
+      every call site now runs the class-implementation check FIRST,
+      before touching the transport in any way that could invoke a
+      class dunder method on it (the registry lookup included). New
+      permanent regression test reproduces a marker-writing `__hash__`
+      replacement and asserts the marker was never created, not merely
+      that the call eventually raised. SELF-CAUGHT BUG while writing
+      that test: `LocalGitRepositoryTransport` does not itself OWN a
+      `__hash__` entry (confirmed empirically -- it inherits
+      `object.__hash__`), so restoring it via reassignment after the
+      test would have left an explicit `__hash__` entry in the class's
+      own `__dict__` where none existed before, permanently diverging
+      from `_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES`'s own snapshot and
+      breaking every subsequent test in the process (10 failures and 9
+      errors were observed on the first run before this was caught and
+      fixed with `del` instead of reassignment).
+    - **P1 ("Seal the delegated RepositoryFacility operations"),
+      Codex**: every check through round 22 seals
+      `LocalGitRepositoryTransport` (the object doing the actual git
+      subprocess work), but `create_branch`/`commit`/`read`/`open_pr`/
+      `merge_pr` all ultimately call `self._facility.<method>(...)` --
+      and nothing validated `self._facility`'s (Gen1's real
+      `RepositoryFacility`) OWN instance state at all. The reviewer
+      reproduced shadowing `facility._facility.create_branch` at the
+      instance level: every transport check passed (the replacement
+      never touches the transport at all), and the injected method ran
+      instead of the real one, skipping Gen1's own authority, lease,
+      and request-binding checks entirely while returning a fabricated
+      success. **Fixed**: `RepositoryFacility` gets the SAME two-layer
+      defense `LocalGitRepositoryTransport` already has -- an
+      instance-attribute allowlist (`_EXPECTED_FACILITY_INSTANCE_ATTRIBUTES`,
+      matching its real `__init__`'s three data attributes:
+      `transport`, `state`, `authority_store`) and a class-
+      implementation pin (`_TRUSTED_FACILITY_CLASS_ATTRIBUTES`),
+      applied PRE-EMPTIVELY at the class level rather than waiting for
+      a predictable next-round rediscovery of the round-21 pattern one
+      layer deeper (the round-18-to-21 escalation on the transport
+      made this variant highly foreseeable). Deliberately NOT pinning
+      `.transport`'s VALUE the way the transport's own four attributes
+      are pinned -- a transport swap is legitimate and independently,
+      more thoroughly re-verified by `_current_transport`/
+      `_admitted_state_for` already. Both new checks (`_reject_altered_class_implementation`,
+      generalized from the round-21 transport-only version;
+      `_reject_instance_overridden_attributes`, generalized from the
+      round-14/18 transport-only version) now run in
+      `create_branch`/`commit`/`read` (via `_revalidate_transport_integrity`),
+      `open_pr`/`merge_pr`, and defensively at admission. New permanent
+      regression tests reproduce both the instance-level shadow the
+      reviewer found AND the class-level counterpart built pre-emptively.
+
+    Fixed in commit `<pending>`, with 3 new permanent regression tests.
+    Full local re-verification: full test file (64/64), full mutation
+    suite (37/37), `test_g2_27_self_construction.py` (pending), and
+    full repository sweep (pending, only the 9 known pre-existing
+    Windows-only failures expected).
 
 ## Real, honest end-to-end result
 

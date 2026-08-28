@@ -1113,6 +1113,114 @@ def test_sc23_wrapper_established_state_cannot_be_poisoned_via_the_facility(tmp_
         facility.create_branch(None, repository="existing", branch="sc23/poisoned-baseline", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-poisoned-baseline", foreman_epoch=1)
 
 
+def test_sc23_wrapper_checks_class_before_hashing_the_transport(tmp_path) -> None:
+    """Review finding (PR #86, round 23, P1, Codex, reproduced by the
+    reviewer -- "Check the transport class before the weak-key
+    lookup"): `_admitted_state_for`'s `WeakKeyDictionary` lookup
+    internally hashes the transport, invoking its (potentially
+    rebound) `__hash__` -- and `_revalidate_transport_integrity`
+    reached that lookup BEFORE the class-implementation check had a
+    chance to reject a rebound `__hash__`. The reviewer reproduced a
+    replacement `__hash__` performing an out-of-repository write; the
+    call correctly raised moments later, but only after the side
+    effect had already occurred. The class-implementation check now
+    runs first, before anything that could invoke a transport dunder
+    method, so a rebound `__hash__` is rejected WITHOUT ever being
+    invoked at all."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    marker_path = tmp_path / "hash-side-effect.txt"
+    # Self-caught bug while writing this test: `LocalGitRepositoryTransport`
+    # does not itself OWN a `__hash__` entry (confirmed empirically --
+    # it inherits `object.__hash__`), so restoring via reassignment
+    # (`LocalGitRepositoryTransport.__hash__ = original_hash`) would
+    # leave an explicit `__hash__` entry in the class's own __dict__
+    # where none existed before, permanently diverging from
+    # `_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES`'s snapshot and breaking
+    # every subsequent test in the process. `del` genuinely restores
+    # the original inherited-not-owned state.
+    assert "__hash__" not in vars(LocalGitRepositoryTransport)
+    try:
+        def _malicious_hash(self):
+            marker_path.write_text("fired\n", encoding="utf-8")
+            return object.__hash__(self)
+
+        LocalGitRepositoryTransport.__hash__ = _malicious_hash
+
+        with pytest.raises(RepositoryConstructionQualificationError):
+            facility.commit(None, repository="existing", branch="main", owner="assign-post", expected_head=initial_sha, files={"x.txt": b"x"}, message="x\n", operation_id="op-hash-ordering", foreman_epoch=1)
+
+        # The class-implementation check must reject the rebound
+        # __hash__ BEFORE anything ever calls it -- if it fired at all,
+        # the ordering fix regressed.
+        assert not marker_path.exists()
+    finally:
+        del LocalGitRepositoryTransport.__hash__
+
+
+def test_sc23_wrapper_rejects_an_instance_overridden_facility_method(tmp_path) -> None:
+    """Review finding (PR #86, round 23, P1, Codex, reproduced by the
+    reviewer -- "Seal the delegated RepositoryFacility operations"):
+    every check through round 22 seals `LocalGitRepositoryTransport`,
+    but `_ContainmentReCheckedRepositoryFacility.create_branch`/
+    `commit`/`read`/`open_pr`/`merge_pr` all ultimately call
+    `self._facility.<method>(...)` -- and nothing validated
+    `self._facility`'s OWN instance state. The reviewer reproduced
+    shadowing `facility._facility.create_branch` at the instance
+    level: the transport checks all passed (the replacement never
+    touches the transport at all), and the injected method ran
+    instead of the real one, skipping Gen1's own authority/lease/
+    request-binding checks entirely. `RepositoryFacility` now gets the
+    same instance-attribute allowlist as the transport."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    facility._facility.create_branch = lambda *args, **kwargs: "0" * 40  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        facility.create_branch(None, repository="existing", branch="sc23/shadowed-inner-facility", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-shadowed-inner-facility", foreman_epoch=1)
+
+
+def test_sc23_wrapper_rejects_a_class_level_overridden_facility_method(tmp_path) -> None:
+    """Round 23 defense-in-depth (see `_TRUSTED_FACILITY_CLASS_ATTRIBUTES`'s
+    own docstring): applies the round-21 lesson (a class-level
+    override, not just an instance-level one, must be sealed) to
+    `RepositoryFacility` pre-emptively, rather than waiting for a
+    predictable next-round rediscovery of the same pattern one layer
+    deeper than the round-23 instance-level finding above."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+    from tenfold.repository_facility import RepositoryFacility
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    original_create_branch = RepositoryFacility.create_branch
+    try:
+        RepositoryFacility.create_branch = lambda self, *args, **kwargs: "0" * 40
+
+        with pytest.raises(RepositoryConstructionQualificationError):
+            facility.create_branch(None, repository="existing", branch="sc23/shadowed-inner-facility-class", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-shadowed-inner-facility-class", foreman_epoch=1)
+    finally:
+        RepositoryFacility.create_branch = original_create_branch
+
+
 def test_sc23_wrapper_rejects_a_reassigned_repository_registration(tmp_path) -> None:
     """Review finding (PR #86, round 19, Major, CodeRabbit): the round-18
     instance-attribute allowlist validates attribute NAMES only --

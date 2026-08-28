@@ -104,33 +104,87 @@ REPOSITORY_NAME = "scratch"
 #: gap.)
 _TRUSTED_TRANSPORT_CLASS_ATTRIBUTES = dict(vars(LocalGitRepositoryTransport))
 
+#: Review finding (PR #86, round 23, P1, Codex, reproduced by the
+#: reviewer -- "Seal the delegated RepositoryFacility operations"): the
+#: round 14-22 checks comprehensively seal `LocalGitRepositoryTransport`
+#: (the object doing the actual git subprocess work), but delegation
+#: happens through TWO objects -- `self._facility` (Gen1's real
+#: `RepositoryFacility`) is the one `_ContainmentReCheckedRepositoryFacility.
+#: create_branch`/`commit`/`read`/`open_pr`/`merge_pr` actually call
+#: `.create_branch`/etc. ON. The reviewer reproduced shadowing
+#: `facility._facility.create_branch` at the INSTANCE level, exactly
+#: the round-14/18 transport attack replayed one layer up: nothing
+#: checked `self._facility`'s own instance state at all, so the
+#: injected replacement ran instead of the real method -- skipping
+#: Gen1's own authority, lease, request-binding, AND every one of this
+#: module's transport-integrity checks in one move, since it never
+#: even touches the (already thoroughly re-verified) transport.
+#: `RepositoryFacility` gets the SAME two-layer defense
+#: `LocalGitRepositoryTransport` already has: an instance-attribute
+#: allowlist (`_EXPECTED_FACILITY_INSTANCE_ATTRIBUTES`, matching its
+#: real `__init__`'s own three data attributes) and a class-
+#: implementation pin (`_TRUSTED_FACILITY_CLASS_ATTRIBUTES`), applying
+#: the round-18/21 lesson pre-emptively rather than waiting for a
+#: predictable round-24 rediscovery of the same pattern one layer
+#: deeper. Deliberately NOT pinning `.transport`'s VALUE the way the
+#: transport's own four attributes are pinned: a transport swap is
+#: legitimate and independently, more thoroughly re-verified by
+#: `_current_transport`/`_admitted_state_for` -- pinning it here too
+#: would just reject every genuine round-16 swap a second, redundant
+#: way.
+_TRUSTED_FACILITY_CLASS_ATTRIBUTES = dict(vars(RepositoryFacility))
+_EXPECTED_FACILITY_INSTANCE_ATTRIBUTES = frozenset({"transport", "state", "authority_store"})
 
-def _reject_altered_transport_class_implementation() -> None:
+
+def _reject_altered_class_implementation(cls: type, trusted_snapshot: dict, label: str) -> None:
     """See `_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES`'s own docstring for
-    the finding this closes. Compares `LocalGitRepositoryTransport`'s
-    OWN `__dict__` (methods, not instance state -- functions compare
-    by identity, so any rebinding to a different object is caught)
+    the round-21 finding this closes, and `_TRUSTED_FACILITY_CLASS_ATTRIBUTES`'s
+    for the round-23 extension to a second class. Compares `cls`'s OWN
+    `__dict__` (methods, not instance state -- functions compare by
+    identity, so any rebinding to a different object is caught)
     against the snapshot taken when this module was first imported;
-    any method added, removed, or reassigned is rejected outright.
-    Called at admission and before every mutating or transport-
-    delegating call (`create_branch`, `commit`, `open_pr`, `merge_pr`
-    all reach this), since a class-level replacement of
-    `open_pull_request`/`merge_pull_request` would otherwise defeat
-    the reasoning those two rely on -- that the real, unmodified
-    methods unconditionally raise by design."""
-    current = dict(vars(LocalGitRepositoryTransport))
-    changed = sorted(set(current) ^ set(_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES))
+    any method added, removed, or reassigned is rejected outright."""
+    current = dict(vars(cls))
+    changed = sorted(set(current) ^ set(trusted_snapshot))
     changed += sorted(
         name
-        for name in set(current) & set(_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES)
-        if current[name] is not _TRUSTED_TRANSPORT_CLASS_ATTRIBUTES[name]
+        for name in set(current) & set(trusted_snapshot)
+        if current[name] is not trusted_snapshot[name]
     )
     if changed:
         raise RepositoryConstructionQualificationError(
-            f"_reject_altered_transport_class_implementation: LocalGitRepositoryTransport's own class "
-            f"implementation no longer matches what was admitted at import time ({', '.join(sorted(set(changed)))}), "
+            f"_reject_altered_class_implementation: {label}'s own class implementation no longer matches "
+            f"what was admitted at import time ({', '.join(sorted(set(changed)))}), "
             f"breaking the local-commit-only boundary for every instance of the class"
         )
+
+
+def _reject_altered_transport_class_implementation() -> None:
+    """Called at admission and before every mutating or transport-
+    delegating call (`create_branch`, `commit`, `read`, `open_pr`,
+    `merge_pr` all reach this), since a class-level replacement of
+    `open_pull_request`/`merge_pull_request` would otherwise defeat
+    the reasoning `open_pr`/`merge_pr` rely on -- that the real,
+    unmodified methods unconditionally raise by design. Round 23,
+    P1, Codex (see `_admitted_state_for`'s own docstring): MUST run
+    before any operation whose dispatch can depend on the transport's
+    mutable class -- including a `WeakKeyDictionary` lookup, which
+    invokes the transport's own (potentially rebound) `__hash__`/`__eq__`
+    internally. The reviewer reproduced replacing `LocalGitRepositoryTransport.__hash__`
+    and reaching `_admitted_state_for`'s registry lookup BEFORE this
+    check had a chance to reject the class tampering, so the malicious
+    `__hash__`'s side effect ran even though the call correctly raised
+    moments later. Every call site in this file now runs this check
+    first, before touching the transport in any way that could invoke
+    a class dunder method on it."""
+    _reject_altered_class_implementation(LocalGitRepositoryTransport, _TRUSTED_TRANSPORT_CLASS_ATTRIBUTES, "LocalGitRepositoryTransport")
+
+
+def _reject_altered_facility_class_implementation() -> None:
+    """See `_TRUSTED_FACILITY_CLASS_ATTRIBUTES`'s own docstring for the
+    finding this closes. Called alongside `_reject_altered_transport_class_implementation`
+    everywhere `self._facility`'s own methods are about to be invoked."""
+    _reject_altered_class_implementation(RepositoryFacility, _TRUSTED_FACILITY_CLASS_ATTRIBUTES, "RepositoryFacility")
 
 
 @dataclass(frozen=True)
@@ -644,6 +698,14 @@ def gen1_wrap_repository_construction_facility(transport, state_store, authority
             f"(local-commit-only, per this identity's own admitted scope) -- got {type(transport).__name__}"
         )
     _reject_altered_transport_class_implementation()
+    # Round 23 (see `_TRUSTED_FACILITY_CLASS_ATTRIBUTES`'s own
+    # docstring): defense-in-depth parallel to the transport check
+    # above -- `RepositoryFacility` itself is constructed fresh a few
+    # lines below and so cannot yet carry an INSTANCE-level shadow,
+    # but its CLASS could already be tampered with before this
+    # function ever runs, the same class of risk the transport check
+    # above already covers.
+    _reject_altered_facility_class_implementation()
     _reject_instance_overridden_transport_methods(transport)
     # `dict(vars(transport))` only copies the OUTER __dict__ -- the
     # value at `_repositories` would still be the SAME mutable dict
@@ -693,6 +755,24 @@ def gen1_wrap_repository_construction_facility(transport, state_store, authority
 _EXPECTED_TRANSPORT_INSTANCE_ATTRIBUTES = frozenset({"_git", "_author_name", "_author_email", "_repositories"})
 
 
+def _reject_instance_overridden_attributes(obj: object, expected_attributes: frozenset, label: str) -> None:
+    """See `_reject_instance_overridden_transport_methods`'s own
+    docstring for the round-14/18 finding this originally closed for
+    `LocalGitRepositoryTransport`, and `_TRUSTED_FACILITY_CLASS_ATTRIBUTES`'s
+    for the round-23 extension to `RepositoryFacility`. A genuinely
+    unmodified instance's own `__dict__` contains EXACTLY its class's
+    real `__init__` data attributes and nothing else; this rejects if
+    it carries anything beyond that, whatever it is called (a shadowed
+    public method, a shadowed private helper, or literally anything
+    else)."""
+    unexpected = sorted(set(vars(obj)) - expected_attributes)
+    if unexpected:
+        raise RepositoryConstructionQualificationError(
+            f"_reject_instance_overridden_attributes: {label} instance carries unexpected instance "
+            f"attributes beyond its own __init__ ({', '.join(unexpected)}), breaking the local-commit-only boundary"
+        )
+
+
 def _reject_instance_overridden_transport_methods(transport: LocalGitRepositoryTransport) -> None:
     """Review finding (PR #86, round 14, P1, reproduced by the
     reviewer): an exact-type check (`type(transport) is
@@ -707,18 +787,20 @@ def _reject_instance_overridden_transport_methods(transport: LocalGitRepositoryT
     method (which unconditionally raises by design). Rounds 15 and 18
     (see `_EXPECTED_TRANSPORT_INSTANCE_ATTRIBUTES`'s own comment)
     showed enumerating specific method names -- public OR private --
-    to seal is a losing, ever-growing battle. A genuinely unmodified
-    instance's own `__dict__` contains EXACTLY the real `__init__`'s
-    own data attributes and nothing else; this rejects admission (or a
-    later mutating/transport-delegating call) if it carries anything
-    beyond that, whatever it is called."""
-    unexpected = sorted(set(vars(transport)) - _EXPECTED_TRANSPORT_INSTANCE_ATTRIBUTES)
-    if unexpected:
-        raise RepositoryConstructionQualificationError(
-            f"_reject_instance_overridden_transport_methods: transport instance carries unexpected instance "
-            f"attributes beyond LocalGitRepositoryTransport's own __init__ ({', '.join(unexpected)}), "
-            f"breaking the local-commit-only boundary"
-        )
+    to seal is a losing, ever-growing battle."""
+    _reject_instance_overridden_attributes(transport, _EXPECTED_TRANSPORT_INSTANCE_ATTRIBUTES, "LocalGitRepositoryTransport")
+
+
+def _reject_instance_overridden_facility_methods(facility: object) -> None:
+    """See `_TRUSTED_FACILITY_CLASS_ATTRIBUTES`'s own docstring for the
+    round-23 finding this closes -- the same instance-shadowing attack
+    `_reject_instance_overridden_transport_methods` closes for the
+    transport, applied to the inner, real `RepositoryFacility` this
+    module delegates to. `facility` deliberately untyped, matching
+    `gen1_wrap_repository_construction_facility`'s own established
+    reasoning for why an explicit `RepositoryFacility` annotation would
+    itself be an undisclosed live-Gen1-authority reference."""
+    _reject_instance_overridden_attributes(facility, _EXPECTED_FACILITY_INSTANCE_ATTRIBUTES, "RepositoryFacility")
 
 
 def _reject_altered_transport_instance_state(
@@ -844,13 +926,16 @@ class _ContainmentReCheckedRepositoryFacility:
     `_revalidate_transport_integrity`'s own docstring for why `read`
     is included despite not mutating anything) re-run the real
     containment scan, the class- and instance-level transport-identity
-    checks, AND re-apply hook neutralization immediately before
-    delegating; `open_pr`/`merge_pr` re-run only the class- and
-    instance-level transport-identity checks (the only ones relevant
-    to them, since `LocalGitRepositoryTransport`'s own real
-    `open_pull_request`/`merge_pull_request` unconditionally raise by
-    design -- only a class- or instance-level override could make them
-    do anything else)."""
+    checks, the class- and instance-level checks on the DELEGATED
+    `RepositoryFacility` itself (round 23 -- see
+    `_TRUSTED_FACILITY_CLASS_ATTRIBUTES`'s own docstring), AND
+    re-apply hook neutralization immediately before delegating;
+    `open_pr`/`merge_pr` re-run the same class- and instance-level
+    checks on both objects, minus the containment/hooks work (the only
+    ones relevant to them, since `LocalGitRepositoryTransport`'s own
+    real `open_pull_request`/`merge_pull_request` unconditionally
+    raise by design -- only a class- or instance-level override, on
+    either object, could make them do anything else)."""
 
     def __init__(self, facility, transport: LocalGitRepositoryTransport) -> None:
         # `facility` deliberately left untyped: an explicit
@@ -929,8 +1014,21 @@ class _ContainmentReCheckedRepositoryFacility:
         # via plain `__getattr__` delegation. The name no longer
         # implies "mutation only."
         transport = self._current_transport()
-        admitted = _admitted_state_for(transport)
+        # Round 23, P1, Codex (see `_reject_altered_transport_class_implementation`'s
+        # own docstring -- "Check the transport class before the
+        # weak-key lookup"): class-implementation checks MUST run
+        # before anything that could invoke a dunder method on the
+        # transport -- including `_admitted_state_for`'s own
+        # `WeakKeyDictionary` lookup, which hashes the transport
+        # internally. The reviewer reproduced a rebound `__hash__`
+        # firing its side effect during that lookup, moments before
+        # this check would have rejected the tampering anyway -- too
+        # late to prevent the effect. Both class checks now run first,
+        # before ANY instance-level or registry-dependent access.
         _reject_altered_transport_class_implementation()
+        _reject_altered_facility_class_implementation()
+        _reject_instance_overridden_facility_methods(self._facility)
+        admitted = _admitted_state_for(transport)
         # `_reject_altered_transport_instance_state`'s key-set check is
         # a strict superset of `_reject_instance_overridden_transport_methods`
         # (the established snapshot's own key set is always exactly
@@ -965,12 +1063,16 @@ class _ContainmentReCheckedRepositoryFacility:
 
     def open_pr(self, *args, **kwargs):
         _reject_altered_transport_class_implementation()
+        _reject_altered_facility_class_implementation()
         _reject_instance_overridden_transport_methods(self._current_transport())
+        _reject_instance_overridden_facility_methods(self._facility)
         return self._facility.open_pr(*args, **kwargs)
 
     def merge_pr(self, *args, **kwargs):
         _reject_altered_transport_class_implementation()
+        _reject_altered_facility_class_implementation()
         _reject_instance_overridden_transport_methods(self._current_transport())
+        _reject_instance_overridden_facility_methods(self._facility)
         return self._facility.merge_pr(*args, **kwargs)
 
 
