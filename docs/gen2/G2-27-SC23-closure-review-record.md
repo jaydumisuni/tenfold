@@ -1174,11 +1174,11 @@ verdict (see below) rather than a hardcoded stale expectation.
       before storing the snapshot; `_git`/`_author_name`/`_author_email`
       need no such copy since they are plain immutable strings.
 
-    Fixed in commit `<pending>`, with 2 new permanent regression tests.
+    Fixed in commit `914cbdc`, with 2 new permanent regression tests.
     Full local re-verification: full test file (58/58), full mutation
-    suite (37/37), `test_g2_27_self_construction.py` (pending), and
-    full repository sweep (pending, only the 9 known pre-existing
-    Windows-only failures expected).
+    suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1354 passed, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
 
 ## Real, honest end-to-end result
 
