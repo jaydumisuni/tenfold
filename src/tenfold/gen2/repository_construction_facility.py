@@ -98,7 +98,7 @@ ADMITTED_REPOSITORY_CONSTRUCTION_FACILITY_IDENTITY = _RepositoryConstructionFaci
 )
 
 
-def _neutralize_hooks_for_every_registered_repository(transport: LocalGitRepositoryTransport) -> None:
+def _neutralize_hooks_for_every_registered_repository(transport: LocalGitRepositoryTransport) -> dict[str, Path]:
     """Review finding (PR #84, round 8, reproduced-in-principle by the
     reviewer): `build_disposable_local_git_facility` only neutralized
     hooks for the ONE repository it itself freshly creates -- this
@@ -132,7 +132,14 @@ def _neutralize_hooks_for_every_registered_repository(transport: LocalGitReposit
     path for a pre-planted symlink to occupy; the redirect is then
     applied through `LocalGitRepositoryTransport._run` (real,
     argv-list `subprocess.run`, no shell) rather than a second, ad-hoc
-    `subprocess.run` call."""
+    `subprocess.run` call.
+
+    Returns the `{name: no_hooks_dir}` mapping it established, so a
+    caller (see `_hooks_neutralization_still_intact`) can later confirm
+    -- CHEAPLY, no subprocess spawn -- that neutralization is still in
+    place before paying for a fresh `mkdtemp` + `git config` call
+    again."""
+    established: dict[str, Path] = {}
     for name, registered in transport._repositories.items():  # noqa: SLF001 -- genuine safety enforcement; see docstring
         repo_root = registered.root
         git_dir = repo_root / ".git"
@@ -142,6 +149,67 @@ def _neutralize_hooks_for_every_registered_repository(transport: LocalGitReposit
             )
         no_hooks_dir = Path(tempfile.mkdtemp(prefix="tenfold-gen2-no-hooks-", dir=str(git_dir)))
         transport._run(name, "config", "core.hooksPath", str(no_hooks_dir))  # noqa: SLF001 -- see docstring
+        established[name] = no_hooks_dir
+    return established
+
+
+def _hooks_neutralization_still_intact(transport: LocalGitRepositoryTransport, established: dict[str, Path]) -> bool:
+    """Performance finding (PR #86, round 14): re-running the full
+    `_neutralize_hooks_for_every_registered_repository` (a fresh
+    `mkdtemp` plus a real `git config` subprocess spawn, per
+    registered repository) before EVERY mutation is genuinely
+    expensive -- measured roughly 280x the cost of the containment
+    scan alone (subprocess spawn dominates, especially so under this
+    platform's own process-creation/AV-scanning overhead) -- and, run
+    unconditionally on every mutation across a qualification harness
+    making hundreds of them, turned a ~80 second test suite into a
+    ~65 minute one. This performs the COMMON-case check for free: read
+    `.git/config`'s raw text directly (no subprocess at all) and
+    confirm the exact `no_hooks_dir` path `_neutralize_hooks_for_every_registered_repository`
+    established is still referenced there, and that the directory
+    itself still exists as a real, non-symlinked, EMPTY-of-hooks
+    directory. Only when this returns `False` (nothing was tampered
+    with) does the caller pay for the expensive full re-neutralization
+    again -- preserving the exact same security property (hooks
+    genuinely neutralized before every mutation) at a fraction of the
+    cost in the overwhelmingly common case where nothing changed
+    between mutations."""
+    for name, registered in transport._repositories.items():  # noqa: SLF001 -- see _neutralize_hooks_for_every_registered_repository's own docstring
+        no_hooks_dir = established.get(name)
+        if no_hooks_dir is None:
+            return False
+        git_dir = registered.root / ".git"
+        if git_dir.is_symlink() or not git_dir.is_dir():
+            return False
+        if no_hooks_dir.is_symlink() or not no_hooks_dir.is_dir():
+            return False
+        try:
+            if any(no_hooks_dir.iterdir()):
+                # Something was planted directly inside the neutralized
+                # directory itself (e.g. a reference-transaction file)
+                # WITHOUT changing core.hooksPath -- the path reference
+                # alone is not enough; the directory must also still be
+                # genuinely empty.
+                return False
+        except OSError:
+            return False
+        config_path = git_dir / "config"
+        if config_path.is_symlink() or not config_path.is_file():
+            return False
+        try:
+            config_text = config_path.read_text(encoding="utf-8", errors="strict")
+        except OSError:
+            return False
+        # git's own INI-style config writer escapes backslashes (git
+        # config's own escape character) when it writes a Windows path
+        # value -- compare against that escaped form, not Python's own
+        # raw `str(Path(...))` rendering, or every check on Windows
+        # would spuriously report "not intact" and force the expensive
+        # fallback on every single call, defeating this function's own
+        # purpose.
+        if str(no_hooks_dir).replace("\\", "\\\\") not in config_text:
+            return False
+    return True
 
 
 def _find_unsafe_git_storage_entry(root: Path) -> Path | None:
@@ -246,9 +314,28 @@ def _reject_symlinked_git_storage_for_every_registered_repository(transport: Loc
     See `_find_unsafe_git_storage_entry`'s own docstring for the round
     13 dangling-symlink-ordering and hard-link findings this function
     inherits automatically, since it delegates the actual walk/check
-    logic there."""
+    logic there.
+
+    `.GIT`-ITSELF FINDING (review finding, PR #86, round 14, P1,
+    reproduced by the reviewer): every prior round scanned `.git`'s
+    OWN internal paths (`objects`/`refs`/`logs`/`config`) but never
+    re-checked `.git` itself -- if the ENTIRE `.git` directory were
+    replaced with a symlink to an external directory AFTER admission,
+    `git_dir / "objects"` etc. resolve INTO that external directory's
+    own, ordinary-looking subpaths, and the walk below finds nothing
+    to object to there. The reviewer reproduced this scan passing and
+    a subsequent `create_branch` writing into the external directory
+    through the swapped `.git`. `git_dir` itself is now checked first,
+    directly (matching `_neutralize_hooks_for_every_registered_repository`'s
+    own existing `git_dir.is_symlink()` guard, which this function had
+    never independently carried)."""
     for name, registered in transport._repositories.items():  # noqa: SLF001 -- genuine safety enforcement; see docstring
         git_dir = registered.root / ".git"
+        if git_dir.is_symlink():
+            raise RepositoryConstructionQualificationError(
+                f"_reject_symlinked_git_storage_for_every_registered_repository: "
+                f"{name}'s .git directory itself is a symlink, escaping the registered repository root"
+            )
         for internal in ("objects", "refs", "logs", "config"):
             found = _find_unsafe_git_storage_entry(git_dir / internal)
             if found is not None:
@@ -334,33 +421,100 @@ def gen1_wrap_repository_construction_facility(transport, state_store, authority
     EVERY mutating call (`create_branch`, `commit`), delegating to the
     real, unmodified `RepositoryFacility` only after it passes --
     genuinely closing the window between admission and each individual
-    mutation, not merely at construction."""
+    mutation, not merely at construction.
+
+    ROUND 14 FOLLOW-UP FINDINGS (review findings, PR #86, all
+    reproduced by the reviewer(s)): the round 13 per-mutation re-check
+    above closed the FILESYSTEM-containment window but left three
+    further, related gaps open -- see `_reject_instance_overridden_transport_methods`
+    and `_ContainmentReCheckedRepositoryFacility`'s own docstrings for
+    the full accounts:
+    - the per-mutation re-check never re-verified `.git` itself (fixed
+      in `_reject_symlinked_git_storage_for_every_registered_repository`
+      directly, see its own docstring);
+    - the per-mutation re-check never re-applied hook neutralization,
+      so a `.git/config` change restoring `core.hooksPath` to an
+      external hook AFTER admission would still fire on the next
+      mutation (now re-applied on every `create_branch`/`commit`, not
+      only at construction);
+    - the exact-type check only binds the CLASS -- an INSTANCE can
+      still shadow a real class method with its own `__dict__` entry
+      (`transport.open_pull_request = malicious_fn`), which
+      `isinstance`/`type(...) is ...` cannot detect at all (now
+      genuinely rejected, at admission and before every mutating or
+      transport-delegating call)."""
     if type(transport) is not LocalGitRepositoryTransport:
         raise RepositoryConstructionQualificationError(
             f"gen1_wrap_repository_construction_facility: transport must be a real LocalGitRepositoryTransport "
             f"(local-commit-only, per this identity's own admitted scope) -- got {type(transport).__name__}"
         )
+    _reject_instance_overridden_transport_methods(transport)
     _reject_symlinked_git_storage_for_every_registered_repository(transport)
-    _neutralize_hooks_for_every_registered_repository(transport)
+    established_no_hooks_dirs = _neutralize_hooks_for_every_registered_repository(transport)
     facility = RepositoryFacility(transport, state_store, authority_store)
-    return _ContainmentReCheckedRepositoryFacility(facility, transport)
+    return _ContainmentReCheckedRepositoryFacility(facility, transport, established_no_hooks_dirs)
+
+
+#: Deliberately narrow: ONLY the two methods that define the admitted
+#: identity's own local-commit-only PROMISE (they must unconditionally
+#: raise; an instance-level override is the one way to defeat that
+#: promise, per the reviewer's own reproduction). `commit_files`/
+#: `create_branch`/`resolve_ref`/`read_file` are deliberately EXCLUDED:
+#: this same harness legitimately monkey-patches `commit_files`
+#: (mirroring the already-established `state.put_receipt` crash-
+#: injection pattern) to simulate a lost-ACK/corrupted-mutation window
+#: for RECONCILIATION qualification -- a disclosed, intentional testing
+#: technique, not the attack this check exists to catch. Sealing those
+#: names too would reject that legitimate technique, not just a
+#: malicious one; the actual security boundary this identity promises
+#: is "no remote push/PR/merge effects", not "the local commit
+#: mechanism can never be substituted for testing."
+_SEALED_TRANSPORT_METHOD_NAMES = ("open_pull_request", "merge_pull_request")
+
+
+def _reject_instance_overridden_transport_methods(transport: LocalGitRepositoryTransport) -> None:
+    """Review finding (PR #86, round 14, P1, reproduced by the
+    reviewer): an exact-type check (`type(transport) is
+    LocalGitRepositoryTransport`) only binds the CLASS -- Python allows
+    assigning a plain function directly onto an INSTANCE's own
+    `__dict__`, which shadows the class's real method for that
+    instance alone (`transport.open_pull_request = malicious_fn`),
+    completely invisible to any class-identity check. The reviewer
+    reproduced exactly this: the exact-type check passed, but
+    `facility.open_pr(...)` still invoked the injected, remote-capable
+    override instead of `LocalGitRepositoryTransport`'s own real
+    method (which unconditionally raises by design). A genuinely
+    unmodified instance's own `__dict__` never contains either of
+    these two names at all (both live on the class); this rejects
+    admission (or a later mutating/transport-delegating call) if it
+    does."""
+    overridden = sorted(name for name in _SEALED_TRANSPORT_METHOD_NAMES if name in vars(transport))
+    if overridden:
+        raise RepositoryConstructionQualificationError(
+            f"_reject_instance_overridden_transport_methods: transport instance shadows real class methods with "
+            f"instance-level overrides ({', '.join(overridden)}), breaking the local-commit-only boundary"
+        )
 
 
 class _ContainmentReCheckedRepositoryFacility:
     """Gen2-owned, transparent wrapper around a real, unmodified
     `RepositoryFacility` -- see `gen1_wrap_repository_construction_facility`'s
-    own MUTATION-TIME CONTAINMENT FINDING docstring for why this
-    exists. Every attribute other than the two mutating methods below
-    (`state`, `transport`, `authority_store`, `read`, `open_pr`,
-    `merge_pr`, `acquire_writer`, `release_writer`, and any private
-    attribute a test harness reaches into) delegates transparently to
-    the real facility via `__getattr__`, so this is observably
-    identical to a raw `RepositoryFacility` for every non-mutating use
-    site. Only `create_branch`/`commit` -- the two operations that
-    actually write through the transport -- re-run the real
-    containment scan first."""
+    own MUTATION-TIME CONTAINMENT FINDING and ROUND 14 FOLLOW-UP
+    FINDINGS docstrings for why this exists. Every attribute other
+    than the four methods below (`state`, `transport`,
+    `authority_store`, `read`, `acquire_writer`, `release_writer`, and
+    any private attribute a test harness reaches into) delegates
+    transparently to the real facility via `__getattr__`, so this is
+    observably identical to a raw `RepositoryFacility` for every
+    non-delegating use site. `create_branch`/`commit` re-run the real
+    containment scan AND re-apply hook neutralization immediately
+    before delegating; `open_pr`/`merge_pr` re-run the transport
+    instance-override check (the only one relevant to them, since
+    `LocalGitRepositoryTransport`'s own real `open_pull_request`/
+    `merge_pull_request` unconditionally raise by design -- only an
+    instance-level override could make them do anything else)."""
 
-    def __init__(self, facility, transport: LocalGitRepositoryTransport) -> None:
+    def __init__(self, facility, transport: LocalGitRepositoryTransport, established_no_hooks_dirs: dict[str, Path]) -> None:
         # `facility` deliberately left untyped: an explicit
         # `RepositoryFacility` annotation here would itself be an
         # undisclosed live-Gen1-authority reference under the residual
@@ -373,17 +527,37 @@ class _ContainmentReCheckedRepositoryFacility:
         # uses for its own caller-injected parameters.
         self._facility = facility
         self._transport = transport
+        self._established_no_hooks_dirs = established_no_hooks_dirs
 
     def __getattr__(self, name):
         return getattr(self._facility, name)
 
-    def create_branch(self, *args, **kwargs):
+    def _revalidate_before_mutation(self) -> None:
+        _reject_instance_overridden_transport_methods(self._transport)
         _reject_symlinked_git_storage_for_every_registered_repository(self._transport)
+        # Performance finding (PR #86, round 14): only pay for a fresh
+        # mkdtemp + git-config subprocess spawn per registered
+        # repository when the cheap, subprocess-free check finds
+        # neutralization genuinely disturbed -- see
+        # `_hooks_neutralization_still_intact`'s own docstring.
+        if not _hooks_neutralization_still_intact(self._transport, self._established_no_hooks_dirs):
+            self._established_no_hooks_dirs = _neutralize_hooks_for_every_registered_repository(self._transport)
+
+    def create_branch(self, *args, **kwargs):
+        self._revalidate_before_mutation()
         return self._facility.create_branch(*args, **kwargs)
 
     def commit(self, *args, **kwargs):
-        _reject_symlinked_git_storage_for_every_registered_repository(self._transport)
+        self._revalidate_before_mutation()
         return self._facility.commit(*args, **kwargs)
+
+    def open_pr(self, *args, **kwargs):
+        _reject_instance_overridden_transport_methods(self._transport)
+        return self._facility.open_pr(*args, **kwargs)
+
+    def merge_pr(self, *args, **kwargs):
+        _reject_instance_overridden_transport_methods(self._transport)
+        return self._facility.merge_pr(*args, **kwargs)
 
 
 class _MutableAuthorityStore:

@@ -746,6 +746,104 @@ verdict (see below) rather than a hardcoded stale expectation.
     confirming zero undisclosed findings after the annotation fix),
     and full repository sweep (1338 passed, only the 9 known
     pre-existing Windows-only failures) re-run clean.
+14. A fresh review pass against the round-13 commit found the
+    round-13 per-mutation re-check was real but incomplete -- 5 further
+    findings (3 Codex, 2 CodeRabbit), converging on the same theme:
+    - **P1 ("Revalidate the `.git` directory itself before
+      mutation"), Codex**: the per-mutation re-check scanned `.git`'s
+      internal paths but never re-checked `.git` itself -- if the
+      ENTIRE `.git` directory were replaced with a symlink AFTER
+      admission, `git_dir / "objects"` etc. resolve INTO the external
+      directory's own ordinary-looking subpaths, and the walk finds
+      nothing to object to. **Fixed**: `.git` itself is now checked
+      first, directly, in
+      `_reject_symlinked_git_storage_for_every_registered_repository`.
+    - **P1 ("Re-neutralize hooks before each repository mutation"),
+      Codex, and independently, CodeRabbit ("Reassert hook
+      neutralization before each mutation", CWE-78)**: the round-13
+      re-check only re-ran the containment scan, never re-applied hook
+      neutralization -- a `.git/config` change restoring
+      `core.hooksPath` to an external hook directory AFTER admission
+      would still fire on the next mutation. **Fixed**: hooks are now
+      also re-neutralized before every `create_branch`/`commit` call.
+      Doing this the OBVIOUS way (a fresh `mkdtemp` + `git config`
+      subprocess spawn on every single mutation) turned the ~80 second
+      test suite into a ~65 MINUTE one (subprocess spawn measured
+      ~280x the cost of the containment scan alone) -- fixed with a
+      new `_hooks_neutralization_still_intact` cheap check (reads
+      `.git/config`'s raw text directly, no subprocess, confirming the
+      established `no_hooks_dir` is still referenced, still exists,
+      and is still empty) that only pays for the expensive full
+      re-neutralization when something has genuinely changed. Fixing
+      this exposed one more self-caught bug: the cheap check's own
+      string comparison used Python's raw `str(Path(...))` rendering,
+      but git's own config writer ESCAPES backslashes when it writes a
+      Windows path value, so the comparison never matched and the
+      cheap path always reported "not intact," silently defeating its
+      own purpose (confirmed by measuring `0.21s` for 1000 calls after
+      the fix, versus the ~28ms EACH the full re-neutralization costs).
+    - **P1 ("Seal transport behavior instead of checking only its
+      exact type"), Codex**: an exact-type check only binds the
+      CLASS -- Python allows shadowing a real class method with a
+      plain function assigned directly onto an INSTANCE's own
+      `__dict__` (`transport.open_pull_request = malicious_fn`),
+      invisible to any class-identity check; the reviewer reproduced
+      `facility.open_pr(...)` still invoking the injected override.
+      **Fixed**: a new `_reject_instance_overridden_transport_methods`
+      check, run at admission and before every `open_pr`/`merge_pr`
+      call (and, more broadly, before every mutation), rejects
+      admission if the transport instance shadows `open_pull_request`
+      or `merge_pull_request`. Deliberately narrow -- NOT
+      `commit_files`/`create_branch`/`resolve_ref`/`read_file` -- since
+      this SAME harness already legitimately monkey-patches
+      `commit_files` (mirroring the established `state.put_receipt`
+      crash-injection pattern) to simulate a lost-ACK window for
+      RECONCILIATION qualification; sealing those names too would
+      reject that disclosed, intentional testing technique, not just
+      the attack this check exists to catch. Confirmed by first
+      implementing the broader set, discovering it broke that
+      legitimate test, and narrowing to exactly the two methods that
+      define the admitted identity's own "no remote push/PR/merge
+      effects" promise.
+    - **Major/CWE-367 ("Make containment validation atomic with the
+      Git mutation"), CodeRabbit**: the check and the Git mutation
+      remain two separate steps -- an attacker with concurrent local
+      filesystem write access to the exact registered repository could
+      still replace a checked entry between them. Investigated, not
+      fixed: true atomicity would require filesystem-descriptor-based
+      operations threaded through every `git` subprocess call
+      `LocalGitRepositoryTransport` makes, or OS-level sandboxing
+      (bind mounts, restricted namespaces) -- a materially larger,
+      different engineering effort than a wrapper-based re-check,
+      depends on platform-specific primitives not uniformly available
+      (this environment is Windows), and would require modifying
+      `LocalGitRepositoryTransport` itself, a Gen1-owned module out of
+      this closure's wrapper-only scope. CodeRabbit's own
+      `Exploitability: Difficult` rating reflects the real, narrowed
+      residual risk after round 14: a local-filesystem-write attacker
+      winning a race against a window now measured in low
+      milliseconds (dominated by git's own subprocess time, not the
+      Python-side check, which itself now costs roughly 0.1-1ms) --
+      categorically different from the unbounded, construction-time-
+      only window rounds 1-13 closed. Disclosed explicitly here as an
+      accepted limitation, matching the round-1 SECURITY NOTE
+      precedent for the identity-match check's own non-cryptographic
+      trust boundary, rather than either silently ignored or
+      papered over with an incomplete "fix." A genuine, deterministic
+      regression test for a real race condition is also not added for
+      the same reason: reliably WINNING a race in a test requires
+      artificially widening the window (e.g. an injected delay), which
+      would not test the actual, now-narrow production timing and
+      risks being flaky rather than meaningful.
+
+    4 of 5 genuinely fixed in round 14, with 4 new permanent regression
+    tests (git-itself symlink swap, hook re-neutralization after
+    admission, instance-overridden transport method at admission and
+    after); the 5th investigated and disclosed as an accepted
+    limitation, with reasoning replied into the review thread. Full
+    local re-verification: full test file (46/46), full mutation suite
+    (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep re-run clean.
 
 ## Real, honest end-to-end result
 

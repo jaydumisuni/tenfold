@@ -781,6 +781,137 @@ def test_sc23_wrapper_re_validates_containment_before_every_mutation(tmp_path) -
         facility.create_branch(None, repository="existing", branch="sc23/post-admission", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-post-admission", foreman_epoch=1)
 
 
+def _real_existing_repo(repo_root, tmp_path):
+    import subprocess
+
+    repo_root.mkdir()
+    subprocess.run(["git", "-C", str(repo_root), "init", "-b", "main"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "config", "user.name", "test"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "config", "user.email", "test@local.invalid"], check=True, capture_output=True)
+    (repo_root / "README.md").write_text("existing repo\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_root), "add", "README.md"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "commit", "-qm", "initial"], check=True, capture_output=True)
+    return subprocess.run(["git", "-C", str(repo_root), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+
+
+def test_sc23_wrapper_rejects_a_symlinked_git_directory_planted_after_admission(tmp_path) -> None:
+    """Review finding (PR #86, round 14, P1, reproduced by the
+    reviewer): every prior round scanned .git's own internal paths but
+    never re-checked .git itself -- if the ENTIRE .git directory is
+    replaced with a symlink to an external directory AFTER admission,
+    git_dir / "objects" etc. resolve INTO that external directory's own
+    ordinary-looking subpaths, and the walk finds nothing to object to
+    there. The wrapper now checks .git itself first, directly, before
+    every mutation."""
+    import subprocess
+
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    # Admission passed genuinely clean -- NOW replace the ENTIRE .git
+    # directory with a symlink to an external directory that mirrors
+    # objects/refs/logs/config as ordinary, non-symlinked entries.
+    external_git = tmp_path / "external-dot-git"
+    real_git = repo_root / ".git"
+    backup = tmp_path / "dot-git-backup"
+    real_git.rename(backup)
+    backup.rename(external_git)
+    real_git.symlink_to(external_git, target_is_directory=True)
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        facility.create_branch(None, repository="existing", branch="sc23/post-admission-git-swap", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-post-admission-git-swap", foreman_epoch=1)
+
+
+def test_sc23_wrapper_re_neutralizes_hooks_changed_after_admission(tmp_path) -> None:
+    """Review finding (PR #86, round 14, P1, reproduced by the
+    reviewer): the round-13 per-mutation re-check only re-ran the
+    containment scan, never re-applied hook neutralization -- a
+    .git/config change restoring core.hooksPath to an external
+    directory containing a real hook AFTER admission would still fire
+    on the next mutation, since nothing re-neutralized it. The wrapper
+    now also re-neutralizes hooks before every create_branch/commit
+    call (cheaply, when nothing changed; genuinely, when it has)."""
+    import subprocess
+
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    # Admission neutralized hooks genuinely -- NOW restore
+    # core.hooksPath to a real, malicious hook directory.
+    malicious_hooks_dir = tmp_path / "malicious-hooks"
+    malicious_hooks_dir.mkdir()
+    marker_path = tmp_path / "hook-fired.txt"
+    (malicious_hooks_dir / "reference-transaction").write_text(f"#!/bin/sh\necho fired > \"{marker_path}\"\nexit 0\n", encoding="utf-8")
+    (malicious_hooks_dir / "reference-transaction").chmod(0o755)
+    subprocess.run(["git", "-C", str(repo_root), "config", "core.hooksPath", str(malicious_hooks_dir)], check=True, capture_output=True)
+
+    # The wrapper's re-validation (containment + hook re-neutralization)
+    # runs as the FIRST statement in create_branch, before any
+    # task/authority argument is even inspected -- a placeholder task
+    # is sufficient: whatever this call ultimately raises, hooks must
+    # already have been genuinely re-neutralized before it did.
+    try:
+        facility.create_branch(None, repository="existing", branch="sc23/post-admission-hook", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-post-admission-hook", foreman_epoch=1)
+    except Exception:
+        pass
+    assert not marker_path.exists()
+    current_hooks_path = subprocess.run(["git", "-C", str(repo_root), "config", "core.hooksPath"], check=True, capture_output=True, text=True).stdout.strip()
+    assert current_hooks_path != str(malicious_hooks_dir)
+
+
+def test_sc23_wrapper_rejects_an_instance_overridden_open_pull_request_at_admission(tmp_path) -> None:
+    """Review finding (PR #86, round 14, P1, reproduced by the
+    reviewer): an exact-type check only binds the CLASS -- Python
+    allows shadowing a real class method with a plain function assigned
+    directly onto an INSTANCE's own __dict__
+    (transport.open_pull_request = malicious_fn), invisible to any
+    class-identity check. The wrapper now rejects admission outright if
+    the transport instance shadows open_pull_request or
+    merge_pull_request."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    transport.open_pull_request = lambda *args, **kwargs: ("injected-pr", 1)
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+
+def test_sc23_wrapper_rejects_an_instance_overridden_transport_method_planted_after_admission(tmp_path) -> None:
+    """Companion to the admission-time case: the same instance-level
+    override, planted AFTER a genuinely clean admission, is rejected at
+    the next open_pr/merge_pr call too -- not merely at construction."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    transport.merge_pull_request = lambda *args, **kwargs: "injected-merge"
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        facility.merge_pr(None, repository="existing", pr_number=1, expected_head="0" * 40, operation_id="op-post-admission-merge", foreman_epoch=1)
+
+
 def subprocess_check_output(rig, args: list[str]) -> str:
     import subprocess
 
