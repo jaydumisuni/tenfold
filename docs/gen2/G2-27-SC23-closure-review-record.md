@@ -1352,6 +1352,67 @@ verdict (see below) rather than a hardcoded stale expectation.
     (37/37), `test_g2_27_self_construction.py` (33/33), and full
     repository sweep (1360 passed, only the 9 known pre-existing
     Windows-only failures, zero regressions).
+24. A fresh Codex pass against the round-23 commit (`f3c5b21`) found 2
+    further genuine P1 findings, both about `_current_transport`'s own
+    core read:
+    - **P1 ("Verify the inner facility identity before delegation"),
+      Codex**: the round-23 instance-attribute allowlist checks NAMES
+      only -- the reviewer reproduced replacing `self._facility`
+      WHOLESALE with a different, non-`RepositoryFacility` object
+      whose `__dict__` merely matched the allowlist's shape
+      (`transport`, `state`, `authority_store`), which the name-only
+      check accepted since it never verified the object's actual
+      type. The injected object's own `create_branch` then ran
+      instead of Gen1's real one, skipping every authority/lease/
+      request-binding check while returning a fabricated success and
+      writing outside the repository. **Fixed**, with two
+      complementary changes: (1) `_current_transport` now
+      exact-type-checks `self._facility` itself
+      (`type(self._facility) is not RepositoryFacility`) before
+      reading anything off it; (2) more fundamentally,
+      `_AdmittedTransportState` now ALSO carries `facility` -- the
+      genuine, originally-constructed `RepositoryFacility` instance --
+      and every dispatch method (`create_branch`/`commit`/`read`/
+      `open_pr`/`merge_pr`) delegates to this immutable,
+      registry-sourced reference instead of `self._facility` directly.
+      Even a same-typed, cleverly-constructed impersonator (right
+      class, wrong `state`/`authority_store`) now achieves nothing:
+      dispatch never touches `self._facility` for anything
+      security-sensitive. `self._facility` remains in use only for
+      `__getattr__`'s non-security-sensitive delegation
+      (`state`/`authority_store`/`acquire_writer`/`release_writer`)
+      and as the bootstrap read `_current_transport` uses to discover
+      the current transport (now itself safe -- see the sibling
+      finding below).
+    - **P1 ("Check the facility class before reading transport"),
+      Codex**: `_current_transport`'s own core job is reading
+      `self._facility.transport` -- and it reached that read BEFORE
+      the facility-class-implementation check had a chance to reject a
+      rebound `RepositoryFacility.__getattribute__`, the exact same
+      ordering lesson as round 23's transport-`__hash__` finding,
+      replaying on a second dunder. The reviewer reproduced a
+      replacement `__getattribute__` performing an out-of-repository
+      write during exactly this read; the call correctly raised
+      moments later, but only after the side effect had already
+      occurred. **Fixed**: both class-implementation checks (transport
+      and facility) now run first inside `_current_transport` itself,
+      before `self._facility.transport` (or any other attribute) is
+      ever read off it -- and this ordering invariant is now
+      centralized in `_current_transport`, which every OTHER call site
+      goes through, rather than being duplicated (and potentially
+      re-broken) at each one separately.
+
+    Also disclosed `_current_transport`'s own new, genuine, defensive
+    reference to `RepositoryFacility` (the exact-type check above) as
+    a second adjudicated residual-dependency-scan exception, same
+    pattern as round 23's. New permanent regression tests reproduce
+    both findings exactly.
+
+    Fixed in commit `<pending>`, with 2 new permanent regression
+    tests. Full local re-verification: full test file (66/66), full
+    mutation suite (37/37), `test_g2_27_self_construction.py`
+    (pending), and full repository sweep (pending, only the 9 known
+    pre-existing Windows-only failures expected).
 
 ## Real, honest end-to-end result
 

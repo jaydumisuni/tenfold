@@ -1221,6 +1221,93 @@ def test_sc23_wrapper_rejects_a_class_level_overridden_facility_method(tmp_path)
         RepositoryFacility.create_branch = original_create_branch
 
 
+def test_sc23_wrapper_rejects_a_wholesale_replaced_inner_facility(tmp_path) -> None:
+    """Review finding (PR #86, round 24, P1, Codex, reproduced by the
+    reviewer -- "Verify the inner facility identity before
+    delegation"): the round-23 instance-attribute allowlist checks
+    NAMES only -- the reviewer reproduced replacing `self._facility`
+    WHOLESALE with a different, non-`RepositoryFacility` object whose
+    `__dict__` merely matched the allowlist's shape (`transport`,
+    `state`, `authority_store`), which the name-only check accepted
+    since it never verified the object's actual type. The injected
+    object's own `create_branch` then ran instead of Gen1's real one,
+    skipping every authority/lease/request-binding check while
+    returning a fabricated success and writing outside the repository.
+    `_current_transport` now exact-type-checks `self._facility` itself
+    before reading anything off it, AND every dispatch method
+    delegates to the immutable, registry-sourced `admitted.facility`
+    rather than `self._facility` -- so even a same-shaped impersonator
+    is rejected outright, never reached for dispatch."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    class _ImpersonatorFacility:
+        """Matches the round-23 name allowlist's SHAPE exactly, but is
+        not, and never was, a real RepositoryFacility."""
+
+        def __init__(self, transport, state, authority_store):
+            self.transport = transport
+            self.state = state
+            self.authority_store = authority_store
+
+        def create_branch(self, *args, **kwargs):
+            return "0" * 40
+
+    facility._facility = _ImpersonatorFacility(transport, object(), object())  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        facility.create_branch(None, repository="existing", branch="sc23/impersonator-facility", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-impersonator-facility", foreman_epoch=1)
+
+
+def test_sc23_wrapper_checks_facility_class_before_reading_transport(tmp_path) -> None:
+    """Review finding (PR #86, round 24, P1, Codex, reproduced by the
+    reviewer -- "Check the facility class before reading transport"):
+    `_current_transport`'s own core job is reading `self._facility.transport`
+    -- and it reached that read BEFORE the facility-class-implementation
+    check had a chance to reject a rebound `RepositoryFacility.__getattribute__`.
+    The reviewer reproduced a replacement `__getattribute__` performing
+    an out-of-repository write during exactly this read; the call
+    correctly raised moments later, but only after the side effect had
+    already occurred. The facility-class check now runs first, before
+    this or any other attribute is ever read off `self._facility`."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+    from tenfold.repository_facility import RepositoryFacility
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    marker_path = tmp_path / "getattribute-side-effect.txt"
+    assert "__getattribute__" not in vars(RepositoryFacility)
+    try:
+        def _malicious_getattribute(self, name):
+            if name == "transport":
+                marker_path.write_text("fired\n", encoding="utf-8")
+            return object.__getattribute__(self, name)
+
+        RepositoryFacility.__getattribute__ = _malicious_getattribute
+
+        with pytest.raises(RepositoryConstructionQualificationError):
+            facility.commit(None, repository="existing", branch="main", owner="assign-post", expected_head=initial_sha, files={"x.txt": b"x"}, message="x\n", operation_id="op-getattribute-ordering", foreman_epoch=1)
+
+        # The facility-class check must reject the rebound
+        # __getattribute__ BEFORE anything ever reads .transport
+        # through it -- if the marker fired at all, the ordering fix
+        # regressed.
+        assert not marker_path.exists()
+    finally:
+        del RepositoryFacility.__getattribute__
+
+
 def test_sc23_wrapper_rejects_a_reassigned_repository_registration(tmp_path) -> None:
     """Review finding (PR #86, round 19, Major, CodeRabbit): the round-18
     instance-attribute allowlist validates attribute NAMES only --
