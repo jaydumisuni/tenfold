@@ -1341,11 +1341,17 @@ verdict (see below) rather than a hardcoded stale expectation.
       regression tests reproduce both the instance-level shadow the
       reviewer found AND the class-level counterpart built pre-emptively.
 
-    Fixed in commit `<pending>`, with 3 new permanent regression tests.
-    Full local re-verification: full test file (64/64), full mutation
-    suite (37/37), `test_g2_27_self_construction.py` (pending), and
-    full repository sweep (pending, only the 9 known pre-existing
-    Windows-only failures expected).
+    Fixed in commit `0af9fdf`, with 3 new permanent regression tests.
+    Also disclosed the new `_reject_altered_facility_class_implementation`
+    function's genuine, defensive reference to `RepositoryFacility` as
+    an adjudicated residual-dependency-scan exception in
+    `self_construction.py` -- a real, expected finding from adding the
+    module's first NON-`gen1_`-prefixed function to directly reference
+    `RepositoryFacility` by name, not a defect. Full local
+    re-verification: full test file (64/64), full mutation suite
+    (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1360 passed, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
 
 ## Real, honest end-to-end result
 
