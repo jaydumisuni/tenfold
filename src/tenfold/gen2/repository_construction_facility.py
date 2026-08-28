@@ -574,26 +574,29 @@ def gen1_wrap_repository_construction_facility(transport, state_store, authority
     return _ContainmentReCheckedRepositoryFacility(facility, transport, established_no_hooks_dirs)
 
 
-#: Review finding (PR #86, round 15, P1, reproduced by the reviewer):
-#: an earlier version of this closure narrowed this set to only
-#: `open_pull_request`/`merge_pull_request`, EXCLUDING `commit_files`/
-#: `create_branch` because the harness's own reconciliation scenario
-#: legitimately monkey-patched `commit_files` for fault-injection
-#: testing. The reviewer correctly pointed out that this left a real
-#: gap open: a caller overriding `commit_files`/`create_branch` on the
-#: EXACT admitted transport instance after construction can perform
-#: arbitrary out-of-repository effects while still passing every other
-#: check, and the harness's own use of the SAME mechanism it needed to
-#: reject was proof the mechanism itself was genuinely exploitable,
-#: not evidence it was safe to leave open. Fixed correctly this time:
-#: the full set Codex originally named is sealed, and the harness's
-#: OWN fault injection was moved to a dedicated, non-transport test
-#: seam instead (`run_reconciliation_and_ack_semantics_scenario`'s
-#: `post_crash_corruption` parameter) -- never touching
-#: `self.rig.transport`'s own methods at all, so the SAME mechanism a
-#: real attacker would need is never exercised, even for legitimate
-#: testing.
-_SEALED_TRANSPORT_METHOD_NAMES = ("resolve_ref", "read_file", "create_branch", "commit_files", "open_pull_request", "merge_pull_request")
+#: Review finding (PR #86, round 18, P1, reproduced by the reviewer):
+#: rounds 14-15 sealed a growing list of specific PUBLIC method names
+#: (`resolve_ref`, `read_file`, `create_branch`, `commit_files`,
+#: `open_pull_request`, `merge_pull_request`) one at a time, ending
+#: with "the full set Codex originally named." The reviewer then
+#: reproduced shadowing `transport._run` instead -- the PRIVATE helper
+#: every one of those public methods actually delegates its real
+#: subprocess work through -- passing every named-method check while
+#: still performing an out-of-repository write before ever reaching
+#: git. Enumerating known-dangerous method names is a losing pattern
+#: for exactly the same reason the git-config findings were: it is a
+#: fragile allowlist-of-the-wrong-shape that invites the next variant
+#: (any OTHER private helper today, or one added to
+#: `LocalGitRepositoryTransport` -- a Gen1-owned, evolving module --
+#: tomorrow). Replaced with the inverse, comprehensive check: a
+#: genuinely unmodified `LocalGitRepositoryTransport` instance's own
+#: `__dict__` contains EXACTLY the four data attributes its real
+#: `__init__` sets (`_git`, `_author_name`, `_author_email`,
+#: `_repositories` -- confirmed empirically, not assumed) and NOTHING
+#: else; any additional instance attribute at all -- a shadowed public
+#: method, a shadowed private helper, or literally anything else --
+#: is rejected outright, without needing to name it in advance.
+_EXPECTED_TRANSPORT_INSTANCE_ATTRIBUTES = frozenset({"_git", "_author_name", "_author_email", "_repositories"})
 
 
 def _reject_instance_overridden_transport_methods(transport: LocalGitRepositoryTransport) -> None:
@@ -607,20 +610,20 @@ def _reject_instance_overridden_transport_methods(transport: LocalGitRepositoryT
     reproduced exactly this: the exact-type check passed, but
     `facility.open_pr(...)` still invoked the injected, remote-capable
     override instead of `LocalGitRepositoryTransport`'s own real
-    method (which unconditionally raises by design). A round-15
-    follow-up (see `_SEALED_TRANSPORT_METHOD_NAMES`'s own comment)
-    showed the same is true of `commit_files`/`create_branch`: an
-    override there can perform arbitrary out-of-repository effects
-    while still passing every other admitted-identity check. A
-    genuinely unmodified instance's own `__dict__` never contains any
-    of `LocalGitRepositoryTransport`'s real public method names at all
-    (they all live on the class); this rejects admission (or a later
-    mutating/transport-delegating call) if it does."""
-    overridden = sorted(name for name in _SEALED_TRANSPORT_METHOD_NAMES if name in vars(transport))
-    if overridden:
+    method (which unconditionally raises by design). Rounds 15 and 18
+    (see `_EXPECTED_TRANSPORT_INSTANCE_ATTRIBUTES`'s own comment)
+    showed enumerating specific method names -- public OR private --
+    to seal is a losing, ever-growing battle. A genuinely unmodified
+    instance's own `__dict__` contains EXACTLY the real `__init__`'s
+    own data attributes and nothing else; this rejects admission (or a
+    later mutating/transport-delegating call) if it carries anything
+    beyond that, whatever it is called."""
+    unexpected = sorted(set(vars(transport)) - _EXPECTED_TRANSPORT_INSTANCE_ATTRIBUTES)
+    if unexpected:
         raise RepositoryConstructionQualificationError(
-            f"_reject_instance_overridden_transport_methods: transport instance shadows real class methods with "
-            f"instance-level overrides ({', '.join(overridden)}), breaking the local-commit-only boundary"
+            f"_reject_instance_overridden_transport_methods: transport instance carries unexpected instance "
+            f"attributes beyond LocalGitRepositoryTransport's own __init__ ({', '.join(unexpected)}), "
+            f"breaking the local-commit-only boundary"
         )
 
 

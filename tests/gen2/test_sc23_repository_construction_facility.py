@@ -973,6 +973,32 @@ def test_sc23_wrapper_rejects_an_instance_overridden_commit_files(tmp_path) -> N
         facility.commit(None, repository="existing", branch="main", owner="assign-post", expected_head=initial_sha, files={"x.txt": b"x"}, message="x\n", operation_id="op-sealed-commit-files", foreman_epoch=1)
 
 
+def test_sc23_wrapper_rejects_an_instance_overridden_private_helper(tmp_path) -> None:
+    """Review finding (PR #86, round 18, P1, reproduced by the
+    reviewer): sealing a growing list of specific PUBLIC method names
+    is a losing pattern -- the reviewer reproduced shadowing
+    transport._run (the PRIVATE helper every public method actually
+    delegates its real subprocess work through) instead, passing every
+    named-method check while still performing an out-of-repository
+    write before ever reaching git. The check is now the inverse: a
+    genuinely unmodified instance's __dict__ contains EXACTLY
+    __init__'s own four data attributes and nothing else, so shadowing
+    ANY method or helper -- named in advance or not -- is rejected."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    transport._run = lambda *args, **kwargs: b"0" * 40  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        facility.commit(None, repository="existing", branch="main", owner="assign-post", expected_head=initial_sha, files={"x.txt": b"x"}, message="x\n", operation_id="op-sealed-run-helper", foreman_epoch=1)
+
+
 def test_sc23_wrapper_rejects_an_included_git_config(tmp_path) -> None:
     """Review finding (PR #86, round 16, P1, reproduced by the
     reviewer): the round-15 exact-byte-snapshot check is airtight

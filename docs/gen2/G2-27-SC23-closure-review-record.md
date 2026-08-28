@@ -968,7 +968,8 @@ verdict (see below) rather than a hardcoded stale expectation.
     Both genuinely fixed in round 16, with 3 new permanent regression
     tests. Full local re-verification: full test file (52/52), full
     mutation suite (37/37), `test_g2_27_self_construction.py` (33/33),
-    and full repository sweep re-run clean.
+    and full repository sweep (only the 9 known pre-existing
+    Windows-only failures, zero regressions) re-run clean.
 17. A fresh Codex + CodeRabbit pass against the round-16 commit found 3
     findings: one further genuine P1 code gap (Codex), and two docs/
     test-quality corrections (CodeRabbit, both Minor):
@@ -1031,7 +1032,11 @@ verdict (see below) rather than a hardcoded stale expectation.
     tests strengthened. Full local re-verification: full test file
     (54/54), full mutation suite (37/37),
     `test_g2_27_self_construction.py` (33/33), and full repository
-    sweep re-run clean.
+    sweep (only the 9 known pre-existing Windows-only failures, zero
+    regressions) re-run clean. (CodeRabbit review finding, round 18:
+    this entry and the round-16 entry above both originally said
+    "re-run clean" without naming the known, pre-existing, unrelated
+    failure count -- corrected here and there for precision.)
 
 ## Real, honest end-to-end result
 
