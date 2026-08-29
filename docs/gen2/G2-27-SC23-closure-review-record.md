@@ -1546,6 +1546,52 @@ verdict (see below) rather than a hardcoded stale expectation.
     (33/33), and full repository sweep (1366 passed, only the 9
     known pre-existing Windows-only failures, zero regressions).
 
+    PROCESS NOTE (self-caught, same class of gap the PR #84 incident
+    that started this closure record exists to remediate): CodeRabbit's
+    OWN response to this same round-26 review request landed 2 further
+    genuine Minor findings a few minutes after Codex's finding above,
+    both timestamped after the round-26 fix/reply/resolve cycle had
+    already completed and CI had gone green. The settle-window poll
+    (adopted starting round 22, waiting for a quiet period after first
+    detection rather than stopping at the very first thread) still
+    exited too early this time -- the gap between Codex's and
+    CodeRabbit's responses exceeded the 3-minute settle window used.
+    Both findings are genuine and are fixed below as the round-26
+    follow-up, against the SAME round-25 commit (`f585a94`) Codex's
+    finding was also against -- not a regression introduced by the
+    round-26 fix itself. Caught on the VERY NEXT poll (checking
+    unresolved-thread count before requesting round-27's review),
+    before any further work was built on top of an incomplete round.
+    - **Minor ("Sort `__slots__` to satisfy Ruff RUF023"), CodeRabbit**:
+      `__slots__ = ("_facility", "_transport", "__weakref__")` is not
+      naturally sorted, which fails Ruff's RUF023 lint rule if enabled
+      in this project's configuration. **Fixed**: reordered to
+      `("__weakref__", "_facility", "_transport")`, applying
+      CodeRabbit's own suggested diff verbatim -- slot order carries
+      no behavioral meaning here.
+    - **Minor ("Use an authorized task for this rejection test"),
+      CodeRabbit**: the round-25 `object.__setattr__` regression test
+      passed a placeholder `task=None` -- the SAME "test could pass
+      for the wrong reason" pattern already fixed in rounds 15/17/22
+      elsewhere in this file. With `task=None`,
+      `RepositoryFacility.create_branch`'s own unrelated
+      `task.assignment_id` access would ALSO raise, independently of
+      whether the round-25 value-snapshot fix (the thing this test
+      actually exists to verify) still worked at all. **Fixed**:
+      rewritten to use a REAL, fully-authorized `create_branch`
+      dispatch (`_real_create_branch_on_rig`, converting the test to
+      use the `rig` fixture rather than manually constructing a
+      transport/facility pair) and confirm the SPECIFIC
+      `RepositoryConstructionQualificationError` fires from the
+      registration comparison.
+
+    Fixed in commit `<pending>`, with 0 new regression tests (both are
+    fixes to existing round-25/26 code, not new findings requiring new
+    coverage). Full local re-verification: full test file (70/70),
+    full mutation suite (37/37), `test_g2_27_self_construction.py`
+    (pending), and full repository sweep (pending, only the 9 known
+    pre-existing Windows-only failures expected).
+
 ## Real, honest end-to-end result
 
 Running `execute_self_construction_gate()` for real against the live

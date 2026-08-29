@@ -1337,7 +1337,7 @@ def test_sc23_wrapper_rejects_an_instance_shadowed_dispatch_method(tmp_path) -> 
         facility.create_branch = lambda *args, **kwargs: "0" * 40  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
 
 
-def test_sc23_wrapper_rejects_a_registration_mutated_via_object_setattr(tmp_path) -> None:
+def test_sc23_wrapper_rejects_a_registration_mutated_via_object_setattr(rig, tmp_path) -> None:
     """Review finding (PR #86, round 25, P1, Codex, reproduced by the
     reviewer -- "Snapshot registered repository records by value"):
     `@dataclass(frozen=True)` only blocks NORMAL attribute assignment --
@@ -1351,29 +1351,30 @@ def test_sc23_wrapper_rejects_a_registration_mutated_via_object_setattr(tmp_path
     still trivially passed, comparing the mutated object to itself.
     Every `_RegisteredRepository` is now snapshotted as an independent,
     freshly-constructed object holding copies of the primitive field
-    values, so a live-record mutation cannot reach it."""
-    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
-    from tenfold.local_git_transport import LocalGitRepositoryTransport
+    values, so a live-record mutation cannot reach it.
 
-    repo_root = tmp_path / "existing-repo"
-    initial_sha = _real_existing_repo(repo_root, tmp_path)
-
+    Review finding (PR #86, round 26, Minor, CodeRabbit): rewritten to
+    use a REAL, fully-authorized `create_branch` dispatch (see
+    `_real_create_branch_on_rig`) rather than a placeholder `task=None`
+    -- with `task=None`, `RepositoryFacility.create_branch`'s own
+    unrelated `task.assignment_id` access would ALSO raise before ever
+    reaching the registration comparison, so the test could pass even
+    if the round-25 value-snapshot fix regressed entirely."""
     other_root = tmp_path / "other-repo"
     _real_existing_repo(other_root, tmp_path)
 
-    transport = LocalGitRepositoryTransport({"existing": repo_root})
-    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
 
     other_transport = LocalGitRepositoryTransport({"other": other_root})
     other_registered = other_transport._repositories["other"]  # noqa: SLF001 -- test-only
 
-    registered = transport._repositories["existing"]  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+    registered = rig.transport._repositories[rig.repository]  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
     object.__setattr__(registered, "root", other_registered.root)
     object.__setattr__(registered, "device", other_registered.device)
     object.__setattr__(registered, "inode", other_registered.inode)
 
     with pytest.raises(RepositoryConstructionQualificationError):
-        facility.create_branch(None, repository="existing", branch="sc23/setattr-mutated-registration", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-setattr-mutated-registration", foreman_epoch=1)
+        _real_create_branch_on_rig(rig, branch="sc23/setattr-mutated-registration", operation_id="op-setattr-mutated-registration")
 
 
 def test_sc23_wrapper_admission_state_is_independent_across_repeated_admissions(tmp_path) -> None:

@@ -1108,7 +1108,7 @@ class _ContainmentReCheckedRepositoryFacility(metaclass=_FrozenClassMeta):
     the same language-level guarantee `__slots__` gives at the
     instance level, now also at the class level."""
 
-    __slots__ = ("_facility", "_transport", "__weakref__")
+    __slots__ = ("__weakref__", "_facility", "_transport")
 
     def __init__(self, facility, transport: LocalGitRepositoryTransport) -> None:
         # `facility` deliberately left untyped: an explicit
