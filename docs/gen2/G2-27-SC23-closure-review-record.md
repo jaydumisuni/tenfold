@@ -1585,12 +1585,12 @@ verdict (see below) rather than a hardcoded stale expectation.
       `RepositoryConstructionQualificationError` fires from the
       registration comparison.
 
-    Fixed in commit `<pending>`, with 0 new regression tests (both are
+    Fixed in commit `bbfe60e`, with 0 new regression tests (both are
     fixes to existing round-25/26 code, not new findings requiring new
     coverage). Full local re-verification: full test file (70/70),
     full mutation suite (37/37), `test_g2_27_self_construction.py`
-    (pending), and full repository sweep (pending, only the 9 known
-    pre-existing Windows-only failures expected).
+    (33/33), and full repository sweep (1366 passed, only the 9 known
+    pre-existing Windows-only failures, zero regressions).
 
 ## Real, honest end-to-end result
 
