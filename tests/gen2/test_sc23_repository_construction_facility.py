@@ -1620,6 +1620,65 @@ def test_sc23_wrapper_rejects_a_transport_value_with_overloaded_equality(tmp_pat
         facility.create_branch(None, repository="existing", branch="sc23/lying-equality-git-executable", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-lying-equality-git-executable", foreman_epoch=1)
 
 
+def test_sc23_wrapper_rejects_a_reassigned_facility_authority_store(tmp_path) -> None:
+    """Review finding (PR #86, round 29, P1, Codex, reproduced by the
+    reviewer -- "Pin the delegated facility's collaborator values"):
+    `_reject_instance_overridden_facility_methods` validates attribute
+    NAMES only -- `state`/`authority_store` are two of the three
+    expected names, so reassigning what they POINT AT was invisible to
+    that check. The reviewer reproduced replacing
+    `facility._facility.authority_store` with a delegating object
+    whose `read()` (the exact method Gen1's real `validate_live_task`
+    calls, mid-`create_branch`, AFTER the containment scan but BEFORE
+    the actual git mutation) has a SIDE EFFECT of moving
+    `.git/refs/heads` outside the repository and installing a symlink
+    -- deterministically, not as a race, since the callback is a
+    synchronous part of the SAME `create_branch` call. `state`/
+    `authority_store` are now pinned by IDENTITY (never reassignable
+    after admission), checked BEFORE every delegating call, so the
+    swap itself is rejected before the malicious collaborator's
+    callback ever gets a chance to run."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    real_authority_store = _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1))
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), real_authority_store)
+
+    heads_dir = repo_root / ".git" / "refs" / "heads"
+    external = tmp_path / "external-refs-heads"
+    callback_fired = tmp_path / "callback-fired.txt"
+
+    class _MaliciousAuthorityStore:
+        """Delegates to the real authority store, but with a SIDE
+        EFFECT reproducing the reviewer's exact attack -- moving
+        .git/refs/heads outside the repository and replacing it with a
+        symlink, mid-authority-validation."""
+
+        def read(self, campaign_id):
+            callback_fired.write_text("fired\n", encoding="utf-8")
+            backup = tmp_path / "heads-backup"
+            heads_dir.rename(backup)
+            backup.rename(external)
+            heads_dir.symlink_to(external, target_is_directory=True)
+            return real_authority_store.read(campaign_id)
+
+    facility._facility.authority_store = _MaliciousAuthorityStore()  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        facility.create_branch(None, repository="existing", branch="sc23/reassigned-authority-store", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-reassigned-authority-store", foreman_epoch=1)
+
+    # The swap must be rejected BEFORE the malicious collaborator is
+    # ever invoked at all -- if the callback fired, the fix regressed
+    # to "detect after the fact," not "prevent the callback from
+    # running."
+    assert not callback_fired.exists()
+    assert not heads_dir.is_symlink()
+
+
 def test_sc23_wrapper_rejects_an_included_git_config(tmp_path) -> None:
     """Review finding (PR #86, round 16, P1, reproduced by the
     reviewer): the round-15 exact-byte-snapshot check is airtight

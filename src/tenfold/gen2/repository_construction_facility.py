@@ -769,7 +769,11 @@ def gen1_wrap_repository_construction_facility(transport, state_store, authority
     # docstring for why hashing the wrapper carries none of round 23's
     # transport-hashing risk.
     wrapper = _ContainmentReCheckedRepositoryFacility(facility, transport)
-    _ADMITTED_TRANSPORT_STATE[wrapper] = _AdmittedTransportState(facility, established_instance_state, established_no_hooks_dirs)
+    _ADMITTED_TRANSPORT_STATE[wrapper] = _AdmittedTransportState(
+        facility, established_instance_state, established_no_hooks_dirs,
+        established_facility_state=facility.state,
+        established_facility_authority_store=facility.authority_store,
+    )
     return wrapper
 
 
@@ -844,6 +848,61 @@ def _reject_instance_overridden_facility_methods(facility: object) -> None:
     reasoning for why an explicit `RepositoryFacility` annotation would
     itself be an undisclosed live-Gen1-authority reference."""
     _reject_instance_overridden_attributes(facility, _EXPECTED_FACILITY_INSTANCE_ATTRIBUTES, "RepositoryFacility")
+
+
+def _reject_altered_facility_collaborators(
+    facility: object,
+    established_state: object,
+    established_authority_store: object,
+) -> None:
+    """Review finding (PR #86, round 29, P1, Codex, reproduced by the
+    reviewer -- "Pin the delegated facility's collaborator values"):
+    `_reject_instance_overridden_facility_methods` validates attribute
+    NAMES only -- `state`/`authority_store` are themselves two of the
+    three expected names, so reassigning what they POINT AT (a
+    malicious delegating object) after admission was invisible to that
+    check, the SAME underlying gap round 19's "Pin registered
+    repository identities at admission" already closed for the
+    transport's `_repositories`, one collaborator over.
+
+    The reviewer's exploit was sharper than a simple swap-and-read,
+    though: `RepositoryFacility.create_branch`'s own real
+    implementation calls `self.authority_store` (via `_live_mutable`
+    -> `validate_live_task`) BEFORE the actual git mutation, but AFTER
+    `_revalidate_transport_integrity`'s own containment scan has
+    already run and returned. A malicious `authority_store` whose
+    `read()` (or whatever real method Gen1's authority validation
+    calls) has a SIDE EFFECT -- moving `.git/refs/heads` outside the
+    repository and replacing it with a symlink -- fires DETERMINISTICALLY
+    in that window, every time, not merely as a probabilistic race: by
+    the time `self.transport.create_branch(...)` actually writes, the
+    symlink is already in place, even though the EARLIER scan found
+    nothing wrong (because the tampering had not happened yet). This
+    is a STRICTLY WORSE, deterministic sibling of the round-14 TOCTOU
+    finding (a race against a background process) -- but unlike that
+    genuinely-unfixable race, THIS window is closed by a concrete,
+    complete fix: `state`/`authority_store` are set exactly ONCE by
+    `RepositoryFacility.__init__` and never legitimately reassigned
+    anywhere in Gen1's own code afterward (unlike `.transport`, which
+    round 16 established CAN be legitimately swapped and is
+    independently, more thoroughly re-verified elsewhere) -- so pinning
+    them by IDENTITY (never by equality, which would reopen round 28's
+    attacker-controlled-equality risk; `is` never dispatches to
+    `__eq__`/`__ne__` at all) and checking BEFORE every delegating call
+    closes this specific exploit completely: the swap is caught before
+    `admitted.facility.create_branch`/etc. is ever invoked, so the
+    malicious collaborator's callback never gets a chance to run."""
+    changed = []
+    if facility.state is not established_state:
+        changed.append("state")
+    if facility.authority_store is not established_authority_store:
+        changed.append("authority_store")
+    if changed:
+        raise RepositoryConstructionQualificationError(
+            f"_reject_altered_facility_collaborators: RepositoryFacility's own state/authority_store "
+            f"no longer match what was admitted at construction time ({', '.join(changed)}) -- rejecting "
+            f"before delegation so a swapped collaborator's own callback never gets a chance to run"
+        )
 
 
 def _reject_altered_transport_instance_state(
@@ -1043,11 +1102,29 @@ class _AdmittedTransportState:
     transport can never collide. `_current_transport` no longer needs
     to read `self._facility.transport` to DISCOVER a lookup key at
     all; `admitted.facility.transport` is read directly instead, once
-    `admitted` itself is already in hand."""
+    `admitted` itself is already in hand.
+
+    Review finding (PR #86, round 29, P1, Codex, reproduced by the
+    reviewer -- "Pin the delegated facility's collaborator values"):
+    round 24 pinned `facility` ITSELF against wholesale replacement,
+    but never pinned WHAT `facility.state`/`facility.authority_store`
+    themselves point at -- `_reject_instance_overridden_facility_methods`
+    checks names only. The reviewer reproduced swapping
+    `facility.authority_store` for a malicious delegating object whose
+    `read()` callback (invoked by Gen1's own real authority validation,
+    mid-`create_branch`, AFTER the containment scan but BEFORE the
+    actual git mutation) moves `.git/refs/heads` outside the repository
+    and replaces it with a symlink -- deterministically, not as a race.
+    `established_facility_state`/`established_facility_authority_store`
+    capture the genuine, originally-constructed collaborators (see
+    `_reject_altered_facility_collaborators`'s own docstring for the
+    full account), checked by IDENTITY before every delegating call."""
 
     facility: object
     instance_state: dict
     no_hooks_dirs: "dict[str, _EstablishedHooksNeutralization]"
+    established_facility_state: object
+    established_facility_authority_store: object
 
 
 #: Keyed by WRAPPER instance IDENTITY (round 25 -- see
@@ -1341,6 +1418,7 @@ class _ContainmentReCheckedRepositoryFacility(metaclass=_FrozenClassMeta):
         transport = self._current_transport()
         admitted = _admitted_state_for(self)
         _reject_instance_overridden_facility_methods(admitted.facility)
+        _reject_altered_facility_collaborators(admitted.facility, admitted.established_facility_state, admitted.established_facility_authority_store)
         # `_reject_altered_transport_instance_state`'s key-set check is
         # a strict superset of `_reject_instance_overridden_transport_methods`
         # (the established snapshot's own key set is always exactly
@@ -1383,6 +1461,7 @@ class _ContainmentReCheckedRepositoryFacility(metaclass=_FrozenClassMeta):
         admitted = _admitted_state_for(self)
         _reject_instance_overridden_transport_methods(transport)
         _reject_instance_overridden_facility_methods(admitted.facility)
+        _reject_altered_facility_collaborators(admitted.facility, admitted.established_facility_state, admitted.established_facility_authority_store)
         return admitted.facility.open_pr(*args, **kwargs)
 
     def merge_pr(self, *args, **kwargs):
@@ -1390,6 +1469,7 @@ class _ContainmentReCheckedRepositoryFacility(metaclass=_FrozenClassMeta):
         admitted = _admitted_state_for(self)
         _reject_instance_overridden_transport_methods(transport)
         _reject_instance_overridden_facility_methods(admitted.facility)
+        _reject_altered_facility_collaborators(admitted.facility, admitted.established_facility_state, admitted.established_facility_authority_store)
         return admitted.facility.merge_pr(*args, **kwargs)
 
 

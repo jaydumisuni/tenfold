@@ -1710,6 +1710,57 @@ verdict (see below) rather than a hardcoded stale expectation.
     suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
     repository sweep (1368 passed, only the 9 known pre-existing
     Windows-only failures, zero regressions).
+29. A fresh Codex pass against the round-28 commit (`e22604e`) found 1
+    further genuine P1 finding:
+    - **P1 ("Pin the delegated facility's collaborator values"),
+      Codex**: `_reject_instance_overridden_facility_methods` (round
+      23) validates attribute NAMES only -- `state`/`authority_store`
+      are two of the three expected names, so reassigning what they
+      POINT AT after admission was invisible to that check, the SAME
+      underlying gap round 19 already closed for the transport's
+      `_repositories`, one collaborator over. The reviewer's exploit
+      was sharper than a simple swap-and-read, though, and genuinely
+      distinct from the DISCLOSED round-14 TOCTOU limitation: Gen1's
+      real `RepositoryFacility.create_branch` calls
+      `self.authority_store.read(...)` (via `_live_mutable` ->
+      `validate_live_task`) AFTER `_revalidate_transport_integrity`'s
+      own containment scan has already run and returned, but BEFORE
+      the actual git mutation. The reviewer reproduced replacing
+      `facility._facility.authority_store` with a delegating object
+      whose `read()` has a SIDE EFFECT -- moving `.git/refs/heads`
+      outside the repository and installing a symlink -- which fires
+      DETERMINISTICALLY in that window (a synchronous part of the SAME
+      `create_branch` call), not merely as a probabilistic race
+      against a background process the way round 14's finding was: by
+      the time the actual git write happened, the symlink was already
+      in place, even though the EARLIER scan found nothing wrong.
+      **Fixed, completely -- unlike round 14's genuinely-unfixable
+      race, this deterministic window has a concrete, complete fix**:
+      `state`/`authority_store` are set exactly ONCE by
+      `RepositoryFacility.__init__` and never legitimately reassigned
+      anywhere in Gen1's own code afterward (unlike `.transport`,
+      which round 16 established CAN be legitimately swapped and is
+      independently, more thoroughly re-verified elsewhere), so
+      pinning them by IDENTITY (never by equality, which would reopen
+      round 28's attacker-controlled-equality risk -- `is` never
+      dispatches to `__eq__`/`__ne__` at all) and checking BEFORE every
+      delegating call (`create_branch`/`commit`/`read` via
+      `_revalidate_transport_integrity`, and `open_pr`/`merge_pr`,
+      since their own authority-validation phase reaches the SAME
+      callback point even though `LocalGitRepositoryTransport`'s real
+      methods always raise afterward) closes this completely: the swap
+      is caught and rejected BEFORE the malicious collaborator's own
+      callback ever gets a chance to run, not merely detected after
+      the fact. New permanent regression test reproduces the exact
+      attack AND additionally asserts the callback itself never fires
+      (not just that the call eventually raised), proving prevention
+      rather than after-the-fact detection.
+
+    Fixed in commit `<pending>`, with 1 new permanent regression test.
+    Full local re-verification: full test file (73/73), full mutation
+    suite (37/37), `test_g2_27_self_construction.py` (pending), and
+    full repository sweep (pending, only the 9 known pre-existing
+    Windows-only failures expected).
 
 ## Real, honest end-to-end result
 
