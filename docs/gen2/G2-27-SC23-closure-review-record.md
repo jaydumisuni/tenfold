@@ -1656,13 +1656,13 @@ verdict (see below) rather than a hardcoded stale expectation.
       the disclosed boundary stays a verified, executable fact rather
       than an assumption that could silently drift.
 
-    Fixed (via disclosure, not code) in commit `<pending>`, with 1 new
+    Fixed (via disclosure, not code) in commit `d0ca049`, with 1 new
     permanent regression test that documents the limitation rather
     than defending against it. Full local re-verification: full test
     file (71/71), full mutation suite (37/37),
-    `test_g2_27_self_construction.py` (pending), and full repository
-    sweep (pending, only the 9 known pre-existing Windows-only
-    failures expected).
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (1367 passed, only the 9 known pre-existing Windows-only
+    failures, zero regressions).
 
 ## Real, honest end-to-end result
 
