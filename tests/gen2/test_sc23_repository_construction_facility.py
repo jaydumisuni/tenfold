@@ -1845,6 +1845,73 @@ def test_sc23_wrapper_revalidates_facility_class_implementation_before_delegatin
     facility.release_writer("existing", "sc23/writer-class-tamper-probe", "assign-probe")
 
 
+def test_sc23_wrapper_rejects_a_pre_admission_tampered_git_executable(tmp_path) -> None:
+    """Review finding (PR #86, round 36, P1, Codex, reproduced by the
+    reviewer -- "Validate transport values before snapshotting them"):
+    every prior `_git` finding (rounds 18-28) protected against a
+    POST-admission reassignment, comparing later values against
+    whatever `_git` happened to be AT ADMISSION TIME. None of them
+    checked whether that baseline itself was trustworthy. The reviewer
+    reproduced assigning `transport._git` to a shell shim BEFORE ever
+    calling `gen1_wrap_repository_construction_facility` -- admission
+    blessed the tampered value as the trusted baseline (the shim even
+    ran during admission's own hook-neutralization step), and every
+    later comparison found it "unchanged" from that already-poisoned
+    baseline. `gen1_wrap_repository_construction_facility` now
+    validates `_git` against the independently, freshly resolved
+    system git executable (`shutil.which("git")`) BEFORE ever trusting
+    it as a baseline, rejecting admission outright if they differ."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    transport._git = "not-a-real-git-executable"  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack, BEFORE admission
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+
+def test_sc23_wrapper_seals_authority_store_against_a_caller_retained_reference_mutation(rig) -> None:
+    """Review finding (PR #86, round 36, P1, Codex, reproduced by the
+    reviewer -- "Seal caller-retained collaborators before mutation"):
+    round 29 pinned `facility.authority_store` by IDENTITY and round 32
+    denied delegating it through the wrapper at all -- but neither
+    addresses a caller who never needed the wrapper to reach it in the
+    first place: whoever calls `gen1_wrap_repository_construction_facility`
+    genuinely constructed `authority_store` and, by the ordinary rules
+    of passing a mutable Python object as an argument, still holds
+    their OWN reference to it afterward. The reviewer reproduced
+    reassigning THAT retained reference's `read` method in place
+    (`rig.authority_store.read = malicious_fn`) -- the object's
+    identity never changed, so round 29's `is` check kept passing,
+    while `RepositoryFacility`'s real dispatch invoked the malicious
+    replacement mid-`create_branch`. `RepositoryFacility` is now handed
+    a sealed proxy that captures `authority_store.read` AT admission --
+    a Python bound method snapshots its underlying function at the
+    moment it is read off an instance, so a later reassignment on the
+    caller's own retained reference has zero effect on the already-
+    captured callable. This performs a REAL, fully-authorized
+    `create_branch` (via `_real_create_branch_on_rig`) to prove the
+    malicious replacement genuinely never runs, not merely that some
+    other check happens to reject the call first."""
+    triggered = {"called": False}
+    original_read = rig.authority_store.read
+
+    def malicious_read(campaign_id):
+        triggered["called"] = True
+        return original_read(campaign_id)
+
+    rig.authority_store.read = malicious_read  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack: the caller's own retained reference
+
+    receipt = _real_create_branch_on_rig(rig, branch="sc23/sealed-authority-store-probe", operation_id="op-sealed-authority-store-probe")
+
+    assert receipt is not None
+    assert triggered["called"] is False
+
+
 def test_sc23_wrapper_does_not_expose_current_transport_as_a_method(tmp_path) -> None:
     """Review finding (PR #86, round 33, P1, Codex, reproduced by the
     reviewer -- "Stop returning the raw transport from the wrapper"):

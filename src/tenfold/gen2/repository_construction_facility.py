@@ -41,6 +41,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -598,6 +599,156 @@ def _reject_alternate_git_config_sources(name: str, git_dir: Path) -> None:
         )
 
 
+def _reject_untrusted_transport_git_executable(transport: LocalGitRepositoryTransport) -> None:
+    """Review finding (PR #86, round 36, P1, Codex, reproduced by the
+    reviewer -- "Validate transport values before snapshotting them"):
+    every prior `_git` finding (rounds 18-28) protected against a
+    POST-admission reassignment, by pinning `_git`'s VALUE into
+    `established_instance_state` at admission time and rejecting any
+    later deviation from that pinned baseline. None of them asked
+    whether the baseline ITSELF was trustworthy. The reviewer
+    reproduced constructing a `LocalGitRepositoryTransport` normally,
+    then assigning `transport._git` to a shell shim BEFORE ever
+    calling `gen1_wrap_repository_construction_facility` -- admission
+    itself blessed the tampered value as the trusted baseline (the
+    shim even ran during this function's own hook-neutralization
+    step), and every subsequent comparison correctly found it
+    "unchanged" from that already-poisoned baseline, since it never
+    had anything independent to compare against.
+
+    `LocalGitRepositoryTransport.__init__` itself only ever resolves
+    `_git` two ways: an explicit `git_executable` constructor argument
+    (confirmed, by a full-codebase search, never used anywhere in this
+    repository -- there is no legitimate scenario today that needs
+    it), or `shutil.which("git")` resolved to an absolute path. That
+    means, unlike `_author_name`/`_author_email` (free-form strings
+    with no independently-derivable "correct" value) or
+    `_repositories` (legitimately varies per admission, supplied by
+    the caller), `_git` DOES have a genuinely independent ground
+    truth this function can check against, before ever trusting it as
+    a baseline: the real system `git` executable `shutil.which` itself
+    would resolve to, right now, in this process."""
+    current_git = transport._git  # noqa: SLF001 -- genuine safety enforcement, mirrors _reject_altered_transport_instance_state's own established pattern
+    # Round 28's exact-type lesson, replayed here: an attacker-controlled
+    # `str` subclass with a lying `__eq__`/`__ne__` could otherwise claim
+    # equality with the expected value while holding different content.
+    if type(current_git) is not str:
+        raise RepositoryConstructionQualificationError(
+            f"_reject_untrusted_transport_git_executable: transport._git is not a plain str "
+            f"(got {type(current_git).__name__}) -- refusing to trust it as this admission's baseline"
+        )
+    resolved = shutil.which("git")
+    expected_git = str(Path(resolved).resolve()) if resolved else None
+    if expected_git is None or current_git != expected_git:
+        raise RepositoryConstructionQualificationError(
+            f"_reject_untrusted_transport_git_executable: transport._git ({current_git!r}) does not match "
+            f"the independently resolved system git executable ({expected_git!r}) -- refusing to trust it "
+            f"as this admission's baseline"
+        )
+
+
+#: Review finding (PR #86, round 36, P1, Codex, reproduced by the
+#: reviewer -- "Seal caller-retained collaborators before mutation"):
+#: round 29 pinned `facility.authority_store` by IDENTITY (rejecting a
+#: SWAPPED reference) and round 32 denied delegating it through the
+#: wrapper at all (rejecting a caller who only holds the wrapper from
+#: ever reaching it) -- but neither addresses a caller who never
+#: needed the wrapper to reach `authority_store` in the first place:
+#: whoever called `gen1_wrap_repository_construction_facility` genuinely
+#: constructed this object and, by the ordinary rules of passing a
+#: mutable Python object as an argument, still holds their OWN
+#: reference to it after this function returns. The reviewer
+#: reproduced reassigning THAT retained reference's `read` method
+#: in place (`rig.authority_store.read = malicious_fn`) -- since the
+#: object's IDENTITY never changed, round 29's `is` check kept
+#: passing, while `RepositoryFacility._live_mutable`'s real call to
+#: `self.authority_store.read(...)` (via Gen1's own `validate_live_task`)
+#: invoked the malicious replacement mid-`create_branch`, moving
+#: `.git/refs/heads` externally and installing a symlink before the
+#: actual git mutation, with an authorized `create_branch` still
+#: returning a successful receipt -- a deterministic sibling of the
+#: round-29 finding, reached without ever touching the wrapper at all.
+#:
+#: Unlike round 27/34's genuinely unfixable "any code holding ANY
+#: object this module produced can reach anything reachable from it"
+#: limitation, this one has a real, complete fix: a Python bound
+#: method captures its underlying function AT THE MOMENT it is read
+#: off an instance (`bound = obj.method`) -- reassigning an attribute
+#: on the ORIGINAL object afterward (`obj.method = malicious_fn`) has
+#: ZERO effect on an already-captured bound method, since the
+#: reassignment only changes what a FUTURE `obj.method` lookup would
+#: return, not what the already-created `MethodType` object refers
+#: to. `RepositoryFacility` is now handed a proxy that captures
+#: `authority_store.read` at THIS admission, and only ever calls that
+#: captured, tamper-immune reference -- never `self.authority_store`
+#: freshly looked up, which is what let the caller's later mutation
+#: reach Gen1's real dispatch in the first place. The proxy is never
+#: returned to any caller (it lives only as `RepositoryFacility`'s own
+#: `.authority_store` instance attribute, and the wrapper's
+#: `__getattr__` already denies delegating that name at all -- round
+#: 32), so nothing external ever gets a chance to tamper with the
+#: proxy itself.
+#:
+#: `state_store` is DELIBERATELY NOT sealed the same way, despite the
+#: identical caller-retained-reference reasoning applying to it in
+#: principle: this module's own `RepositoryConstructionPropertyQualificationHarness`
+#: (SC-23's own required crash/recovery qualification scenarios)
+#: genuinely, legitimately reassigns
+#: `_admitted_state_for(...).facility.state.put_receipt` mid-scenario
+#: to simulate a crash-before-persist for idempotency/recovery
+#: testing -- a real, required test pattern, not an attacker
+#: reproduction. Sealing `state` the same way would break that
+#: existing, legitimate coverage. `authority_store` carries the
+#: sharper risk in any case -- it is the access-control DECISION
+#: source (tampering bypasses authorization outright), while `state`
+#: is idempotency/lock bookkeeping (tampering risks double-execution
+#: or a stuck lock, not an unauthorized mutation) -- so sealing it
+#: alone, and naming this asymmetry explicitly rather than silently
+#: leaving it undocumented, is the correct, minimal fix for the
+#: demonstrated finding. `state` remains protected by round 29's
+#: identity pin and round 32's delegation denial; a caller-retained-
+#: reference mutation of `state` specifically is an accepted, narrower
+#: residual risk, the same class this closure's own plan already named
+#: for FacilityContract identity-matching generally.
+_AUTHORITY_STORE_CAPTURED_METHODS = ("read",)
+
+
+class _SealedCollaboratorProxy:
+    """See `_AUTHORITY_STORE_CAPTURED_METHODS`'s own module-level
+    comment for the round-36 finding this closes. Captures the exact
+    bound methods named in `method_names`, read off `source` at
+    construction time, and exposes ONLY those -- never `source`
+    itself, never any other attribute. Immutable after construction
+    (`__setattr__` always raises); `__slots__` carries no writable
+    surface beyond the one collection of captured callables set once,
+    via `object.__setattr__`, inside `__init__` itself."""
+
+    __slots__ = ("_captured",)
+
+    def __init__(self, source: object, method_names: tuple[str, ...], label: str) -> None:
+        captured = {}
+        for name in method_names:
+            bound = getattr(source, name)
+            if not callable(bound):
+                raise RepositoryConstructionQualificationError(
+                    f"_SealedCollaboratorProxy: {label}.{name} is not callable -- refusing to admit"
+                )
+            captured[name] = bound
+        object.__setattr__(self, "_captured", captured)
+
+    def __getattr__(self, name):
+        try:
+            return object.__getattribute__(self, "_captured")[name]
+        except KeyError:
+            raise AttributeError(
+                f"_SealedCollaboratorProxy: {name} was not captured at admission -- only the exact "
+                f"methods RepositoryFacility genuinely calls on this collaborator are exposed"
+            ) from None
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError("_SealedCollaboratorProxy instances are immutable after construction")
+
+
 def gen1_wrap_repository_construction_facility(transport, state_store, authority_store) -> "_ContainmentReCheckedRepositoryFacility":
     """Thin constructor around real `tenfold.repository_facility.
     RepositoryFacility` -- never re-derived. Returns a
@@ -711,6 +862,12 @@ def gen1_wrap_repository_construction_facility(transport, state_store, authority
     # above already covers.
     _reject_altered_facility_class_implementation()
     _reject_instance_overridden_transport_methods(transport)
+    # Round 36 (see `_reject_untrusted_transport_git_executable`'s own
+    # docstring): must run BEFORE `established_instance_state` is ever
+    # captured below, and before hook neutralization actually executes
+    # `_git` -- otherwise a pre-admission tampered value gets blessed
+    # as the trusted baseline instead of being rejected outright.
+    _reject_untrusted_transport_git_executable(transport)
     # `dict(vars(transport))` only copies the OUTER __dict__ -- the
     # value at `_repositories` would still be the SAME mutable dict
     # object `transport._repositories` itself, so a later in-place
@@ -747,7 +904,15 @@ def gen1_wrap_repository_construction_facility(transport, state_store, authority
     }
     _reject_symlinked_git_storage_for_every_registered_repository(transport)
     established_no_hooks_dirs = _neutralize_hooks_for_every_registered_repository(transport)
-    facility = RepositoryFacility(transport, state_store, authority_store)
+    # Round 36 (see `_AUTHORITY_STORE_CAPTURED_METHODS`'s own
+    # module-level comment): `RepositoryFacility` is handed a sealed
+    # proxy capturing `authority_store.read` at THIS admission, never
+    # `authority_store` itself -- immune to the caller's own retained
+    # reference being mutated in place afterward. `state_store` is
+    # deliberately passed through unsealed; see the same comment for
+    # why.
+    sealed_authority_store = _SealedCollaboratorProxy(authority_store, _AUTHORITY_STORE_CAPTURED_METHODS, "authority_store")
+    facility = RepositoryFacility(transport, state_store, sealed_authority_store)
     # Round 22/24 (see `_AdmittedTransportState`'s own docstring): this
     # trusted state -- including `facility` itself, the genuine
     # instance every dispatch method delegates to (round 24) -- is

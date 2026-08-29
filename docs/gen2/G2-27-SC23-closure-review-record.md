@@ -2091,6 +2091,109 @@ verdict (see below) rather than a hardcoded stale expectation.
     suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
     repository sweep (1377 passed, 2 skipped, only the 9 known
     pre-existing Windows-only failures, zero regressions).
+36. A fresh Codex pass against the round-35 commit (`ee3e980`/`704b5d1`)
+    found 2 further genuine P1 findings, both attacking the TRUST
+    boundary at admission time rather than the delegation surface
+    rounds 30-35 had been hardening:
+    - **P1 ("Validate transport values before snapshotting them"),
+      Codex**: every prior `_git` finding (rounds 18-28) protected
+      against a POST-admission reassignment, pinning `_git`'s value
+      into `established_instance_state` at admission time and
+      rejecting any later deviation from THAT baseline. None of them
+      asked whether the baseline itself was trustworthy. The reviewer
+      reproduced assigning `transport._git` to a shell shim BEFORE
+      ever calling `gen1_wrap_repository_construction_facility` --
+      admission blessed the tampered value as the trusted baseline
+      (the shim even ran during admission's own hook-neutralization
+      step), and every later comparison correctly found it
+      "unchanged" from that already-poisoned baseline.
+
+      Unlike `_author_name`/`_author_email` (free-form strings with
+      no independently-derivable "correct" value) or `_repositories`
+      (legitimately varies per admission, caller-supplied), `_git`
+      DOES have a genuine ground truth: `LocalGitRepositoryTransport.__init__`
+      only ever resolves it via an explicit `git_executable`
+      constructor argument (confirmed, by a full-codebase search,
+      never used anywhere in this repository today) or
+      `shutil.which("git")`. Fixed by
+      `_reject_untrusted_transport_git_executable`, called before
+      `established_instance_state` is ever captured and before hook
+      neutralization can execute `_git`: independently re-resolves
+      `shutil.which("git")` and rejects admission outright if
+      `transport._git` doesn't match, with the same round-28
+      exact-type check (`type(x) is str`) so an attacker-controlled
+      `str` subclass with a lying `__eq__` can't bypass this either.
+    - **P1 ("Seal caller-retained collaborators before mutation"),
+      Codex**: round 29's identity pin
+      (`_reject_altered_facility_collaborators`) and round 32's
+      delegation denial (`__getattr__`) both address paths that go
+      THROUGH the wrapper -- neither addresses a caller who never
+      needed the wrapper to reach `authority_store` in the first
+      place: whoever calls `gen1_wrap_repository_construction_facility`
+      genuinely constructed `authority_store` and, by the ordinary
+      rules of passing a mutable Python object as an argument, still
+      holds their OWN reference to it afterward. The reviewer
+      reproduced reassigning THAT retained reference's `read` method
+      in place (`rig.authority_store.read = malicious_fn`) -- the
+      object's identity never changed, so round 29's `is` check kept
+      passing, while `RepositoryFacility`'s real dispatch invoked the
+      malicious replacement mid-`create_branch`, moving
+      `.git/refs/heads` externally and installing a symlink before
+      the actual git mutation, with an authorized `create_branch`
+      still returning a successful receipt -- a deterministic sibling
+      of the round-29 finding, reached without ever touching the
+      wrapper at all.
+
+      Unlike round 27/34's genuinely unfixable "any code holding ANY
+      object this module produced can reach anything reachable from
+      it" limitation, this one has a real, complete fix: a Python
+      bound method captures its underlying function AT THE MOMENT it
+      is read off an instance -- reassigning an attribute on the
+      ORIGINAL object afterward has zero effect on an already-captured
+      bound method. Fixed by `_SealedCollaboratorProxy`:
+      `RepositoryFacility` is now handed a proxy that captures
+      `authority_store.read` at THIS admission, and only ever calls
+      that captured, tamper-immune reference; the proxy is never
+      returned to any caller (it lives only as `RepositoryFacility`'s
+      own `.authority_store` attribute, and the wrapper's `__getattr__`
+      already denies delegating that name -- round 32), so nothing
+      external ever gets a chance to tamper with the proxy itself.
+      Verified empirically that a legitimate DATA mutation on the
+      original object (`rig.authority_store.snapshot = ...`, the
+      harness's own real usage pattern) is still correctly reflected,
+      since the captured bound method still reads `self.snapshot`
+      dynamically at call time.
+
+      `state_store` is DELIBERATELY NOT sealed the same way, despite
+      the identical caller-retained-reference reasoning applying to it
+      in principle: this module's own
+      `RepositoryConstructionPropertyQualificationHarness` genuinely,
+      legitimately reassigns
+      `_admitted_state_for(...).facility.state.put_receipt` mid-scenario
+      to simulate a crash-before-persist for required idempotency/
+      recovery test coverage -- sealing `state` would break that real,
+      existing coverage. `authority_store` also carries the sharper
+      risk regardless: it is the access-control DECISION source
+      (tampering bypasses authorization outright), while `state` is
+      idempotency/lock bookkeeping (tampering risks double-execution
+      or a stuck lock, not an unauthorized mutation). This asymmetry
+      is named explicitly in the fix's own docstring rather than left
+      undocumented; a caller-retained-reference mutation of `state`
+      specifically remains an accepted, narrower residual risk, the
+      same class this closure's own plan already named for
+      `FacilityContract` identity-matching generally.
+
+    Both fixed with real mechanisms, not disclosures. New permanent
+    regression tests reproduce each reviewer finding exactly,
+    including a REAL, fully-authorized `create_branch` (not a
+    placeholder `task=None`) proving the malicious `authority_store`
+    replacement genuinely never runs, not merely that some other check
+    happens to reject the call first. Fixed in commit `<pending>`,
+    with 2 new permanent regression tests. Full local re-verification:
+    full test file (83/83), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (pending, only the 9 known pre-existing Windows-only
+    failures expected).
 
 ## Real, honest end-to-end result
 
