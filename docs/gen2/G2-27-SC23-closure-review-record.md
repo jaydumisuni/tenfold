@@ -2378,6 +2378,64 @@ verdict (see below) rather than a hardcoded stale expectation.
     suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
     repository sweep (1385 passed, 2 skipped, only the 9 known
     pre-existing Windows-only failures, zero regressions).
+39. PROCESS NOTE: when round-39 review was requested against the
+    round-38 commit (`7001c2b`/`c41e005`), Codex responded that its
+    review usage quota was exhausted ("You have reached your Codex
+    usage limits for code reviews") -- a genuinely external, third-
+    party constraint, not a code defect. CodeRabbit's invocation was
+    logged but produced no fresh verdict for this round either. Per
+    this closure's own standing discipline ("no simulated Review --
+    a PASS claim must come from real machinery"), an absent review is
+    NOT treated as a clean pass; the round was instead filled by
+    launching an independent, genuinely adversarial review Agent (not
+    Codex, not CodeRabbit, but held to the identical bar: every
+    finding requires a real, executable reproduction, and an empty
+    result is reported honestly rather than manufactured) -- the same
+    kind of substitute reviewing method this closure has drawn on
+    before whenever the primary bots were unavailable.
+
+    That review found 1 genuine, new P1-class finding:
+    - **"Instance `__class__` reassignment bypasses the wrapper's own
+      class freeze entirely"**: every existing check protects this
+      class's OWN class object (`_FrozenClassMeta`, round 26) and
+      instance `__dict__` shadowing (`__slots__`, round 25) -- but
+      neither protects the instance's `__class__` SLOT itself.
+      `facility.__class__ = _MaliciousFacility` is ORDINARY Python
+      syntax -- no dunder tricks, no `__code__` mutation (round 37's
+      disclosed limitation does not apply here -- this needed
+      neither mechanism), no module-private introspection (round
+      34's disclosed limitation likewise does not apply) -- that
+      CPython permits whenever the target class has a structurally
+      compatible memory layout, trivially satisfied by an attacker
+      replicating this class's own `__slots__ = ("__weakref__",)`
+      layout. Reproduced: the wrapper's own `create_branch` genuinely
+      became the attacker's replacement, with the real class and its
+      methods entirely untouched -- `_FrozenClassMeta.__setattr__`
+      never fires, since it only intercepts assignment ON the class
+      object, not on an instance's `__class__` attribute.
+
+      Unlike rounds 27/34/37's genuinely unfixable disclosed
+      limitations, this one IS fixable: `__class__` reassignment
+      dispatches through `type(obj).__setattr__` exactly like any
+      other instance attribute set, so a plain instance-level
+      `__setattr__`/`__delattr__` override on
+      `_ContainmentReCheckedRepositoryFacility` itself -- the SAME
+      "always raise" pattern `_FrozenClassMeta` already uses one
+      level up for the class object, now also applied one level down
+      for the instance -- intercepts and rejects it outright. `__init__`'s
+      body is `pass` (see its own docstring, round 30/31), so this
+      override introduces no construction-time conflict. Verified
+      empirically that the exact reproduction above is now blocked.
+
+    Fixed with a real mechanism, with 1 new permanent regression test.
+    Because this finding did not arrive through the GitHub PR review
+    API (no review thread exists for it), it is recorded here and via
+    a plain PR comment on #86 with the commit SHA, rather than the
+    usual thread-reply-and-resolve cycle. Fixed in commit `<pending>`.
+    Full local re-verification: full test file (90/90), full mutation
+    suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (pending, only the 9 known pre-existing
+    Windows-only failures expected).
 
 ## Real, honest end-to-end result
 

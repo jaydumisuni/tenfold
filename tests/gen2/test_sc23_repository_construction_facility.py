@@ -1511,6 +1511,55 @@ def test_sc23_wrapper_rejects_a_class_level_rebound_dispatch_method(tmp_path) ->
         del type(facility).create_branch
 
 
+def test_sc23_wrapper_rejects_an_instance_class_reassignment(tmp_path) -> None:
+    """Review finding (PR #86, round 39 -- an independently-launched
+    adversarial re-review, filling the same role Codex/CodeRabbit have
+    played across every prior round while Codex's own review quota
+    was exhausted for this round): every existing check protects this
+    class's own class object (`_FrozenClassMeta`, round 26) and
+    instance `__dict__` shadowing (`__slots__`, round 25) -- but
+    neither protects the instance's `__class__` SLOT itself.
+    `facility.__class__ = _MaliciousFacility` is ORDINARY Python
+    syntax -- no dunder tricks, no `__code__` mutation, no
+    module-private introspection -- that CPython permits whenever the
+    target class has a structurally compatible memory layout, trivially
+    satisfied by an attacker replicating this class's own
+    `__slots__ = ("__weakref__",)` layout. This reassignment reaches
+    every future method lookup WITHOUT ever calling
+    `_FrozenClassMeta.__setattr__` (which only fires for assignment ON
+    the class object, not on an instance's `__class__` attribute) and
+    without touching any function's `__code__` (so round 37's
+    disclosed, genuinely unfixable wrapper-method limitation does not
+    apply -- this needed neither mechanism). Reproduced: the wrapper's
+    `create_branch` genuinely became the attacker's replacement, the
+    real class and its methods entirely untouched. Fixed with a plain
+    instance-level `__setattr__`/`__delattr__` override -- `__class__`
+    reassignment dispatches through `type(obj).__setattr__` exactly
+    like any other instance attribute set, so it is now rejected
+    outright, the same "always raise" pattern `_FrozenClassMeta`
+    already uses one level up for the class object."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    class _MaliciousFacility:
+        __slots__ = ("__weakref__",)
+
+        def create_branch(self, *args, **kwargs):
+            return "0" * 40
+
+    with pytest.raises(AttributeError):
+        facility.__class__ = _MaliciousFacility  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+    with pytest.raises(AttributeError):
+        del facility.__class__
+
+
 def test_sc23_wrapper_class_freeze_cannot_defend_against_a_direct_type_setattr_bypass(tmp_path) -> None:
     """SECURITY NOTE -- DISCLOSED LIMITATION (review finding, PR #86,
     round 27, P1/Major, Codex and CodeRabbit, both independently

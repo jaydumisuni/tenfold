@@ -1916,9 +1916,54 @@ class _ContainmentReCheckedRepositoryFacility(metaclass=_FrozenClassMeta):
     round accepted), and `facility._facility` now correctly raises
     `AttributeError`, since `getattr(admitted.facility, "_facility")`
     finds nothing -- `RepositoryFacility` has no such attribute on
-    itself."""
+    itself.
+
+    Review finding (PR #86, round 39 -- an independently-launched
+    adversarial re-review, run because Codex's own review quota was
+    exhausted for this round, filling the same role with the same
+    "real repro or it doesn't count" discipline): every check above
+    protects THIS class's own class object (`_FrozenClassMeta`) and
+    its instances' `__dict__` (`__slots__`) -- but neither protects
+    the instance's `__class__` SLOT itself. `facility.__class__ =
+    SomeAttackerDefinedClass` is ORDINARY Python syntax (no dunder
+    tricks, no `__code__` mutation, no module-private introspection)
+    that CPython permits whenever the target class has a
+    structurally compatible memory layout -- trivially satisfied by
+    an attacker replicating this class's own `__slots__ =
+    ("__weakref__",)` layout. This reassignment reaches `type()` for
+    every future method lookup WITHOUT ever calling
+    `_FrozenClassMeta.__setattr__` (which only fires for assignment
+    ON the class object, not on an instance's `__class__` attribute)
+    and without touching any function's `__code__` (so round 37's
+    disclosed, genuinely unfixable wrapper-method limitation does not
+    apply here -- this needed neither of that finding's mechanisms).
+    Reproduced: after `facility.__class__ = _MaliciousFacility`, the
+    wrapper's own `create_branch` genuinely became the attacker's
+    replacement, with the real `create_branch`'s implementation and
+    the original class object entirely untouched. Unlike rounds
+    27/34/37's disclosed bypasses, THIS one is genuinely fixable: a
+    plain instance-level `__setattr__`/`__delattr__` override
+    (below) intercepts `__class__` reassignment exactly like any
+    other instance attribute set, since it dispatches through
+    `type(obj).__setattr__` the same way -- confirmed empirically
+    that adding it blocks the exact reproduction above. This is the
+    SAME "always raise" pattern `_FrozenClassMeta` already uses one
+    level up for the class object; now also applied one level down,
+    for the instance."""
 
     __slots__ = ("__weakref__",)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError(
+            f"_ContainmentReCheckedRepositoryFacility: cannot set {name!r} on an admitted instance -- "
+            f"instance-level tampering (including __class__ reassignment) is rejected outright"
+        )
+
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError(
+            f"_ContainmentReCheckedRepositoryFacility: cannot delete {name!r} on an admitted instance -- "
+            f"instance-level tampering is rejected outright"
+        )
 
     def __init__(self, facility, transport: LocalGitRepositoryTransport) -> None:
         # Round 22 (see `_AdmittedTransportState`'s own docstring):
