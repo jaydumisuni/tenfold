@@ -1903,13 +1903,13 @@ verdict (see below) rather than a hardcoded stale expectation.
       (plus the equivalent for `facility.state`) and confirms both now
       raise `AttributeError` outright.
 
-    Fixed in commit `<pending>`, with 1 new permanent regression test
+    Fixed in commit `566d099`, with 1 new permanent regression test
     (plus 11 internal call sites and 1 test call site redirected to the
     module-private registry lookup). Full local re-verification: full
     test file (76/76), full mutation suite (37/37),
-    `test_g2_27_self_construction.py` (pending), and full repository
-    sweep (pending, only the 9 known pre-existing Windows-only
-    failures expected).
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (1372 passed, only the 9 known pre-existing Windows-only
+    failures, zero regressions).
 
 ## Real, honest end-to-end result
 
