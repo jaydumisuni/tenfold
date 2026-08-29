@@ -1705,11 +1705,11 @@ verdict (see below) rather than a hardcoded stale expectation.
       `str`-subclass attack (a genuine class with its own
       `__ne__`/`__eq__` always claiming "unchanged").
 
-    Fixed in commit `<pending>`, with 1 new permanent regression test.
+    Fixed in commit `fe2cf92`, with 1 new permanent regression test.
     Full local re-verification: full test file (72/72), full mutation
-    suite (37/37), `test_g2_27_self_construction.py` (pending), and
-    full repository sweep (pending, only the 9 known pre-existing
-    Windows-only failures expected).
+    suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1368 passed, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
 
 ## Real, honest end-to-end result
 
