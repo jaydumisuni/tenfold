@@ -1540,11 +1540,11 @@ verdict (see below) rather than a hardcoded stale expectation.
       exact class-level reassignment (and the equivalent deletion) and
       confirms both now raise `AttributeError`.
 
-    Fixed in commit `<pending>`, with 1 new permanent regression
+    Fixed in commit `27b794e`, with 1 new permanent regression
     test. Full local re-verification: full test file (70/70), full
     mutation suite (37/37), `test_g2_27_self_construction.py`
-    (pending), and full repository sweep (pending, only the 9 known
-    pre-existing Windows-only failures expected).
+    (33/33), and full repository sweep (1366 passed, only the 9
+    known pre-existing Windows-only failures, zero regressions).
 
 ## Real, honest end-to-end result
 
