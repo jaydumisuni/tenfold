@@ -1796,6 +1796,100 @@ def test_sc23_wrapper_denies_delegated_access_to_admitted_collaborators(tmp_path
         facility.state.put_receipt = lambda receipt: None
 
 
+def test_sc23_wrapper_does_not_expose_current_transport_as_a_method(tmp_path) -> None:
+    """Review finding (PR #86, round 33, P1, Codex, reproduced by the
+    reviewer -- "Stop returning the raw transport from the wrapper"):
+    `_current_transport`/`_revalidate_transport_integrity` were
+    INSTANCE METHODS -- a leading underscore does not restrict access
+    any more for a METHOD than it does for an attribute (rounds
+    30/31's own lesson, replaying here). The reviewer reproduced
+    calling `facility._current_transport()` directly, obtaining the
+    RAW transport with none of `_revalidate_transport_integrity`'s own
+    further checks ever running, then calling `create_branch` on it
+    directly. Both are now module-level FUNCTIONS taking the wrapper
+    as an explicit parameter, no longer reachable as attributes on the
+    wrapper AT ALL -- `facility._current_transport` now falls through
+    to `__getattr__`'s allowlist (round 33, CodeRabbit), which denies
+    it, since it is not `acquire_writer`/`release_writer`."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    with pytest.raises(AttributeError):
+        facility._current_transport()  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+    with pytest.raises(AttributeError):
+        facility._revalidate_transport_integrity()  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+
+def test_sc23_wrapper_open_pr_fully_revalidates_transport_value_state(tmp_path) -> None:
+    """Review finding (PR #86, round 33, P1, Codex, reproduced by the
+    reviewer -- "Fully revalidate transport state before open_pr"):
+    `open_pr`/`merge_pr` used to run only the NAME-only override check,
+    reasoning that `LocalGitRepositoryTransport`'s own real
+    `open_pull_request`/`merge_pull_request` unconditionally raise by
+    design so nothing further could matter. That reasoning was
+    INCOMPLETE: `RepositoryFacility.open_pr` calls
+    `self.transport.resolve_ref(...)` BEFORE ever reaching the
+    transport's own `open_pull_request` -- and `resolve_ref` itself
+    uses `_run`/`self._git`, which a `_git` VALUE change (round
+    20/28's finding) can compromise regardless of what the eventual
+    transport call does. All five dispatch methods now run the SAME,
+    fully comprehensive `_revalidate_transport_integrity` check, so a
+    reassigned `_git` is caught before `open_pr` ever delegates, the
+    same way it already was for `create_branch`."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    transport._git = "not-a-real-git-executable"  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        facility.open_pr(None, repository="existing", base="main", head="sc23/open-pr-reassigned-git", expected_head="0" * 40, title="t", body="b", operation_id="op-open-pr-reassigned-git", foreman_epoch=1)
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        facility.merge_pr(None, repository="existing", pr_number=1, expected_head="0" * 40, operation_id="op-merge-pr-reassigned-git", foreman_epoch=1)
+
+
+def test_sc23_wrapper_getattr_denies_unlisted_attributes_including_dunder_fallthrough(tmp_path) -> None:
+    """Review finding (PR #86, round 33, Major, CodeRabbit -- "Restrict
+    delegated attributes to an explicit allowlist"): rounds 31/32
+    built a DENY-list (`transport`/`state`/`authority_store`). The
+    reviewer's own reproduction proved a deny-list is structurally the
+    wrong shape: `wrapper.__dict__` was never on the deny list, so
+    `getattr(self, "__dict__")` fell through to `__getattr__` and
+    returned `admitted.facility.__dict__` -- the REAL `RepositoryFacility`'s
+    OWN instance dict, containing `transport`/`state`/`authority_store`
+    UNFILTERED, without ever naming a denied attribute. `__getattr__`
+    is now an ALLOWLIST (`acquire_writer`/`release_writer` only), so
+    `__dict__` -- and any other name not yet imagined -- is denied by
+    default rather than requiring it to be named in advance."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    with pytest.raises(AttributeError):
+        facility.__dict__  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+    with pytest.raises(AttributeError):
+        facility.some_never_imagined_attribute_name
+
+
 def test_sc23_wrapper_rejects_an_included_git_config(tmp_path) -> None:
     """Review finding (PR #86, round 16, P1, reproduced by the
     reviewer): the round-15 exact-byte-snapshot check is airtight

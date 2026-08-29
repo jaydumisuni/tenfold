@@ -1910,6 +1910,85 @@ verdict (see below) rather than a hardcoded stale expectation.
     `test_g2_27_self_construction.py` (33/33), and full repository
     sweep (1372 passed, only the 9 known pre-existing Windows-only
     failures, zero regressions).
+33. A fresh Codex + CodeRabbit pass against the round-32 commit
+    (`f8880cf`) found 3 further genuine findings (2 P1, Codex; 1
+    Major, CodeRabbit) -- the deepest single round of this closure
+    record's history, converging on a comprehensive restructure of the
+    wrapper's own dispatch surface:
+    - **P1 ("Stop returning the raw transport from the wrapper"),
+      Codex**: `_current_transport`/`_revalidate_transport_integrity`
+      were INSTANCE METHODS -- a leading underscore restricts access to
+      a METHOD exactly as little as it does to an ATTRIBUTE (rounds
+      30/31's own lesson, replaying here for the first time on
+      METHODS rather than attributes/slots). The reviewer reproduced
+      calling `facility._current_transport()` directly, obtaining the
+      RAW transport with NONE of `_revalidate_transport_integrity`'s
+      own further checks ever running, then invoking `create_branch`
+      on it directly -- external write, zero revalidation. **Fixed**:
+      both moved OUT of the class entirely, into MODULE-LEVEL
+      functions taking the wrapper as an explicit parameter. There is
+      no attribute named `_current_transport`/
+      `_revalidate_transport_integrity` on the wrapper AT ALL anymore,
+      so calling either now falls through to `__getattr__`'s allowlist
+      (this round's third finding, below), which correctly denies
+      both.
+    - **P1 ("Fully revalidate transport state before open_pr"),
+      Codex**: `open_pr`/`merge_pr` ran only the NAME-only override
+      check, reasoning that `LocalGitRepositoryTransport`'s own real
+      `open_pull_request`/`merge_pull_request` unconditionally raise
+      by design, so nothing further could matter. That reasoning was
+      INCOMPLETE: `RepositoryFacility.open_pr`/`merge_pr` call
+      `self.transport.resolve_ref(...)` BEFORE ever reaching the
+      transport's own `open_pull_request`/`merge_pull_request` -- and
+      `resolve_ref` itself uses `_run`/`self._git`, which a `_git`
+      VALUE change (round 20/28's finding) can compromise regardless
+      of what the eventual transport call does. The reviewer
+      reproduced a fully authorized `open_pr` invoking a replacement
+      executable during `resolve_ref`, an external side effect
+      occurring BEFORE the real local transport eventually rejected PR
+      creation. **Fixed**: rather than adding yet another
+      special-cased partial check, all FIVE dispatch methods
+      (`create_branch`/`commit`/`read`/`open_pr`/`merge_pr`) are now
+      UNIFIED onto the SAME, fully comprehensive
+      `_revalidate_transport_integrity` check -- closing the entire
+      CLASS of "we assumed a narrower risk profile for
+      open_pr/merge_pr" mistakes at once, since that assumption had
+      now been disproven twice in the SAME round (this finding and the
+      one above).
+    - **Major ("Restrict delegated attributes to an explicit
+      allowlist"), CodeRabbit**: rounds 31/32 built a DENY-list
+      (`transport`/`state`/`authority_store` -- the specific names
+      those rounds' own reviewers happened to reproduce). The
+      reviewer's own reproduction script proved a deny-list is
+      STRUCTURALLY THE WRONG SHAPE, the SAME lesson round 18 already
+      learned for the transport's own instance-attribute check
+      ("enumerating specific... names... is a losing, ever-growing
+      battle"), now replaying for `__getattr__` itself:
+      `wrapper.__dict__` was NOT on the deny list, so
+      `getattr(self, "__dict__")` fell through to `__getattr__` and
+      returned `admitted.facility.__dict__` -- the REAL
+      `RepositoryFacility`'s OWN instance dict, containing
+      `transport`/`state`/`authority_store` UNFILTERED, completely
+      bypassing the deny-list without naming any denied attribute at
+      all. **Fixed**: `__getattr__` is now an ALLOW-list
+      (`_ALLOWED_DELEGATED_ATTRIBUTES = frozenset({"acquire_writer",
+      "release_writer"})`) -- the only two names with any genuine,
+      in-codebase reason to be delegated at all (methods on
+      `RepositoryFacility` itself that never expose a raw collaborator
+      object, touching only lock bookkeeping, never the transport).
+      Every OTHER name, known or not yet discovered, is rejected by
+      default -- closing the entire class of "we forgot to deny this
+      one name" bugs at once, rather than growing the deny-list by one
+      more entry.
+
+    New permanent regression tests reproduce all three findings
+    exactly, including the `wrapper.__dict__` reproduction and an
+    arbitrary, never-imagined attribute name. Fixed in commit
+    `<pending>`, with 3 new permanent regression tests. Full local
+    re-verification: full test file (79/79), full mutation suite
+    (37/37), `test_g2_27_self_construction.py` (pending), and full
+    repository sweep (pending, only the 9 known pre-existing
+    Windows-only failures expected).
 
 ## Real, honest end-to-end result
 

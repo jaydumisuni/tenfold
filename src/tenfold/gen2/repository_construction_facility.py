@@ -1254,33 +1254,165 @@ class _FrozenClassMeta(type):
         )
 
 
+def _current_transport(wrapper: "_ContainmentReCheckedRepositoryFacility") -> LocalGitRepositoryTransport:
+    """Review finding (PR #86, round 16, P1, reproduced by the
+    reviewer): `RepositoryFacility.create_branch`/`commit` internally
+    use `self.transport` (Gen1's own, plain, mutable attribute), not
+    any static reference remembered elsewhere. The reviewer reproduced
+    reassigning the real facility's own `.transport` to an injected
+    object AFTER admission, silently redirecting every subsequent
+    mutation. This function reads `.transport` FRESH from the TRUSTED
+    facility reference and re-verifies the exact-type check against
+    whatever is CURRENTLY there -- so a swap to anything that is not a
+    genuine, unmodified `LocalGitRepositoryTransport` is rejected
+    outright.
+
+    Round 24 (P1, Codex -- "Check the facility class before reading
+    transport"): the read above is only safe once `RepositoryFacility`'s
+    own class implementation is confirmed unmodified FIRST, since a
+    class-level `__getattribute__` replacement runs the moment ANY
+    attribute is read off a genuine instance -- the reviewer reproduced
+    exactly this, with the eventual rejection coming too late to
+    prevent the side effect.
+
+    Round 25 (see `_ADMITTED_TRANSPORT_STATE`'s own docstring): this
+    function used to read `wrapper._facility.transport` -- a plain,
+    caller-mutable wrapper attribute -- purely to DISCOVER a registry
+    lookup key, which round 24's "Verify the inner facility identity
+    before delegation" finding showed was itself an attack surface (a
+    wholesale-swapped `_facility` impersonating the right shape). Now
+    that the registry is keyed by the WRAPPER itself, `_admitted_state_for(wrapper)`
+    needs no bootstrap read at all -- `admitted.facility` (the
+    immutable, registry-sourced reference) is read directly, closing
+    that entire class of attack rather than merely type-checking
+    around it.
+
+    Round 33, P1, Codex, reproduced by the reviewer -- "Stop returning
+    the raw transport from the wrapper": this was formerly an INSTANCE
+    METHOD (`wrapper._current_transport()`) -- and a leading underscore
+    is purely convention, not enforcement (the same lesson rounds 30/31
+    already established for instance ATTRIBUTES, now replaying for
+    METHODS): the reviewer reproduced calling
+    `facility._current_transport()` directly, obtaining the RAW,
+    unguarded transport with none of `_revalidate_transport_integrity`'s
+    OWN, further checks ever running. A method DEFINED ON THE CLASS is
+    always reachable via normal attribute lookup regardless of naming
+    -- `__getattr__`'s allowlist (round 33, CodeRabbit) never even gets
+    a chance to run for it, since normal lookup finds it FIRST. Moved
+    OUT of the class entirely, into this module-level function taking
+    `wrapper` as an explicit parameter: there is no attribute named
+    `_current_transport` on the wrapper AT ALL anymore, so
+    `facility._current_transport` now falls through to `__getattr__`,
+    which correctly denies it (not on the allowlist) -- the SAME
+    structural fix `__slots__` (round 25) already gave instance
+    attributes, now applied to what were previously instance methods."""
+    admitted = _admitted_state_for(wrapper)
+    _reject_altered_facility_class_implementation()
+    current = admitted.facility.transport
+    _reject_altered_transport_class_implementation()
+    if type(current) is not LocalGitRepositoryTransport:
+        raise RepositoryConstructionQualificationError(
+            f"_current_transport: facility.transport is no longer a real LocalGitRepositoryTransport "
+            f"(local-commit-only, per this identity's own admitted scope) -- got {type(current).__name__}"
+        )
+    return current
+
+
+def _revalidate_transport_integrity(wrapper: "_ContainmentReCheckedRepositoryFacility") -> "_AdmittedTransportState":
+    """Renamed from `_revalidate_before_mutation` (round 22, Codex --
+    "Revalidate delegated reads before invoking transport"): `read` is
+    not a mutation, but it still delegates through the transport's own
+    `_run` helper just like `create_branch`/`commit` do -- the reviewer
+    reproduced a class-level `_run` replacement performing an
+    out-of-repository write during a fully-authorized `read`, entirely
+    bypassing the round 14-21 checks because `read` was never wrapped
+    at all, only ever reaching `self._facility.read` via plain
+    `__getattr__` delegation. The name no longer implies "mutation
+    only."
+
+    Round 33, P1, Codex, reproduced by the reviewer -- "Fully
+    revalidate transport state before open_pr": `open_pr`/`merge_pr`
+    used to run only `_reject_instance_overridden_transport_methods`
+    (a NAME-only check), reasoning that `LocalGitRepositoryTransport`'s
+    own real `open_pull_request`/`merge_pull_request` unconditionally
+    raise by design, so nothing further could matter. That reasoning
+    was INCOMPLETE: `RepositoryFacility.open_pr`/`merge_pr` call
+    `self.transport.resolve_ref(...)` BEFORE ever reaching the
+    transport's own `open_pull_request`/`merge_pull_request` -- and
+    `resolve_ref` itself uses `_run`/`self._git`, which a `_git`
+    VALUE change (round 20/28's finding) can compromise regardless of
+    what the eventual transport call does. The reviewer reproduced a
+    fully authorized `open_pr` invoking a replacement executable during
+    `resolve_ref`, an external side effect occurring BEFORE the real
+    local transport eventually rejected PR creation. Fixed by
+    UNIFYING all five dispatch methods (`create_branch`/`commit`/
+    `read`/`open_pr`/`merge_pr`) onto this SAME, fully comprehensive
+    check -- closing the entire CLASS of "we assumed a narrower risk
+    profile for open_pr/merge_pr" mistakes at once, rather than adding
+    yet another special-cased partial check.
+
+    Also moved OUT of the class entirely (see `_current_transport`'s
+    own docstring for the identical round-33 finding this function was
+    equally exposed to, as a directly-callable instance method) into
+    this module-level function taking `wrapper` as an explicit
+    parameter -- `_current_transport`'s own class-implementation check
+    runs before ever reading `admitted.facility.transport`, and the
+    registry lookup below is keyed by `wrapper` itself (round 25),
+    which needs no such ordering care at all -- both centralized in
+    ONE place instead of duplicated at every call site."""
+    transport = _current_transport(wrapper)
+    admitted = _admitted_state_for(wrapper)
+    _reject_instance_overridden_facility_methods(admitted.facility)
+    _reject_altered_facility_collaborators(admitted.facility, admitted.established_facility_state, admitted.established_facility_authority_store)
+    # `_reject_altered_transport_instance_state`'s key-set check is a
+    # strict superset of `_reject_instance_overridden_transport_methods`
+    # (the established snapshot's own key set is always exactly
+    # `_EXPECTED_TRANSPORT_INSTANCE_ATTRIBUTES`, since it was captured
+    # only after that check already passed at admission), plus it
+    # additionally pins every attribute's VALUE -- so one call here
+    # covers both without redundancy.
+    _reject_altered_transport_instance_state(transport, admitted.instance_state)
+    _reject_symlinked_git_storage_for_every_registered_repository(transport)
+    # Performance finding (PR #86, round 14): only pay for a fresh
+    # mkdtemp + git-config subprocess spawn per registered repository
+    # when the cheap, subprocess-free check finds neutralization
+    # genuinely disturbed -- see `_hooks_neutralization_still_intact`'s
+    # own docstring. The refreshed dirs are written back into the SAME
+    # registry entry (never a wrapper attribute -- see
+    # `_AdmittedTransportState`'s own docstring for why).
+    if not _hooks_neutralization_still_intact(transport, admitted.no_hooks_dirs):
+        admitted.no_hooks_dirs = _neutralize_hooks_for_every_registered_repository(transport)
+    return admitted
+
+
 class _ContainmentReCheckedRepositoryFacility(metaclass=_FrozenClassMeta):
     """Gen2-owned, transparent wrapper around a real, unmodified
     `RepositoryFacility` -- see `gen1_wrap_repository_construction_facility`'s
     own MUTATION-TIME CONTAINMENT FINDING and ROUND 14 FOLLOW-UP
-    FINDINGS docstrings for why this exists. `state`, `authority_store`,
-    `acquire_writer`, `release_writer`, and any private attribute a
-    test harness reaches into delegate transparently via `__getattr__`
-    (these never touch the transport, so no revalidation applies).
-    `create_branch`/`commit`/`read` (round 22 -- see
-    `_revalidate_transport_integrity`'s own docstring for why `read`
-    is included despite not mutating anything) re-run the real
-    containment scan, the class- and instance-level transport-identity
-    checks, the class- and instance-level checks on the DELEGATED
-    `RepositoryFacility` itself (round 23 -- see
-    `_TRUSTED_FACILITY_CLASS_ATTRIBUTES`'s own docstring), AND
-    re-apply hook neutralization immediately before delegating;
-    `open_pr`/`merge_pr` re-run the same class- and instance-level
-    checks on both objects, minus the containment/hooks work (the only
-    ones relevant to them, since `LocalGitRepositoryTransport`'s own
-    real `open_pull_request`/`merge_pull_request` unconditionally
-    raise by design -- only a class- or instance-level override, on
-    either object, could make them do anything else). All five
-    dispatch methods delegate to `admitted.facility` (round 24 -- see
-    `_AdmittedTransportState`'s own docstring), the immutable,
-    registry-sourced `RepositoryFacility` reference, never to
-    `self._facility` directly -- `self._facility` remains in use only
-    for `__getattr__`'s delegation above.
+    FINDINGS docstrings for why this exists.
+
+    ONLY `acquire_writer`/`release_writer` delegate via `__getattr__`
+    (round 33 -- see `_ALLOWED_DELEGATED_ATTRIBUTES`'s own docstring
+    for why this is an ALLOWLIST, not a denylist): they are METHODS on
+    `RepositoryFacility` itself, never exposing a raw collaborator
+    object, and touch only lock bookkeeping, never the transport. All
+    five real dispatch methods (`create_branch`/`commit`/`read`/
+    `open_pr`/`merge_pr` -- unified as of round 33, see
+    `_revalidate_transport_integrity`'s own docstring for why
+    `open_pr`/`merge_pr` no longer get a narrower check) call the SAME
+    module-level `_revalidate_transport_integrity(self)` first, which
+    re-runs the real containment scan, the class- and instance-level
+    transport-identity checks, the class- and instance-level checks on
+    the DELEGATED `RepositoryFacility` itself (round 23 -- see
+    `_TRUSTED_FACILITY_CLASS_ATTRIBUTES`'s own docstring), the
+    collaborator-identity pin (round 29), AND re-applies hook
+    neutralization, before delegating to `admitted.facility` (round 24
+    -- see `_AdmittedTransportState`'s own docstring), the immutable,
+    registry-sourced `RepositoryFacility` reference. `_current_transport`/
+    `_revalidate_transport_integrity` themselves are module-level
+    FUNCTIONS, not methods on this class (round 33 -- see
+    `_current_transport`'s own docstring for why a leading underscore
+    on a METHOD is exactly as unenforced as it is on an attribute).
 
     Review finding (PR #86, round 25, P1, Codex, reproduced by the
     reviewer -- "Seal the returned wrapper's own dispatch methods"):
@@ -1403,190 +1535,62 @@ class _ContainmentReCheckedRepositoryFacility(metaclass=_FrozenClassMeta):
         # constructor.
         pass
 
-    #: Round 32 (see this class's own docstring -- "Seal admitted
-    #: collaborators instead of checking identity"): `state` was added
-    #: here alongside `transport` because round 29's IDENTITY pin
-    #: (`_reject_altered_facility_collaborators`) only detects a
-    #: REFERENCE swap -- it says nothing about the SAME, genuinely
-    #: admitted object having its OWN methods reassigned in place
-    #: (`facility.authority_store.read = malicious_fn`), which this
-    #: name's own delegation made reachable. `authority_store` was
-    #: ALREADY effectively unreachable for any legitimate purpose (see
-    #: this module's own grep-confirmed audit: not one real call site
-    #: anywhere in this codebase ever read `facility.authority_store`)
-    #: -- only `state` had genuine, in-module callers, all of them
-    #: `RepositoryConstructionPropertyQualificationHarness`'s own
-    #: internal scenarios, now redirected to `_admitted_state_for(...)
-    #: .facility.state` directly (this module's own trusted internals
-    #: reaching the registry the same way `__getattr__` itself does,
-    #: rather than through the now-denied public delegation path).
-    _DENIED_DELEGATED_ATTRIBUTES = frozenset({"transport", "state", "authority_store"})
+    #: Review finding (PR #86, round 33, Major, CodeRabbit -- "Restrict
+    #: delegated attributes to an explicit allowlist"): rounds 31/32
+    #: built a DENY-list (`transport`/`state`/`authority_store` -- the
+    #: SPECIFIC names those two rounds' reviewers happened to
+    #: reproduce). The reviewer's own reproduction script proved a
+    #: deny-list is STRUCTURALLY THE WRONG SHAPE, the same lesson round
+    #: 18 already learned for the transport's own instance-attribute
+    #: check ("enumerating specific... names... is a losing,
+    #: ever-growing battle"): `wrapper.__dict__` was NOT on the deny
+    #: list, so `getattr(self, "__dict__")` fell through to
+    #: `__getattr__` and returned `admitted.facility.__dict__` -- the
+    #: REAL `RepositoryFacility`'s OWN instance dict, containing
+    #: `transport`/`state`/`authority_store` UNFILTERED, completely
+    #: bypassing the deny-list without naming any denied attribute at
+    #: all. Only TWO names have any genuine, in-codebase reason to be
+    #: delegated at all -- `acquire_writer`/`release_writer`, METHODS on
+    #: `RepositoryFacility` ITSELF that never expose a raw collaborator
+    #: object and touch only lock bookkeeping, never the transport --
+    #: so this is now an ALLOW-list instead: every OTHER name, known or
+    #: not yet discovered, is rejected by default.
+    _ALLOWED_DELEGATED_ATTRIBUTES = frozenset({"acquire_writer", "release_writer"})
 
     def __getattr__(self, name):
-        # Round 31, P1, Codex ("Block delegated access to the raw
-        # transport"): blind delegation to the real facility handed
-        # out `facility.transport` unguarded -- `RepositoryFacility`
-        # (Gen1's own class) exposes `transport` as a PUBLIC,
-        # unprefixed attribute, and this method previously forwarded
-        # ANY missing name straight through to it. The reviewer
-        # reproduced calling `facility.transport.create_branch(...)`
-        # directly, identical in effect to round 30's
-        # `facility._transport` leak.
-        #
-        # Round 32, P1, Codex ("Seal admitted collaborators instead of
-        # checking identity"): round 29's identity pin only catches a
-        # SWAPPED `state`/`authority_store` reference -- the SAME,
-        # genuinely admitted object can still have ITS OWN methods
-        # reassigned in place once a caller can reach it at all. The
-        # reviewer reproduced `facility.authority_store.read = malicious_fn`:
-        # since `admitted.facility.authority_store IS established_authority_store`
-        # never changed (the object itself was never swapped, only
-        # mutated), round 29's `is` check kept passing while the
-        # malicious callback ran mid-`create_branch`, moving
-        # `.git/refs/heads` externally and installing a symlink before
-        # the actual git mutation. `state`/`authority_store` are now
-        # denied the SAME way `transport` is -- there being no
-        # legitimate reason for an EXTERNAL caller to reach either raw
-        # collaborator at all (confirmed by grepping every real call
-        # site in this codebase; see `_DENIED_DELEGATED_ATTRIBUTES`'s
-        # own docstring).
-        if name in self._DENIED_DELEGATED_ATTRIBUTES:
+        if name not in self._ALLOWED_DELEGATED_ATTRIBUTES:
             raise AttributeError(
-                f"_ContainmentReCheckedRepositoryFacility.{name}: direct access to this collaborator is "
-                f"denied -- use create_branch/commit/read/open_pr/merge_pr instead, which revalidate before delegating"
+                f"_ContainmentReCheckedRepositoryFacility.{name}: this attribute is not delegated -- "
+                f"use create_branch/commit/read/open_pr/merge_pr instead, which revalidate before delegating"
             )
         return getattr(_admitted_state_for(self).facility, name)
-
-    def _current_transport(self) -> LocalGitRepositoryTransport:
-        # Review finding (PR #86, round 16, P1, reproduced by the
-        # reviewer): `RepositoryFacility.create_branch`/`commit`
-        # internally use `self.transport` (Gen1's own, plain, mutable
-        # attribute), not any static reference remembered elsewhere.
-        # The reviewer reproduced reassigning the real facility's own
-        # `.transport` to an injected object AFTER admission, silently
-        # redirecting every subsequent mutation. This method reads
-        # `.transport` FRESH from the TRUSTED facility reference and
-        # re-verifies the exact-type check against whatever is
-        # CURRENTLY there -- so a swap to anything that is not a
-        # genuine, unmodified `LocalGitRepositoryTransport` is rejected
-        # outright.
-        #
-        # Round 24 (P1, Codex -- "Check the facility class before
-        # reading transport"): the read above is only safe once
-        # `RepositoryFacility`'s own class implementation is confirmed
-        # unmodified FIRST, since a class-level `__getattribute__`
-        # replacement runs the moment ANY attribute is read off a
-        # genuine instance -- the reviewer reproduced exactly this,
-        # with the eventual rejection coming too late to prevent the
-        # side effect.
-        #
-        # Round 25 (see `_ADMITTED_TRANSPORT_STATE`'s own docstring):
-        # this method used to read `self._facility.transport` -- a
-        # plain, caller-mutable wrapper attribute -- purely to
-        # DISCOVER a registry lookup key, which round 24's "Verify the
-        # inner facility identity before delegation" finding showed was
-        # itself an attack surface (a wholesale-swapped `self._facility`
-        # impersonating the right shape). Now that the registry is
-        # keyed by THIS WRAPPER (`self`) rather than by transport,
-        # `_admitted_state_for(self)` needs no bootstrap read at all --
-        # `admitted.facility` (the immutable, registry-sourced
-        # reference) is read directly instead of `self._facility`,
-        # closing that entire class of attack rather than merely
-        # type-checking around it.
-        # Every OTHER call site in this class now goes through THIS
-        # method rather than duplicating the ordering invariant itself.
-        admitted = _admitted_state_for(self)
-        _reject_altered_facility_class_implementation()
-        current = admitted.facility.transport
-        _reject_altered_transport_class_implementation()
-        if type(current) is not LocalGitRepositoryTransport:
-            raise RepositoryConstructionQualificationError(
-                f"_current_transport: facility.transport is no longer a real LocalGitRepositoryTransport "
-                f"(local-commit-only, per this identity's own admitted scope) -- got {type(current).__name__}"
-            )
-        # Round 30 (see this class's own docstring): NOT cached onto
-        # `self._transport` anymore -- that was itself the finding.
-        # `current` is returned directly; every caller already treats
-        # it as a fresh, per-call value, so nothing relied on this
-        # caching in the first place (confirmed empirically: no code
-        # anywhere in this module ever read `self._transport` back).
-        return current
-
-    def _revalidate_transport_integrity(self) -> "_AdmittedTransportState":
-        # Renamed from `_revalidate_before_mutation` (round 22,
-        # Codex -- "Revalidate delegated reads before invoking
-        # transport"): `read` is not a mutation, but it still
-        # delegates through the transport's own `_run` helper just
-        # like `create_branch`/`commit` do -- the reviewer reproduced
-        # a class-level `_run` replacement performing an
-        # out-of-repository write during a fully-authorized `read`,
-        # entirely bypassing the round 14-21 checks because `read` was
-        # never wrapped at all, only ever reaching `self._facility.read`
-        # via plain `__getattr__` delegation. The name no longer
-        # implies "mutation only."
-        #
-        # Round 24/25: `_current_transport` internally runs the
-        # facility-class-implementation check before ever reading
-        # `admitted.facility.transport`, and the registry lookup below
-        # is keyed by `self` (round 25), which needs no such ordering
-        # care at all (see `_ADMITTED_TRANSPORT_STATE`'s own docstring)
-        # -- both centralized in ONE place instead of duplicated at
-        # every call site.
-        transport = self._current_transport()
-        admitted = _admitted_state_for(self)
-        _reject_instance_overridden_facility_methods(admitted.facility)
-        _reject_altered_facility_collaborators(admitted.facility, admitted.established_facility_state, admitted.established_facility_authority_store)
-        # `_reject_altered_transport_instance_state`'s key-set check is
-        # a strict superset of `_reject_instance_overridden_transport_methods`
-        # (the established snapshot's own key set is always exactly
-        # `_EXPECTED_TRANSPORT_INSTANCE_ATTRIBUTES`, since it was
-        # captured only after that check already passed at admission),
-        # plus it additionally pins every attribute's VALUE -- so one
-        # call here covers both without redundancy.
-        _reject_altered_transport_instance_state(transport, admitted.instance_state)
-        _reject_symlinked_git_storage_for_every_registered_repository(transport)
-        # Performance finding (PR #86, round 14): only pay for a fresh
-        # mkdtemp + git-config subprocess spawn per registered
-        # repository when the cheap, subprocess-free check finds
-        # neutralization genuinely disturbed -- see
-        # `_hooks_neutralization_still_intact`'s own docstring. The
-        # refreshed dirs are written back into the SAME registry entry
-        # (never a `self.` attribute -- see `_AdmittedTransportState`'s
-        # own docstring for why).
-        if not _hooks_neutralization_still_intact(transport, admitted.no_hooks_dirs):
-            admitted.no_hooks_dirs = _neutralize_hooks_for_every_registered_repository(transport)
-        return admitted
 
     def create_branch(self, *args, **kwargs):
         # Round 24 (see `_AdmittedTransportState`'s own docstring):
         # delegates to `admitted.facility` -- the immutable,
         # registry-sourced reference -- never to `self._facility`,
-        # which a caller can freely reassign.
-        admitted = self._revalidate_transport_integrity()
+        # which a caller can freely reassign. Round 33 (see
+        # `_revalidate_transport_integrity`'s own docstring): all FIVE
+        # dispatch methods now call the SAME, fully comprehensive
+        # check, unifying what used to be a narrower check for
+        # `open_pr`/`merge_pr`.
+        admitted = _revalidate_transport_integrity(self)
         return admitted.facility.create_branch(*args, **kwargs)
 
     def commit(self, *args, **kwargs):
-        admitted = self._revalidate_transport_integrity()
+        admitted = _revalidate_transport_integrity(self)
         return admitted.facility.commit(*args, **kwargs)
 
     def read(self, *args, **kwargs):
-        admitted = self._revalidate_transport_integrity()
+        admitted = _revalidate_transport_integrity(self)
         return admitted.facility.read(*args, **kwargs)
 
     def open_pr(self, *args, **kwargs):
-        transport = self._current_transport()
-        admitted = _admitted_state_for(self)
-        _reject_instance_overridden_transport_methods(transport)
-        _reject_instance_overridden_facility_methods(admitted.facility)
-        _reject_altered_facility_collaborators(admitted.facility, admitted.established_facility_state, admitted.established_facility_authority_store)
+        admitted = _revalidate_transport_integrity(self)
         return admitted.facility.open_pr(*args, **kwargs)
 
     def merge_pr(self, *args, **kwargs):
-        transport = self._current_transport()
-        admitted = _admitted_state_for(self)
-        _reject_instance_overridden_transport_methods(transport)
-        _reject_instance_overridden_facility_methods(admitted.facility)
-        _reject_altered_facility_collaborators(admitted.facility, admitted.established_facility_state, admitted.established_facility_authority_store)
+        admitted = _revalidate_transport_integrity(self)
         return admitted.facility.merge_pr(*args, **kwargs)
 
 
