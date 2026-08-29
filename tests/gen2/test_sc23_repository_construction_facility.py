@@ -1406,7 +1406,37 @@ def test_sc23_wrapper_admission_state_is_independent_across_repeated_admissions(
     # must keep its OWN, independently-registered facility, never
     # silently sharing (or being overwritten by) the other's.
     assert first_admitted.facility is not second_admitted.facility
-    assert first_admitted is not second_admitted
+
+
+def test_sc23_wrapper_rejects_a_class_level_rebound_dispatch_method(tmp_path) -> None:
+    """Review finding (PR #86, round 26, P1, Codex, reproduced by the
+    reviewer -- "Seal the wrapper class dispatch surface"): `__slots__`
+    (round 25) only blocks INSTANCE-level shadowing --
+    `type(facility).create_branch = malicious_fn` rebinds the method on
+    the CLASS itself, reachable from ANY caller holding `facility` via
+    the built-in `type()`, no import needed at all -- disproving this
+    module's own earlier "requires importing the private class"
+    reasoning. The reviewer reproduced this class-level replacement
+    writing outside the repository and returning an injected success
+    result without running any containment, transport-integrity,
+    authority, or lease check at all. A metaclass (`_FrozenClassMeta`)
+    now makes the class object itself reject any attribute assignment
+    or deletion after it is defined, so the reassignment attempt raises
+    `AttributeError` outright, before ever taking effect."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    with pytest.raises(AttributeError):
+        type(facility).create_branch = lambda self, *args, **kwargs: "0" * 40  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+    with pytest.raises(AttributeError):
+        del type(facility).create_branch
 
 
 def test_sc23_wrapper_rejects_a_reassigned_repository_registration(tmp_path) -> None:

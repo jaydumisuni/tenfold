@@ -1001,7 +1001,52 @@ def _admitted_state_for(wrapper: "_ContainmentReCheckedRepositoryFacility") -> _
     return admitted
 
 
-class _ContainmentReCheckedRepositoryFacility:
+class _FrozenClassMeta(type):
+    """Review finding (PR #86, round 26, P1, Codex, reproduced by the
+    reviewer -- "Seal the wrapper class dispatch surface"): round 25's
+    `__slots__` fix blocks INSTANCE-level shadowing
+    (`facility.create_branch = malicious_fn`) but does nothing to stop
+    CLASS-level rebinding -- `type(facility).create_branch = malicious_fn`
+    reaches the SAME class object every instance shares, and Python
+    classes are, by default, fully mutable from the outside. The
+    reviewer correctly disproved this file's own earlier reasoning
+    (that class-level tampering "would require importing this module
+    directly," the disclosed-limitation boundary every OTHER
+    class-level check in this file relies on): `type(facility)` hands
+    ANY caller merely holding the returned wrapper a direct class
+    reference, no import needed at all -- a fundamentally weaker,
+    more available attack than the one that boundary was drawn around.
+
+    Unlike `LocalGitRepositoryTransport`/`RepositoryFacility` (Gen1-owned
+    classes this module cannot modify, where a REACTIVE
+    snapshot-comparison check -- `_reject_altered_class_implementation`
+    -- is the best available option, run by THIS wrapper's own code
+    before delegating to them), `_ContainmentReCheckedRepositoryFacility`
+    is THIS module's OWN class. A reactive check could never have
+    worked here regardless: if `create_branch` itself were
+    successfully replaced, no code inside it would ever run to notice
+    -- the same "no hook point from within" problem round 25 already
+    identified for instance-level shadowing, replaying one level up.
+    Since this class is Gen2-owned, a PROACTIVE, structural fix is
+    possible instead: this metaclass makes the class object itself
+    reject any attribute assignment or deletion after it is defined,
+    closing the entire class of attack at the language level, the same
+    kind of guarantee `__slots__` already gives at the instance level."""
+
+    def __setattr__(cls, name, value):
+        raise AttributeError(
+            f"cannot reassign {name!r} on frozen class {cls.__name__} -- "
+            f"class-level tampering is rejected outright, not merely detected"
+        )
+
+    def __delattr__(cls, name):
+        raise AttributeError(
+            f"cannot delete {name!r} on frozen class {cls.__name__} -- "
+            f"class-level tampering is rejected outright, not merely detected"
+        )
+
+
+class _ContainmentReCheckedRepositoryFacility(metaclass=_FrozenClassMeta):
     """Gen2-owned, transparent wrapper around a real, unmodified
     `RepositoryFacility` -- see `gen1_wrap_repository_construction_facility`'s
     own MUTATION-TIME CONTAINMENT FINDING and ROUND 14 FOLLOW-UP
@@ -1050,7 +1095,18 @@ class _ContainmentReCheckedRepositoryFacility:
     '_ContainmentReCheckedRepositoryFacility' object`), `facility.create_branch
     = malicious_fn` raises `AttributeError` outright -- there is no
     dict for such an override to live in, and slots reserve storage
-    only for the names actually declared."""
+    only for the names actually declared.
+
+    Review finding (PR #86, round 26, P1, Codex, reproduced by the
+    reviewer -- "Seal the wrapper class dispatch surface"): `__slots__`
+    only blocks INSTANCE-level shadowing -- `type(facility).create_branch
+    = malicious_fn` rebinds the method on the CLASS itself, reachable
+    from ANY caller holding `facility` via the built-in `type()`, no
+    import required. See `_FrozenClassMeta`'s own docstring for the
+    metaclass-based fix (`metaclass=_FrozenClassMeta` above), which
+    makes such a reassignment raise `AttributeError` at the attempt,
+    the same language-level guarantee `__slots__` gives at the
+    instance level, now also at the class level."""
 
     __slots__ = ("_facility", "_transport", "__weakref__")
 

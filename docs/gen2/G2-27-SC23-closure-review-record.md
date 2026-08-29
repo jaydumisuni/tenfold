@@ -1502,6 +1502,49 @@ verdict (see below) rather than a hardcoded stale expectation.
     `test_g2_27_self_construction.py` (33/33), and full repository
     sweep (1365 passed, only the 9 known pre-existing Windows-only
     failures, zero regressions).
+26. A fresh Codex pass against the round-25 commit (`f585a94`) found 1
+    further genuine P1 finding:
+    - **P1 ("Seal the wrapper class dispatch surface"), Codex**:
+      round 25's `__slots__` fix blocks INSTANCE-level shadowing, but
+      does nothing to stop CLASS-level rebinding --
+      `type(facility).create_branch = malicious_fn` rebinds the method
+      on the CLASS itself, which every instance shares, and Python
+      classes are fully mutable from the outside by default. The
+      reviewer reproduced this class-level replacement writing outside
+      the repository and returning an injected success result without
+      running any containment, transport-integrity, authority, or
+      lease check at all. Critically, the reviewer ALSO disproved this
+      closure record's own earlier reasoning: prior rounds treated
+      class-level tampering of a class this module owns as requiring
+      "importing this module directly and reaching into its own
+      private globals" (the same disclosed-limitation boundary used
+      for the Gen1-owned `LocalGitRepositoryTransport`/`RepositoryFacility`
+      class checks) -- but `type(facility)` hands ANY caller merely
+      holding the returned `facility` object a direct class reference,
+      no import required at all. That reasoning was WRONG for a
+      Gen2-owned class, even though it correctly describes the
+      Gen1-owned classes' own, different threat boundary. **Fixed**:
+      since `_ContainmentReCheckedRepositoryFacility` is THIS module's
+      OWN class (unlike the Gen1-owned ones, where a REACTIVE
+      snapshot-comparison check is the best available option), a
+      PROACTIVE, structural fix is possible instead -- a new metaclass
+      (`_FrozenClassMeta`) makes the class object itself reject any
+      attribute assignment or deletion after it is defined, closing
+      the entire class of attack at the language level, the same kind
+      of guarantee `__slots__` already gives at the instance level
+      (and the only kind of fix that COULD have worked here: a
+      reactive check inside `create_branch` could never catch its own
+      replacement, since if that replacement succeeded, the real
+      method's own code -- including any check inside it -- would
+      simply never run). New permanent regression test reproduces the
+      exact class-level reassignment (and the equivalent deletion) and
+      confirms both now raise `AttributeError`.
+
+    Fixed in commit `<pending>`, with 1 new permanent regression
+    test. Full local re-verification: full test file (70/70), full
+    mutation suite (37/37), `test_g2_27_self_construction.py`
+    (pending), and full repository sweep (pending, only the 9 known
+    pre-existing Windows-only failures expected).
 
 ## Real, honest end-to-end result
 
