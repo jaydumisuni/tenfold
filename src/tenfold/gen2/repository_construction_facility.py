@@ -1339,44 +1339,93 @@ class _ContainmentReCheckedRepositoryFacility(metaclass=_FrozenClassMeta):
     raises `AttributeError` outright, closing this the same
     comprehensive way round 25's `__slots__` fix closed instance-level
     method shadowing: not by hiding a value better, but by genuinely
-    having nothing left to hide."""
+    having nothing left to hide.
 
-    __slots__ = ("__weakref__", "_facility")
+    Review finding (PR #86, round 31, P1, Codex, reproduced by the
+    reviewer -- "Block delegated access to the raw transport"): round
+    30 closed `facility._transport`, but missed the TWO remaining,
+    equally direct paths to the SAME raw object -- `_facility` was
+    ITSELF still a declared slot, so `facility._facility` was directly
+    readable (slots are never "private," underscore naming is purely
+    convention, not enforcement -- this is precisely how every round
+    22-30 regression TEST in this file reaches in to plant its own
+    attack in the first place, a capability this closure record never
+    connected to also being a genuine, unprivileged caller's escape
+    hatch), handing out the WHOLE inner `RepositoryFacility` -- its own
+    real, entirely unguarded `create_branch`/`commit`/`read`/`open_pr`/
+    `merge_pr` methods included, none of which carry ANY of this
+    module's containment/hooks/authority checks. And even without
+    `_facility` directly, `__getattr__`'s blanket delegation exposed
+    `facility.transport` too, since `RepositoryFacility` (Gen1's own
+    class) itself exposes `transport` as a PUBLIC, unprefixed
+    attribute -- the reviewer reproduced calling
+    `facility.transport.create_branch(...)` directly, identical in
+    effect to round 30's `facility._transport` leak. **Fixed,
+    comprehensively rather than by naming individual leaks**: `_facility`
+    is removed from `__slots__` entirely (mirroring round 30's own
+    `_transport` removal) -- the wrapper instance now carries NO
+    attribute at all beyond `__weakref__`, with EVERY piece of real
+    state living only in the module-private, wrapper-keyed
+    `_ADMITTED_TRANSPORT_STATE` registry. `__getattr__` now reads
+    `_admitted_state_for(self).facility` (never a `self.` attribute)
+    for its delegation target, AND explicitly denies `"transport"`
+    outright -- the one Gen1-exposed name that would otherwise still
+    leak the raw object through this same delegation path.
+    `state`/`authority_store` remain delegated (their own methods stay
+    non-git-mutating, the same already-disclosed scope every prior
+    round accepted), and `facility._facility` now correctly raises
+    `AttributeError`, since `getattr(admitted.facility, "_facility")`
+    finds nothing -- `RepositoryFacility` has no such attribute on
+    itself."""
+
+    __slots__ = ("__weakref__",)
 
     def __init__(self, facility, transport: LocalGitRepositoryTransport) -> None:
-        # `facility` deliberately left untyped: an explicit
-        # `RepositoryFacility` annotation here would itself be an
-        # undisclosed live-Gen1-authority reference under the residual
-        # dependency scan (`derive_residual_gen1_dependency_report`) --
-        # `__init__` carries no "gen1_" marker and delegation happens
-        # entirely through `self._facility`, not this parameter's own
-        # type, so the annotation would add nothing but a scanner
-        # finding. Matches the same established pattern
-        # `gen1_wrap_repository_construction_facility` itself already
-        # uses for its own caller-injected parameters.
-        #
         # Round 22 (see `_AdmittedTransportState`'s own docstring):
         # `established_no_hooks_dirs`/`established_instance_state` are
-        # deliberately NOT stored here anymore -- any attribute on
-        # `self` is reachable (and mutable) by any caller holding this
-        # object, which is exactly what let the round-22 finding
-        # poison the trusted baseline. Both now live only in the
-        # module-private `_ADMITTED_TRANSPORT_STATE` registry,
-        # populated by `gen1_wrap_repository_construction_facility`
-        # before this wrapper is ever constructed.
+        # deliberately NOT stored here -- any attribute on `self` is
+        # reachable (and mutable) by any caller holding this object,
+        # which is exactly what let the round-22 finding poison the
+        # trusted baseline. They live only in the module-private
+        # `_ADMITTED_TRANSPORT_STATE` registry, populated by
+        # `gen1_wrap_repository_construction_facility` before this
+        # wrapper is ever constructed.
         #
-        # Round 30 (see this class's own docstring): `transport` is no
-        # longer stored on `self` at all -- see `_current_transport`'s
-        # own docstring for why keeping it, even privately, was itself
-        # the round-30 finding. The parameter stays, unused within
-        # `__init__` itself, only because
-        # `gen1_wrap_repository_construction_facility` already passes
-        # it positionally and changing that call site's arity is not
-        # otherwise warranted.
-        self._facility = facility
+        # Round 30/31 (see this class's own docstring): `transport` and
+        # `facility` are, likewise, no longer stored on `self` AT ALL
+        # -- `self` carries no instance attribute whatsoever beyond the
+        # `__weakref__` slot `__slots__` itself requires. Both
+        # parameters stay, unused within `__init__` itself, only
+        # because `gen1_wrap_repository_construction_facility` already
+        # passes them positionally and changing that call site's arity
+        # is not otherwise warranted; `facility` is registered directly
+        # into `_ADMITTED_TRANSPORT_STATE` by the caller, not by this
+        # constructor.
+        pass
 
     def __getattr__(self, name):
-        return getattr(self._facility, name)
+        # Round 31, P1, Codex (see this class's own docstring --
+        # "Block delegated access to the raw transport"): blind
+        # delegation to the real facility handed out `facility.transport`
+        # unguarded -- `RepositoryFacility` (Gen1's own class) exposes
+        # `transport` as a PUBLIC, unprefixed attribute, and this
+        # method previously forwarded ANY missing name straight
+        # through to it. The reviewer reproduced calling
+        # `facility.transport.create_branch(...)` directly, identical
+        # in effect to round 30's `facility._transport` leak. `transport`
+        # is now denied outright; every LEGITIMATE mutating or reading
+        # operation already goes through this wrapper's own explicitly
+        # checked dispatch methods (`create_branch`/`commit`/`read`/
+        # `open_pr`/`merge_pr`), none of which need `facility.transport`
+        # as a caller-facing attribute at all. `state`/`authority_store`
+        # remain delegated -- their own methods stay non-git-mutating,
+        # the same already-disclosed scope every prior round accepted.
+        if name == "transport":
+            raise AttributeError(
+                "_ContainmentReCheckedRepositoryFacility.transport: direct access to the raw transport is "
+                "denied -- use create_branch/commit/read/open_pr/merge_pr instead, which revalidate before delegating"
+            )
+        return getattr(_admitted_state_for(self).facility, name)
 
     def _current_transport(self) -> LocalGitRepositoryTransport:
         # Review finding (PR #86, round 16, P1, reproduced by the

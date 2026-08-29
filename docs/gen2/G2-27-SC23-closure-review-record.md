@@ -1800,6 +1800,62 @@ verdict (see below) rather than a hardcoded stale expectation.
     suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
     repository sweep (1370 passed, only the 9 known pre-existing
     Windows-only failures, zero regressions).
+31. A fresh Codex pass against the round-30 commit (`c7b0bdb`) found 1
+    further genuine P1 finding, revealing that round 30's own fix
+    (removing `_transport`) had been narrower than it needed to be:
+    - **P1 ("Block delegated access to the raw transport"), Codex**:
+      `_facility` was ITSELF still a declared slot -- directly
+      readable via `facility._facility`, since slots are never
+      "private," underscore naming is purely convention, not
+      enforcement. This is, notably, the EXACT mechanism every one of
+      this closure record's OWN round 22-30 regression tests already
+      used to plant its attacks (`facility._facility.xxx = malicious`)
+      -- six straight rounds relied on this access path as a
+      test-only introspection tool without ever connecting it to also
+      being a live, unprivileged caller's escape hatch. Reaching
+      `facility._facility` handed out the WHOLE inner
+      `RepositoryFacility`, its own real, entirely unguarded
+      `create_branch`/`commit`/`read`/`open_pr`/`merge_pr` methods
+      included, none of which carry ANY of this module's
+      containment/hooks/authority checks. And even without
+      `_facility` directly, `__getattr__`'s blanket delegation exposed
+      `facility.transport` too, since `RepositoryFacility` (Gen1's own
+      class) itself exposes `transport` as a PUBLIC, unprefixed
+      attribute -- the reviewer reproduced calling
+      `facility.transport.create_branch(...)` directly, identical in
+      effect to round 30's `facility._transport` leak, just reached
+      through the surviving `_facility` slot instead of the removed
+      `_transport` one. **Fixed, comprehensively rather than by naming
+      individual leaks**: `_facility` is removed from `__slots__`
+      entirely (mirroring round 30's own `_transport` removal) -- the
+      wrapper instance now carries NO attribute at all beyond
+      `__weakref__`, with EVERY piece of real state living only in the
+      module-private, wrapper-keyed `_ADMITTED_TRANSPORT_STATE`
+      registry. `__getattr__` now reads
+      `_admitted_state_for(self).facility` for its delegation target
+      (never a `self.` attribute), AND explicitly denies `"transport"`
+      outright. `state`/`authority_store` remain delegated -- their
+      own methods stay non-git-mutating, the same already-disclosed
+      scope every prior round accepted. This also retired the
+      underlying attack surface for FOUR existing regression tests
+      (rounds 16, 23, 24, 29), which all used `facility._facility`
+      directly as their own setup mechanism -- updated to reach the
+      inner facility via `_admitted_state_for`, the same module-private
+      function the code itself now uses; round 24's own test was
+      further rewritten to assert the wholesale-swap ATTEMPT is now
+      structurally IMPOSSIBLE (an `AttributeError` at the assignment
+      itself), not merely ineffective as round 25 had already
+      established. New permanent regression test reproduces the exact
+      `facility.transport` and `facility._facility` calls and confirms
+      both now raise `AttributeError`.
+
+    Fixed in commit `<pending>`, with 1 new permanent regression test
+    (plus 4 existing tests updated to use the module-private lookup
+    the code itself now relies on). Full local re-verification: full
+    test file (75/75), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (pending), and full repository
+    sweep (pending, only the 9 known pre-existing Windows-only
+    failures expected).
 
 ## Real, honest end-to-end result
 

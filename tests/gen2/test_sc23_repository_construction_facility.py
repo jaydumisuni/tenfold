@@ -1183,8 +1183,15 @@ def test_sc23_wrapper_rejects_an_instance_overridden_facility_method(tmp_path) -
     touches the transport at all), and the injected method ran
     instead of the real one, skipping Gen1's own authority/lease/
     request-binding checks entirely. `RepositoryFacility` now gets the
-    same instance-attribute allowlist as the transport."""
-    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    same instance-attribute allowlist as the transport.
+
+    Review finding (PR #86, round 31, P1, Codex): `facility._facility`
+    is no longer reachable via the wrapper at all (see
+    `_ContainmentReCheckedRepositoryFacility`'s own docstring) -- this
+    test now reaches the inner facility the same way the module's own
+    internals do, via `_admitted_state_for`, matching this file's
+    established test-only-introspection pattern."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _admitted_state_for, _empty_snapshot
     from tenfold.local_git_transport import LocalGitRepositoryTransport
 
     repo_root = tmp_path / "existing-repo"
@@ -1193,7 +1200,7 @@ def test_sc23_wrapper_rejects_an_instance_overridden_facility_method(tmp_path) -
     transport = LocalGitRepositoryTransport({"existing": repo_root})
     facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
 
-    facility._facility.create_branch = lambda *args, **kwargs: "0" * 40  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+    _admitted_state_for(facility).facility.create_branch = lambda *args, **kwargs: "0" * 40  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
 
     with pytest.raises(RepositoryConstructionQualificationError):
         facility.create_branch(None, repository="existing", branch="sc23/shadowed-inner-facility", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-shadowed-inner-facility", foreman_epoch=1)
@@ -1243,27 +1250,21 @@ def test_sc23_wrapper_ignores_a_wholesale_replaced_inner_facility(rig) -> None:
     dispatch method now delegates to the immutable, registry-sourced
     `admitted.facility` rather than `self._facility` at all, so a
     same-shaped impersonator is not merely rejected -- it is never
-    consulted in the first place. Proven here by a REAL, fully-
-    authorized `create_branch` genuinely SUCCEEDING via the real,
-    admitted facility despite `self._facility` being swapped to the
-    impersonator (which, if it had been used instead, would have
-    returned its own fabricated `"0" * 40` result without ever
-    touching a real task -- rather than requiring one, the way the
-    real `RepositoryFacility.create_branch` does)."""
-    class _ImpersonatorFacility:
-        """Matches the round-23 name allowlist's SHAPE exactly, but is
-        not, and never was, a real RepositoryFacility."""
+    consulted in the first place.
 
-        def __init__(self, transport, state, authority_store):
-            self.transport = transport
-            self.state = state
-            self.authority_store = authority_store
+    Round 31 (see `_ContainmentReCheckedRepositoryFacility`'s own
+    docstring -- "Block delegated access to the raw transport"):
+    `_facility` was removed from `__slots__` entirely, so the
+    reviewer's ORIGINAL attack (`self._facility = impersonator`) is no
+    longer merely INEFFECTIVE, as round 25 already established -- it
+    is now structurally IMPOSSIBLE: the wrapper has no slot to swap at
+    all, and the assignment itself raises `AttributeError` before ever
+    reaching a create_branch call."""
+    with pytest.raises(AttributeError):
+        rig.facility._facility = object()  # noqa: SLF001 -- test-only, reproducing the reviewer's original round-24 attack attempt
 
-        def create_branch(self, *args, **kwargs):
-            return "0" * 40
-
-    rig.facility._facility = _ImpersonatorFacility(rig.transport, object(), object())  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
-
+    # The genuinely admitted facility remains fully, unaffectedly
+    # functional -- confirming the attempt above changed nothing.
     receipt = _real_create_branch_on_rig(rig, branch="sc23/impersonator-facility", operation_id="op-impersonator-facility")
     assert receipt is not None
 
@@ -1637,8 +1638,14 @@ def test_sc23_wrapper_rejects_a_reassigned_facility_authority_store(tmp_path) ->
     `authority_store` are now pinned by IDENTITY (never reassignable
     after admission), checked BEFORE every delegating call, so the
     swap itself is rejected before the malicious collaborator's
-    callback ever gets a chance to run."""
-    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    callback ever gets a chance to run.
+
+    Review finding (PR #86, round 31, P1, Codex): `facility._facility`
+    is no longer reachable via the wrapper at all -- this test now
+    reaches the inner facility via `_admitted_state_for`, the same way
+    the module's own internals do, matching this file's established
+    test-only-introspection pattern."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _admitted_state_for, _empty_snapshot
     from tenfold.local_git_transport import LocalGitRepositoryTransport
 
     repo_root = tmp_path / "existing-repo"
@@ -1666,7 +1673,7 @@ def test_sc23_wrapper_rejects_a_reassigned_facility_authority_store(tmp_path) ->
             heads_dir.symlink_to(external, target_is_directory=True)
             return real_authority_store.read(campaign_id)
 
-    facility._facility.authority_store = _MaliciousAuthorityStore()  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+    _admitted_state_for(facility).facility.authority_store = _MaliciousAuthorityStore()  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
 
     with pytest.raises(RepositoryConstructionQualificationError):
         facility.create_branch(None, repository="existing", branch="sc23/reassigned-authority-store", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-reassigned-authority-store", foreman_epoch=1)
@@ -1706,6 +1713,45 @@ def test_sc23_wrapper_does_not_expose_the_raw_transport(tmp_path) -> None:
 
     with pytest.raises(AttributeError):
         facility._transport.create_branch("existing", "sc23/raw-transport-bypass", "0" * 40)  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+
+def test_sc23_wrapper_denies_delegated_access_to_transport_and_the_inner_facility(tmp_path) -> None:
+    """Review finding (PR #86, round 31, P1, Codex, reproduced by the
+    reviewer -- "Block delegated access to the raw transport"): round
+    30 closed `facility._transport`, but missed two remaining, equally
+    direct paths to the SAME raw object. `_facility` was ITSELF still
+    a declared slot -- directly readable, since slots are never
+    "private," underscore naming is purely convention -- handing out
+    the WHOLE inner `RepositoryFacility`, its own real, entirely
+    unguarded dispatch methods included. And `__getattr__`'s blanket
+    delegation ALSO exposed `facility.transport`, since
+    `RepositoryFacility` (Gen1's own class) exposes `transport` as a
+    PUBLIC, unprefixed attribute; the reviewer reproduced calling
+    `facility.transport.create_branch(...)` directly, identical in
+    effect to round 30's leak. `_facility` is now removed from
+    `__slots__` entirely (the wrapper carries NO instance attribute
+    beyond `__weakref__`), and `__getattr__` explicitly denies
+    `"transport"` -- both now raise `AttributeError` outright."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    with pytest.raises(AttributeError):
+        facility.transport.create_branch("existing", "sc23/delegated-transport-bypass", "0" * 40)
+
+    with pytest.raises(AttributeError):
+        facility._facility.create_branch("existing", "sc23/inner-facility-bypass", "0" * 40)  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+    # Legitimate, non-git-mutating delegation (already-disclosed scope
+    # from prior rounds) must remain unaffected -- only `transport`
+    # (and the inner facility itself) are denied.
+    assert facility.state is not None
+    assert facility.authority_store is not None
 
 
 def test_sc23_wrapper_rejects_an_included_git_config(tmp_path) -> None:
@@ -1833,8 +1879,14 @@ def test_sc23_wrapper_rejects_a_transport_reassigned_on_the_inner_facility(tmp_p
     no-longer-relevant transport while the real facility silently
     delegated to the replacement. Every mutating call now reads
     facility.transport FRESH and re-runs the full admission-equivalent
-    check set against whatever is currently there."""
-    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    check set against whatever is currently there.
+
+    Review finding (PR #86, round 31, P1, Codex): `facility._facility`
+    is no longer reachable via the wrapper at all -- this test now
+    reaches the inner facility via `_admitted_state_for`, the same way
+    the module's own internals do, matching this file's established
+    test-only-introspection pattern."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _admitted_state_for, _empty_snapshot
     from tenfold.local_git_transport import LocalGitRepositoryTransport
 
     repo_root = tmp_path / "existing-repo"
@@ -1850,7 +1902,7 @@ def test_sc23_wrapper_rejects_a_transport_reassigned_on_the_inner_facility(tmp_p
         def commit_files(self, *args, **kwargs):
             return "0" * 40
 
-    facility._facility.transport = _InjectedTransport()  # noqa: SLF001 -- test-only introspection
+    _admitted_state_for(facility).facility.transport = _InjectedTransport()  # noqa: SLF001 -- test-only introspection
 
     with pytest.raises(RepositoryConstructionQualificationError):
         facility.create_branch(None, repository="existing", branch="sc23/injected-transport", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-injected-transport", foreman_epoch=1)
