@@ -1403,27 +1403,57 @@ class _ContainmentReCheckedRepositoryFacility(metaclass=_FrozenClassMeta):
         # constructor.
         pass
 
+    #: Round 32 (see this class's own docstring -- "Seal admitted
+    #: collaborators instead of checking identity"): `state` was added
+    #: here alongside `transport` because round 29's IDENTITY pin
+    #: (`_reject_altered_facility_collaborators`) only detects a
+    #: REFERENCE swap -- it says nothing about the SAME, genuinely
+    #: admitted object having its OWN methods reassigned in place
+    #: (`facility.authority_store.read = malicious_fn`), which this
+    #: name's own delegation made reachable. `authority_store` was
+    #: ALREADY effectively unreachable for any legitimate purpose (see
+    #: this module's own grep-confirmed audit: not one real call site
+    #: anywhere in this codebase ever read `facility.authority_store`)
+    #: -- only `state` had genuine, in-module callers, all of them
+    #: `RepositoryConstructionPropertyQualificationHarness`'s own
+    #: internal scenarios, now redirected to `_admitted_state_for(...)
+    #: .facility.state` directly (this module's own trusted internals
+    #: reaching the registry the same way `__getattr__` itself does,
+    #: rather than through the now-denied public delegation path).
+    _DENIED_DELEGATED_ATTRIBUTES = frozenset({"transport", "state", "authority_store"})
+
     def __getattr__(self, name):
-        # Round 31, P1, Codex (see this class's own docstring --
-        # "Block delegated access to the raw transport"): blind
-        # delegation to the real facility handed out `facility.transport`
-        # unguarded -- `RepositoryFacility` (Gen1's own class) exposes
-        # `transport` as a PUBLIC, unprefixed attribute, and this
-        # method previously forwarded ANY missing name straight
-        # through to it. The reviewer reproduced calling
-        # `facility.transport.create_branch(...)` directly, identical
-        # in effect to round 30's `facility._transport` leak. `transport`
-        # is now denied outright; every LEGITIMATE mutating or reading
-        # operation already goes through this wrapper's own explicitly
-        # checked dispatch methods (`create_branch`/`commit`/`read`/
-        # `open_pr`/`merge_pr`), none of which need `facility.transport`
-        # as a caller-facing attribute at all. `state`/`authority_store`
-        # remain delegated -- their own methods stay non-git-mutating,
-        # the same already-disclosed scope every prior round accepted.
-        if name == "transport":
+        # Round 31, P1, Codex ("Block delegated access to the raw
+        # transport"): blind delegation to the real facility handed
+        # out `facility.transport` unguarded -- `RepositoryFacility`
+        # (Gen1's own class) exposes `transport` as a PUBLIC,
+        # unprefixed attribute, and this method previously forwarded
+        # ANY missing name straight through to it. The reviewer
+        # reproduced calling `facility.transport.create_branch(...)`
+        # directly, identical in effect to round 30's
+        # `facility._transport` leak.
+        #
+        # Round 32, P1, Codex ("Seal admitted collaborators instead of
+        # checking identity"): round 29's identity pin only catches a
+        # SWAPPED `state`/`authority_store` reference -- the SAME,
+        # genuinely admitted object can still have ITS OWN methods
+        # reassigned in place once a caller can reach it at all. The
+        # reviewer reproduced `facility.authority_store.read = malicious_fn`:
+        # since `admitted.facility.authority_store IS established_authority_store`
+        # never changed (the object itself was never swapped, only
+        # mutated), round 29's `is` check kept passing while the
+        # malicious callback ran mid-`create_branch`, moving
+        # `.git/refs/heads` externally and installing a symlink before
+        # the actual git mutation. `state`/`authority_store` are now
+        # denied the SAME way `transport` is -- there being no
+        # legitimate reason for an EXTERNAL caller to reach either raw
+        # collaborator at all (confirmed by grepping every real call
+        # site in this codebase; see `_DENIED_DELEGATED_ATTRIBUTES`'s
+        # own docstring).
+        if name in self._DENIED_DELEGATED_ATTRIBUTES:
             raise AttributeError(
-                "_ContainmentReCheckedRepositoryFacility.transport: direct access to the raw transport is "
-                "denied -- use create_branch/commit/read/open_pr/merge_pr instead, which revalidate before delegating"
+                f"_ContainmentReCheckedRepositoryFacility.{name}: direct access to this collaborator is "
+                f"denied -- use create_branch/commit/read/open_pr/merge_pr instead, which revalidate before delegating"
             )
         return getattr(_admitted_state_for(self).facility, name)
 
@@ -1930,7 +1960,7 @@ class RepositoryConstructionPropertyQualificationHarness:
         resource = repository_ref_resource(self.rig.repository, request["branch"])
         task = _dispatch(self.rig, assignment_id="assign-enum", attempt=1, campaign_generation=1, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=resource, request_binding=binding)
         self.rig.facility.create_branch(task, repository=request["repository"], branch=request["branch"], owner=request["owner"], base_ref=request["base_ref"], expected_base_sha=request["expected_base_sha"], operation_id=request["operation_id"], foreman_epoch=1)
-        tracked_writer = self.rig.facility.state.writer(self.rig.repository, request["branch"])
+        tracked_writer = _admitted_state_for(self.rig.facility).facility.state.writer(self.rig.repository, request["branch"])
 
         # Out-of-band ref, created directly via raw git (a real caller
         # would not have this authority; simulating an attacker/foreign
@@ -1943,7 +1973,7 @@ class RepositoryConstructionPropertyQualificationHarness:
         enumerated_refs = list_branches(self.rig)
 
         detected_in_raw_enumeration = "sc23/out-of-band" in enumerated_refs
-        not_conflated_as_facility_tracked = self.rig.facility.state.writer(self.rig.repository, "sc23/out-of-band") is None
+        not_conflated_as_facility_tracked = _admitted_state_for(self.rig.facility).facility.state.writer(self.rig.repository, "sc23/out-of-band") is None
         genuinely_tracked = tracked_writer == task.assignment_id
         ok = detected_in_raw_enumeration and not_conflated_as_facility_tracked and genuinely_tracked
         state = QualificationState.QUALIFIED if ok else QualificationState.UNQUALIFIED
@@ -2122,7 +2152,7 @@ class RepositoryConstructionPropertyQualificationHarness:
         # The genuine, pre-crash receipt -- captured now, before any
         # restart, so the recovered copy can be compared against it
         # field-for-field (review finding, PR #84, round 5).
-        original_pre_crash_receipt = self.rig.facility.state.receipt("op-takeover")
+        original_pre_crash_receipt = _admitted_state_for(self.rig.facility).facility.state.receipt("op-takeover")
         # owner-a "crashes" here -- never releases the writer/lease.
 
         # A stale dispatch from owner-a, still carrying the old epoch,
@@ -2159,7 +2189,7 @@ class RepositoryConstructionPropertyQualificationHarness:
         # immediately after restart, BEFORE any new mutation, and
         # confirm it is genuinely owner-a's own claim (not merely
         # non-None).
-        durable_writer_before_takeover_commit = restarted_facility.state.writer(self.rig.repository, request["branch"])
+        durable_writer_before_takeover_commit = _admitted_state_for(restarted_facility).facility.state.writer(self.rig.repository, request["branch"])
         durable_writer_reconstructed = durable_writer_before_takeover_commit == "assign-owner-a"
 
         # Review finding (PR #84, round 4/5): the writer check alone
@@ -2172,7 +2202,7 @@ class RepositoryConstructionPropertyQualificationHarness:
         # against the genuine pre-crash receipt field-for-field
         # (operation_id/request_digest/result_digest/result), not just
         # `.result` alone.
-        durable_receipt_before_takeover_commit = restarted_facility.state.receipt("op-takeover")
+        durable_receipt_before_takeover_commit = _admitted_state_for(restarted_facility).facility.state.receipt("op-takeover")
         durable_receipt_reconstructed = durable_receipt_before_takeover_commit == original_pre_crash_receipt and original_pre_crash_receipt is not None
 
         stale_rejected = False
@@ -2294,19 +2324,19 @@ class RepositoryConstructionPropertyQualificationHarness:
         class _SimulatedCrashBeforeReceiptPersisted(RuntimeError):
             pass
 
-        real_put_receipt = self.rig.facility.state.put_receipt
+        real_put_receipt = _admitted_state_for(self.rig.facility).facility.state.put_receipt
 
         def _crash_before_persisting(receipt):
             raise _SimulatedCrashBeforeReceiptPersisted("simulated crash after commit_files landed, before put_receipt")
 
-        self.rig.facility.state.put_receipt = _crash_before_persisting
+        _admitted_state_for(self.rig.facility).facility.state.put_receipt = _crash_before_persisting
         crashed = False
         try:
             self.rig.facility.commit(commit_task, repository=self.rig.repository, branch=request["branch"], owner="assign-ack", expected_head=self.rig.initial_sha, files={"ack.txt": b"ack"}, message="ack\n", operation_id="op-ack-commit", foreman_epoch=1)
         except _SimulatedCrashBeforeReceiptPersisted:
             crashed = True
         finally:
-            self.rig.facility.state.put_receipt = real_put_receipt
+            _admitted_state_for(self.rig.facility).facility.state.put_receipt = real_put_receipt
 
         # The real git mutation genuinely landed (commit_files ran before
         # the injected crash) -- confirm via real, independent state
@@ -2366,7 +2396,7 @@ class RepositoryConstructionPropertyQualificationHarness:
         else:
             commit_lineage_matches = False
         mutation_landed = complete_tree_matches and commit_lineage_matches
-        receipt_missing_after_crash = self.rig.facility.state.receipt("op-ack-commit") is None
+        receipt_missing_after_crash = _admitted_state_for(self.rig.facility).facility.state.receipt("op-ack-commit") is None
 
         # Review finding (PR #84, round 11, P1, reproduced by the
         # reviewer): confirming the mutation landed and the receipt is
@@ -2394,8 +2424,8 @@ class RepositoryConstructionPropertyQualificationHarness:
                 result_digest=stable_digest(reconstructed_result),
                 result=reconstructed_result,
             )
-            self.rig.facility.state.put_receipt(reconstructed_receipt)
-            durable_receipt_reconstructed = self.rig.facility.state.receipt("op-ack-commit") == reconstructed_receipt
+            _admitted_state_for(self.rig.facility).facility.state.put_receipt(reconstructed_receipt)
+            durable_receipt_reconstructed = _admitted_state_for(self.rig.facility).facility.state.receipt("op-ack-commit") == reconstructed_receipt
         else:
             durable_receipt_reconstructed = False
 

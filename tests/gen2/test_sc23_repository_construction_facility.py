@@ -379,6 +379,8 @@ def test_sc23_reconciliation_rejects_a_commit_whose_lineage_does_not_match_expec
     then on)."""
     import subprocess
 
+    from tenfold.gen2.repository_construction_facility import _admitted_state_for
+
     harness = RepositoryConstructionPropertyQualificationHarness(rig)
     corrupted_shas: list[str] = []
 
@@ -409,7 +411,7 @@ def test_sc23_reconciliation_rejects_a_commit_whose_lineage_does_not_match_expec
     # persisted (from the scenario's own later, real duplicate-key
     # attempt genuinely landing through the real commit_files) must
     # not reference the corrupted root commit.
-    persisted = rig.facility.state.receipt("op-ack-commit")
+    persisted = _admitted_state_for(rig.facility).facility.state.receipt("op-ack-commit")
     assert corrupted_shas  # the corrupted commit genuinely landed once
     if persisted is not None:
         assert persisted.result != corrupted_shas[0]
@@ -1747,11 +1749,51 @@ def test_sc23_wrapper_denies_delegated_access_to_transport_and_the_inner_facilit
     with pytest.raises(AttributeError):
         facility._facility.create_branch("existing", "sc23/inner-facility-bypass", "0" * 40)  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
 
-    # Legitimate, non-git-mutating delegation (already-disclosed scope
-    # from prior rounds) must remain unaffected -- only `transport`
-    # (and the inner facility itself) are denied.
-    assert facility.state is not None
-    assert facility.authority_store is not None
+    # `acquire_writer`/`release_writer` remain legitimately delegated
+    # (round 32 -- see `_DENIED_DELEGATED_ATTRIBUTES`'s own docstring):
+    # they are METHODS on `RepositoryFacility` itself, never exposing a
+    # raw collaborator object, and touch only lock bookkeeping, never
+    # the transport.
+    facility.acquire_writer("existing", "sc23/writer-lock-probe", "assign-probe")
+    facility.release_writer("existing", "sc23/writer-lock-probe", "assign-probe")
+
+
+def test_sc23_wrapper_denies_delegated_access_to_admitted_collaborators(tmp_path) -> None:
+    """Review finding (PR #86, round 32, P1, Codex, reproduced by the
+    reviewer -- "Seal admitted collaborators instead of checking
+    identity"): round 29's IDENTITY pin
+    (`_reject_altered_facility_collaborators`) only detects a SWAPPED
+    `state`/`authority_store` reference -- it says nothing about the
+    SAME, genuinely admitted object having ITS OWN methods reassigned
+    in place. The reviewer reproduced
+    `facility.authority_store.read = malicious_fn`: since
+    `admitted.facility.authority_store IS established_authority_store`
+    never changed (the object itself was never swapped, only mutated),
+    round 29's `is` check kept passing while the malicious callback ran
+    mid-`create_branch` (the exact method Gen1's real
+    `validate_live_task` calls), moving `.git/refs/heads` externally
+    and installing a symlink before the actual git mutation, with an
+    authorized `create_branch` then returning a successful receipt.
+    `state`/`authority_store` are now denied the same way `transport`
+    is -- confirmed by a codebase-wide audit that no legitimate call
+    site anywhere ever needed to reach either raw collaborator through
+    the wrapper (this module's own internal harness code -- the only
+    genuine caller -- was redirected to the module-private registry
+    instead)."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    with pytest.raises(AttributeError):
+        facility.authority_store.read = lambda campaign_id: None  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+    with pytest.raises(AttributeError):
+        facility.state.put_receipt = lambda receipt: None
 
 
 def test_sc23_wrapper_rejects_an_included_git_config(tmp_path) -> None:

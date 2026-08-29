@@ -1856,6 +1856,60 @@ verdict (see below) rather than a hardcoded stale expectation.
     `test_g2_27_self_construction.py` (33/33), and full repository
     sweep (1371 passed, only the 9 known pre-existing Windows-only
     failures, zero regressions).
+32. A fresh Codex pass against the round-31 commit (`8810ead`) found 1
+    further genuine P1 finding, distinguishing IDENTITY from
+    MUTABILITY for the first time in this closure record's history:
+    - **P1 ("Seal admitted collaborators instead of checking
+      identity"), Codex**: round 29's identity pin
+      (`_reject_altered_facility_collaborators`) only detects a
+      SWAPPED `state`/`authority_store` REFERENCE -- it says nothing
+      about the SAME, genuinely admitted object having ITS OWN methods
+      reassigned IN PLACE. The reviewer reproduced
+      `facility.authority_store.read = malicious_fn`: since
+      `admitted.facility.authority_store IS established_authority_store`
+      never actually changes when a method is mutated on the SAME
+      object, round 29's `is` check kept passing while the malicious
+      callback ran mid-`create_branch` (the exact method Gen1's real
+      `validate_live_task` calls), moving `.git/refs/heads` externally
+      and installing a symlink before the actual git mutation, with an
+      authorized `create_branch` then returning a successful receipt.
+      **Fixed**: rather than attempting to structurally SEAL an
+      ARBITRARY, caller-supplied collaborator class (which this module
+      does not own or control -- `gen1_wrap_repository_construction_facility`'s
+      own documented scope explicitly allows a future G2-28+
+      orchestrator to supply its OWN `CampaignAuthorityStore`
+      implementation, so the same `__slots__`/metaclass treatment
+      applied to this module's OWN wrapper class in rounds 25/26
+      cannot apply here), the fix instead STOPS EXPOSING the raw
+      collaborator at all -- matching the reviewer's own alternative
+      framing ("move the final containment check past all
+      caller-controlled callbacks," achieved here by simply never
+      handing the callback surface out in the first place).
+      `state`/`authority_store` are now denied via `__getattr__` the
+      SAME way `transport` already is (round 31), following a
+      codebase-wide audit FIRST: `authority_store` had NO legitimate
+      call site anywhere in this repository, and `state` was used only
+      inside THIS MODULE's own qualification harness
+      (`RepositoryConstructionPropertyQualificationHarness`), which was
+      redirected to read the registry directly
+      (`_admitted_state_for(...).facility.state`) rather than through
+      the now-denied public delegation path -- 11 internal call sites
+      across the harness and 1 test file usage updated.
+      `acquire_writer`/`release_writer` remain delegated (unaffected):
+      they are METHODS on `RepositoryFacility` itself, never exposing
+      a raw collaborator object, and touch only lock bookkeeping, never
+      the transport. New permanent regression test reproduces the
+      exact `facility.authority_store.read = malicious_fn` attempt
+      (plus the equivalent for `facility.state`) and confirms both now
+      raise `AttributeError` outright.
+
+    Fixed in commit `<pending>`, with 1 new permanent regression test
+    (plus 11 internal call sites and 1 test call site redirected to the
+    module-private registry lookup). Full local re-verification: full
+    test file (76/76), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (pending), and full repository
+    sweep (pending, only the 9 known pre-existing Windows-only
+    failures expected).
 
 ## Real, honest end-to-end result
 
