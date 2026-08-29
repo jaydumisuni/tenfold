@@ -1761,6 +1761,45 @@ verdict (see below) rather than a hardcoded stale expectation.
     suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
     repository sweep (1369 passed, only the 9 known pre-existing
     Windows-only failures, zero regressions).
+30. A fresh Codex pass against the round-29 commit (`c3df528`) found 1
+    further genuine P1 finding -- the simplest, most fundamental gap
+    of the whole 30-round history, found this late precisely because
+    every prior round was busy hardening the CHECKED methods, not
+    questioning whether an UNCHECKED path was reachable at all:
+    - **P1 ("Hide the raw transport from wrapper callers"), Codex**:
+      `_transport` (round 25's own `__slots__` declaration) was itself
+      a declared slot -- meaning `facility._transport` was directly,
+      PUBLICLY readable by ANY caller holding the wrapper, handing them
+      the RAW, unguarded `LocalGitRepositoryTransport` instance. The
+      reviewer reproduced calling `facility._transport.create_branch(...)`
+      directly: since this bypasses the wrapper's own dispatch methods
+      entirely, NONE of the class's containment, hooks,
+      class-implementation, instance-state, or facility-collaborator
+      checks (rounds 13-29) ever ran -- there was nothing clever to
+      bypass in the technical sense; the raw object was simply handed
+      out, unguarded, alongside the checked ones. **Investigated WHY
+      `_transport` was a slot at all**: it was PURE write-only leftover
+      bookkeeping from BEFORE round 25's redesign (`_current_transport`
+      caching its own return value onto `self._transport`) -- confirmed
+      empirically via a full grep of every `._transport` reference in
+      this module that NOTHING ever reads it back. Once round 25 moved
+      the actual trust source into the wrapper-keyed registry, the
+      caching became genuinely dead code that happened to ALSO be a
+      live security liability. **Fixed**: removed entirely, from
+      `__slots__` and from every assignment (`__init__`,
+      `_current_transport`) -- rather than trying to hide the value
+      better, there is simply nothing left to hide, so
+      `facility._transport` now raises `AttributeError` outright, the
+      same comprehensive closure round 25's `__slots__` fix already
+      gave instance-level method shadowing. New permanent regression
+      test reproduces the exact `facility._transport.create_branch(...)`
+      call and confirms it now raises `AttributeError`.
+
+    Fixed in commit `<pending>`, with 1 new permanent regression test.
+    Full local re-verification: full test file (74/74), full mutation
+    suite (37/37), `test_g2_27_self_construction.py` (pending), and
+    full repository sweep (pending, only the 9 known pre-existing
+    Windows-only failures expected).
 
 ## Real, honest end-to-end result
 

@@ -1314,9 +1314,34 @@ class _ContainmentReCheckedRepositoryFacility(metaclass=_FrozenClassMeta):
     metaclass-based fix (`metaclass=_FrozenClassMeta` above), which
     makes such a reassignment raise `AttributeError` at the attempt,
     the same language-level guarantee `__slots__` gives at the
-    instance level, now also at the class level."""
+    instance level, now also at the class level.
 
-    __slots__ = ("__weakref__", "_facility", "_transport")
+    Review finding (PR #86, round 30, P1, Codex, reproduced by the
+    reviewer -- "Hide the raw transport from wrapper callers"):
+    `_transport` was itself a declared slot -- meaning `facility._transport`
+    was directly, PUBLICLY readable by ANY caller holding the wrapper,
+    handing them the RAW, unguarded `LocalGitRepositoryTransport`
+    instance. The reviewer reproduced calling
+    `facility._transport.create_branch(...)` directly: since this
+    bypasses the WRAPPER's own dispatch methods entirely, NONE of this
+    class's containment, hooks, class-implementation, instance-state,
+    or facility-collaborator checks ever ran -- there was never
+    anything to bypass in the technical sense (no override, no
+    tampering), the raw object was simply handed out, unguarded,
+    alongside the checked ones. Investigating WHY `_transport` was a
+    slot at all: it was write-only leftover bookkeeping from before
+    round 25's redesign (`_current_transport` caching its own return
+    value) -- nothing in this class, or anywhere else in this module,
+    ever READS `self._transport` (confirmed empirically via a full
+    grep of every `._transport` reference before removing it). Fixed
+    by removing it entirely, from `__slots__` and from every
+    assignment -- there being no slot means `facility._transport`
+    raises `AttributeError` outright, closing this the same
+    comprehensive way round 25's `__slots__` fix closed instance-level
+    method shadowing: not by hiding a value better, but by genuinely
+    having nothing left to hide."""
+
+    __slots__ = ("__weakref__", "_facility")
 
     def __init__(self, facility, transport: LocalGitRepositoryTransport) -> None:
         # `facility` deliberately left untyped: an explicit
@@ -1339,8 +1364,16 @@ class _ContainmentReCheckedRepositoryFacility(metaclass=_FrozenClassMeta):
         # module-private `_ADMITTED_TRANSPORT_STATE` registry,
         # populated by `gen1_wrap_repository_construction_facility`
         # before this wrapper is ever constructed.
+        #
+        # Round 30 (see this class's own docstring): `transport` is no
+        # longer stored on `self` at all -- see `_current_transport`'s
+        # own docstring for why keeping it, even privately, was itself
+        # the round-30 finding. The parameter stays, unused within
+        # `__init__` itself, only because
+        # `gen1_wrap_repository_construction_facility` already passes
+        # it positionally and changing that call site's arity is not
+        # otherwise warranted.
         self._facility = facility
-        self._transport = transport
 
     def __getattr__(self, name):
         return getattr(self._facility, name)
@@ -1392,7 +1425,12 @@ class _ContainmentReCheckedRepositoryFacility(metaclass=_FrozenClassMeta):
                 f"_current_transport: facility.transport is no longer a real LocalGitRepositoryTransport "
                 f"(local-commit-only, per this identity's own admitted scope) -- got {type(current).__name__}"
             )
-        self._transport = current
+        # Round 30 (see this class's own docstring): NOT cached onto
+        # `self._transport` anymore -- that was itself the finding.
+        # `current` is returned directly; every caller already treats
+        # it as a fresh, per-call value, so nothing relied on this
+        # caching in the first place (confirmed empirically: no code
+        # anywhere in this module ever read `self._transport` back).
         return current
 
     def _revalidate_transport_integrity(self) -> "_AdmittedTransportState":

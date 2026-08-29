@@ -1679,6 +1679,35 @@ def test_sc23_wrapper_rejects_a_reassigned_facility_authority_store(tmp_path) ->
     assert not heads_dir.is_symlink()
 
 
+def test_sc23_wrapper_does_not_expose_the_raw_transport(tmp_path) -> None:
+    """Review finding (PR #86, round 30, P1, Codex, reproduced by the
+    reviewer -- "Hide the raw transport from wrapper callers"):
+    `_transport` was itself a declared slot -- meaning
+    `facility._transport` was directly, PUBLICLY readable by ANY
+    caller holding the wrapper, handing them the RAW, unguarded
+    `LocalGitRepositoryTransport` instance. The reviewer reproduced
+    calling `facility._transport.create_branch(...)` directly: since
+    this bypasses the wrapper's own dispatch methods entirely, NONE of
+    this class's containment, hooks, class-implementation,
+    instance-state, or facility-collaborator checks ever ran -- the
+    raw object was simply handed out, unguarded, alongside the checked
+    ones. `_transport` is no longer stored anywhere on the wrapper at
+    all (it was write-only leftover bookkeeping from before round 25's
+    redesign, confirmed empirically to never be read), so
+    `facility._transport` now raises `AttributeError` outright."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    with pytest.raises(AttributeError):
+        facility._transport.create_branch("existing", "sc23/raw-transport-bypass", "0" * 40)  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+
 def test_sc23_wrapper_rejects_an_included_git_config(tmp_path) -> None:
     """Review finding (PR #86, round 16, P1, reproduced by the
     reviewer): the round-15 exact-byte-snapshot check is airtight
