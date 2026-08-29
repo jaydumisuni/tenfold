@@ -1235,6 +1235,74 @@ def test_sc23_wrapper_rejects_a_class_level_overridden_facility_method(tmp_path)
         RepositoryFacility.create_branch = original_create_branch
 
 
+def test_sc23_wrapper_rejects_a_transport_method_code_object_mutated_in_place(tmp_path) -> None:
+    """Review finding (PR #86, round 37, P1, Codex, reproduced by the
+    reviewer -- "Snapshot method implementations rather than function
+    identities"): `_reject_altered_class_implementation`'s
+    `current[name] is trusted_snapshot[name]` check pins the FUNCTION
+    OBJECT's identity, but a function's own `__code__` attribute is
+    itself ordinary, mutable state -- the reviewer reproduced
+    `LocalGitRepositoryTransport._run.__code__ = malicious.__code__`:
+    the function object was never replaced, only its bytecode, so the
+    identity check kept passing while a fully-authorized `create_branch`
+    executed the injected body. `_TRUSTED_TRANSPORT_CLASS_CODE_OBJECTS`
+    now separately pins each trusted function's `__code__` at this
+    module's own import time, immune to a later `func.__code__ =
+    other` reassignment for the same reason round 36's
+    `_SealedCollaboratorProxy` is immune to a later bound-method
+    reassignment."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    def malicious(self, *args, **kwargs):
+        return "0" * 40
+
+    original_code = LocalGitRepositoryTransport._run.__code__
+    try:
+        LocalGitRepositoryTransport._run.__code__ = malicious.__code__  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+        with pytest.raises(RepositoryConstructionQualificationError):
+            facility.create_branch(None, repository="existing", branch="sc23/transport-run-code-mutated", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-transport-run-code-mutated", foreman_epoch=1)
+    finally:
+        LocalGitRepositoryTransport._run.__code__ = original_code
+
+
+def test_sc23_wrapper_rejects_a_facility_method_code_object_mutated_in_place(tmp_path) -> None:
+    """Round 37 defense-in-depth (see `_TRUSTED_FACILITY_CLASS_CODE_OBJECTS`'s
+    own docstring): applies the round-37 `_run.__code__` lesson,
+    reproduced by the reviewer for the transport, pre-emptively to
+    `RepositoryFacility` too -- the identical exposure exists for
+    `create_branch`'s own code object, just not yet separately
+    demonstrated."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+    from tenfold.repository_facility import RepositoryFacility
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    def malicious(self, *args, **kwargs):
+        return "0" * 40
+
+    original_code = RepositoryFacility.create_branch.__code__
+    try:
+        RepositoryFacility.create_branch.__code__ = malicious.__code__
+
+        with pytest.raises(RepositoryConstructionQualificationError):
+            facility.create_branch(None, repository="existing", branch="sc23/facility-create-branch-code-mutated", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-facility-create-branch-code-mutated", foreman_epoch=1)
+    finally:
+        RepositoryFacility.create_branch.__code__ = original_code
+
+
 def test_sc23_wrapper_ignores_a_wholesale_replaced_inner_facility(rig) -> None:
     """Review finding (PR #86, round 24, P1, Codex, reproduced by the
     reviewer -- "Verify the inner facility identity before
@@ -1489,6 +1557,63 @@ def test_sc23_wrapper_class_freeze_cannot_defend_against_a_direct_type_setattr_b
         assert facility.create_branch(None) == "0" * 40
     finally:
         type.__setattr__(type(facility), "create_branch", original_create_branch)
+
+
+def test_sc23_wrapper_dispatch_method_code_object_cannot_be_defended_against_in_process(tmp_path) -> None:
+    """SECURITY NOTE -- DISCLOSED LIMITATION, WIDENED (review finding,
+    PR #86, round 37, P1, Codex, reproduced by the reviewer -- "Protect
+    wrapper methods' mutable code objects"). See `_FrozenClassMeta`'s
+    own docstring for the full account.
+    `type(facility).create_branch.__code__ = malicious.__code__` needs
+    neither `type.__setattr__` nor any dunder trick at all -- it is
+    ORDINARY attribute assignment, using NORMAL syntax, on a plain
+    `function` object. `__code__` is just one more mutable attribute a
+    function carries; `_FrozenClassMeta.__setattr__` only intercepts
+    assignment ON THE CLASS itself, and has no jurisdiction over an
+    assignment on some OTHER object (the function) the class happens
+    to hold as an attribute value. This falls INSIDE the trust model
+    round 27's own disclosure already narrowed to ("ordinary syntax...
+    not a new kind of gap"), unlike round 27's bypass which needed an
+    explicit low-level dunder invocation to fall outside it.
+
+    This test does NOT assert protection -- it documents, honestly and
+    permanently, that the bypass succeeds. Round 37's OTHER fix this
+    same round (see `test_sc23_wrapper_rejects_a_transport_method_code_object_mutated_in_place`,
+    immediately below) shows the identical technique IS genuinely
+    defensible for `LocalGitRepositoryTransport`/`RepositoryFacility`,
+    because a separate, earlier function can snapshot-compare their
+    code objects before ever delegating to them -- this wrapper's own
+    dispatch methods have no such earlier checkpoint, the same
+    "no hook point from within" structural fact round 25/26 already
+    established, replaying here a third time."""
+    from tenfold.gen2.repository_construction_facility import (
+        RepositoryStateStore,
+        _ContainmentReCheckedRepositoryFacility,
+        _MutableAuthorityStore,
+        _empty_snapshot,
+    )
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    def malicious(self, *args, **kwargs):
+        return "0" * 40
+
+    original_code = _ContainmentReCheckedRepositoryFacility.create_branch.__code__
+    try:
+        _ContainmentReCheckedRepositoryFacility.create_branch.__code__ = malicious.__code__  # noqa: SLF001 -- test-only, reproducing the reviewer's exact bypass
+
+        # The replacement genuinely runs -- no containment,
+        # transport-integrity, authority, or lease check fires,
+        # confirming this is a real, not merely theoretical, disclosed
+        # limitation.
+        assert facility.create_branch(None) == "0" * 40
+    finally:
+        _ContainmentReCheckedRepositoryFacility.create_branch.__code__ = original_code
 
 
 def test_sc23_wrapper_rejects_a_reassigned_repository_registration(tmp_path) -> None:
@@ -1869,6 +1994,56 @@ def test_sc23_wrapper_rejects_a_pre_admission_tampered_git_executable(tmp_path) 
 
     transport = LocalGitRepositoryTransport({"existing": repo_root})
     transport._git = "not-a-real-git-executable"  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack, BEFORE admission
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+
+def test_sc23_wrapper_rejects_a_transport_constructed_under_a_post_import_poisoned_path(tmp_path, monkeypatch) -> None:
+    """Review finding (PR #86, round 37, P1, Codex, reproduced by the
+    reviewer -- "Resolve Git independently of caller-controlled PATH"):
+    round 36's fix re-resolved `shutil.which("git")` FRESH, at
+    admission time -- but `shutil.which` walks `PATH`, itself ordinary
+    caller-controlled environment state, no more independent than
+    `transport._git` itself. The reviewer reproduced prepending a
+    shell shim's directory to `PATH` AFTER importing this module but
+    BEFORE constructing the transport: both `LocalGitRepositoryTransport.__init__`'s
+    own resolution and round 36's validation resolved the SAME
+    poisoned `PATH` to the SAME malicious path, so the "independent"
+    check just compared the tampered value against itself.
+    `_TRUSTED_GIT_EXECUTABLE` is now resolved exactly ONCE, at this
+    module's own import time -- a caller must import this module to
+    reach `gen1_wrap_repository_construction_facility` at all, so
+    `PATH` tampering after import, as reproduced here, no longer has
+    any effect on this already-captured value."""
+    import os
+
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    shim_dir = tmp_path / "shim"
+    shim_dir.mkdir()
+    if os.name == "nt":
+        shim_path = shim_dir / "git.exe"
+        shim_path.write_bytes(b"MZ")
+    else:
+        shim_path = shim_dir / "git"
+        shim_path.write_text("#!/bin/sh\necho shim\n", encoding="utf-8")
+        shim_path.chmod(0o755)
+
+    monkeypatch.setenv("PATH", str(shim_dir) + os.pathsep + os.environ["PATH"])
+
+    # No registered repositories -- `LocalGitRepositoryTransport.__init__`
+    # would otherwise immediately execute the resolved `_git` (a
+    # `rev-parse --git-dir` per registration), and the shim here is
+    # not a real, runnable executable; this test only needs to prove
+    # `_git` resolves to the shim under the poisoned PATH and that
+    # admission rejects it, not that the shim can actually run.
+    transport = LocalGitRepositoryTransport({})
+    # sanity: the shim really is what a freshly constructed transport
+    # resolves to under the now-poisoned PATH -- proving this is a
+    # genuine PATH attack, not a no-op.
+    assert transport._git == str(shim_path.resolve())  # noqa: SLF001 -- test-only, confirming the reviewer's exact attack actually poisons PATH resolution
 
     with pytest.raises(RepositoryConstructionQualificationError):
         gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))

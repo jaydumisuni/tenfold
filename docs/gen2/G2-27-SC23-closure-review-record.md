@@ -2194,6 +2194,109 @@ verdict (see below) rather than a hardcoded stale expectation.
     `test_g2_27_self_construction.py` (33/33), and full repository
     sweep (1379 passed, 2 skipped, only the 9 known pre-existing
     Windows-only failures, zero regressions).
+37. A fresh Codex pass against the round-36 commit (`d662fd5`/`03c19e4`)
+    found 3 further genuine P1 findings, ALL attacking the same
+    underlying fact -- a Python `function` object's `__code__`
+    attribute is itself ordinary, mutable state, no different in kind
+    from any instance attribute rounds 14-20 already learned not to
+    trust by identity alone -- reached from three different angles:
+    - **P1 ("Protect wrapper methods' mutable code objects"), Codex**:
+      `type(facility).create_branch.__code__ = malicious.__code__`
+      needs NEITHER `type.__setattr__` (round 27's bypass) NOR any
+      dunder trick at all -- it is ORDINARY attribute assignment,
+      using NORMAL syntax, on a plain `function` object. This falls
+      squarely INSIDE the trust model round 27's own disclosure
+      already narrowed to ("ordinary syntax... not a new kind of
+      gap"), unlike round 27's own bypass, which needed an explicit
+      low-level dunder invocation to fall outside it. Checked whether
+      the SAME defense this round's OTHER fix uses (below) could
+      apply here too, and confirmed it structurally cannot: that
+      defense works because a SEPARATE, EARLIER function
+      (`_revalidate_transport_integrity`) exists and can
+      snapshot-compare code objects BEFORE ever delegating to
+      `RepositoryFacility`. This wrapper's own dispatch methods have
+      no such earlier checkpoint -- `create_branch` IS the function
+      whose code gets replaced, so by the time it starts running, the
+      malicious bytecode is already what is executing -- the same
+      "no hook point from within" structural fact rounds 25/26 already
+      established, replaying a third time for a third kind of mutable
+      state (instance `__dict__` shadowing, class-attribute rebinding,
+      now a function object's own `__code__`).
+
+      **Disclosed, not fixed**: `_FrozenClassMeta`'s docstring gained a
+      "SECURITY NOTE -- DISCLOSED LIMITATION, WIDENED" section, further
+      narrowing the admitted identity's attacker model to also exclude
+      mutating `__code__`/`__defaults__`/`__closure__`/`__globals__` of
+      any function reachable from the wrapper. A new permanent
+      regression test documents the bypass succeeding rather than
+      asserting false protection, matching the round-14/27/34
+      precedent exactly.
+    - **P1 ("Snapshot method implementations rather than function
+      identities"), Codex**: unlike the finding above, THIS one has a
+      real, complete fix, because it targets `LocalGitRepositoryTransport`/
+      `RepositoryFacility` (Gen1-owned classes a SEPARATE, EARLIER
+      function genuinely re-checks before every delegation), not the
+      wrapper's own methods. `_reject_altered_class_implementation`'s
+      `current[name] is trusted_snapshot[name]` check pins the
+      FUNCTION OBJECT's identity -- the reviewer reproduced
+      `LocalGitRepositoryTransport._run.__code__ = malicious.__code__`:
+      the function object was never replaced, only its bytecode, so
+      the identity check kept passing while a fully-authorized
+      `create_branch` executed the injected body.
+
+      Fixed by `_TRUSTED_TRANSPORT_CLASS_CODE_OBJECTS`/
+      `_TRUSTED_FACILITY_CLASS_CODE_OBJECTS`: each trusted function's
+      `__code__` is separately captured, at this module's own import
+      time, into its own dict -- the SAME "capture a reference before
+      any tampering is possible" technique round 36's
+      `_SealedCollaboratorProxy` already used for a bound method, now
+      applied to a code object. A later `func.__code__ = other`
+      reassignment cannot retroactively change what this
+      separately-held reference points to, so comparing
+      `current[name].__code__` against it now catches the mutation.
+      Applied symmetrically to BOTH `LocalGitRepositoryTransport` and
+      `RepositoryFacility` -- the reviewer only demonstrated the
+      transport, but the identical exposure exists for the facility's
+      own methods.
+    - **P1 ("Resolve Git independently of caller-controlled PATH"),
+      Codex**: round 36's `_reject_untrusted_transport_git_executable`
+      re-resolved `shutil.which("git")` FRESH, at admission time, as
+      its "independent" ground truth -- but `shutil.which` walks
+      `PATH`, itself ordinary, caller-controlled process environment
+      state, no more independent than `transport._git` itself. The
+      reviewer reproduced prepending a shell shim's directory to
+      `PATH` AFTER importing this module but BEFORE constructing the
+      transport: `LocalGitRepositoryTransport.__init__`'s own
+      `shutil.which("git")` call and round 36's validation call both
+      resolved the SAME poisoned `PATH` to the SAME malicious path, so
+      the "independent" check just compared the tampered value against
+      itself and passed.
+
+      Fixed by `_TRUSTED_GIT_EXECUTABLE`, resolved exactly ONCE, at
+      THIS module's own import time -- the same trust boundary
+      `_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES` and every other import-time
+      snapshot in this file already relies on. A caller must import
+      this module to reach `gen1_wrap_repository_construction_facility`
+      at all, so `PATH` tampering that happens (as the reviewer's own
+      reproduction does) AFTER import but before construction/admission
+      no longer has any effect on this already-captured value.
+      Verified empirically with the reviewer's exact reproduction
+      (prepend a shim directory to `PATH`, construct a transport,
+      validate) -- now rejected. Does not defend against an attacker
+      who already controls `PATH` before this module is ever
+      imported -- the same disclosed, construction-time-review trust
+      model `_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES`'s own docstring
+      already names, not a new category of gap.
+
+    2 of 3 findings fixed with real mechanisms; 1 disclosed (matching
+    round 27/34 precedent, confirmed genuinely unfixable in-process,
+    not merely difficult). 4 new permanent regression tests reproduce
+    each finding exactly. Fixed in commit `<pending>`, with 4 new
+    permanent regression tests. Full local re-verification: full test
+    file (87/87), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (pending, only the 9 known pre-existing Windows-only
+    failures expected).
 
 ## Real, honest end-to-end result
 

@@ -38,6 +38,7 @@ of a read-only or disposable-sandbox one.
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import re
@@ -108,6 +109,28 @@ REPOSITORY_NAME = "scratch"
 #: other check in this file already relies on, not a new category of
 #: gap.)
 _TRUSTED_TRANSPORT_CLASS_ATTRIBUTES = dict(vars(LocalGitRepositoryTransport))
+#: Review finding (PR #86, round 37, P1, Codex, reproduced by the
+#: reviewer -- "Snapshot method implementations rather than function
+#: identities"): `_reject_altered_class_implementation`'s
+#: `current[name] is trusted_snapshot[name]` check pins the FUNCTION
+#: OBJECT's identity -- but a function object's own `__code__`
+#: attribute is itself ordinary, mutable, plain-attribute state, no
+#: different in kind from any instance attribute round 14-20 already
+#: learned not to trust by identity alone. The reviewer reproduced
+#: `LocalGitRepositoryTransport._run.__code__ = malicious.__code__`:
+#: the function OBJECT was never replaced (`current[name] is
+#: trusted_snapshot[name]` stayed true), only its bytecode was, so the
+#: identity check kept passing while a fully-authorized `create_branch`
+#: executed the injected body. Captured here, at THIS module's own
+#: import time, alongside `_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES` itself
+#: -- a SEPARATE reference to the `__code__` OBJECT each trusted
+#: function held at that moment, immune to a later reassignment of
+#: `func.__code__` for the exact same reason round 36's
+#: `_SealedCollaboratorProxy` is immune to a later reassignment of a
+#: captured bound method: this dict holds its OWN reference to the
+#: original code object, which a later `func.__code__ = other` cannot
+#: retroactively change.
+_TRUSTED_TRANSPORT_CLASS_CODE_OBJECTS = {name: value.__code__ for name, value in _TRUSTED_TRANSPORT_CLASS_ATTRIBUTES.items() if inspect.isfunction(value)}
 
 #: Review finding (PR #86, round 23, P1, Codex, reproduced by the
 #: reviewer -- "Seal the delegated RepositoryFacility operations"): the
@@ -138,23 +161,43 @@ _TRUSTED_TRANSPORT_CLASS_ATTRIBUTES = dict(vars(LocalGitRepositoryTransport))
 #: would just reject every genuine round-16 swap a second, redundant
 #: way.
 _TRUSTED_FACILITY_CLASS_ATTRIBUTES = dict(vars(RepositoryFacility))
+#: See `_TRUSTED_TRANSPORT_CLASS_CODE_OBJECTS`'s own docstring -- the
+#: identical round-37 fix, applied symmetrically to `RepositoryFacility`
+#: (whose own `create_branch`/`commit`/etc. are equally reachable,
+#: equally mutable function objects, and equally protected only by
+#: THIS class-implementation check -- `_FrozenClassMeta` guards
+#: `_ContainmentReCheckedRepositoryFacility`'s own class, never
+#: `RepositoryFacility`'s).
+_TRUSTED_FACILITY_CLASS_CODE_OBJECTS = {name: value.__code__ for name, value in _TRUSTED_FACILITY_CLASS_ATTRIBUTES.items() if inspect.isfunction(value)}
 _EXPECTED_FACILITY_INSTANCE_ATTRIBUTES = frozenset({"transport", "state", "authority_store"})
 
 
-def _reject_altered_class_implementation(cls: type, trusted_snapshot: dict, label: str) -> None:
+def _reject_altered_class_implementation(cls: type, trusted_snapshot: dict, trusted_code_objects: dict, label: str) -> None:
     """See `_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES`'s own docstring for
-    the round-21 finding this closes, and `_TRUSTED_FACILITY_CLASS_ATTRIBUTES`'s
-    for the round-23 extension to a second class. Compares `cls`'s OWN
-    `__dict__` (methods, not instance state -- functions compare by
-    identity, so any rebinding to a different object is caught)
-    against the snapshot taken when this module was first imported;
-    any method added, removed, or reassigned is rejected outright."""
+    the round-21 finding this closes, `_TRUSTED_FACILITY_CLASS_ATTRIBUTES`'s
+    for the round-23 extension to a second class, and
+    `_TRUSTED_TRANSPORT_CLASS_CODE_OBJECTS`'s for the round-37
+    extension covering in-place `__code__` mutation of an otherwise
+    unreplaced function object. Compares `cls`'s OWN `__dict__`
+    (methods, not instance state -- functions compare by identity, so
+    any rebinding to a different object is caught) against the
+    snapshot taken when this module was first imported; any method
+    added, removed, or reassigned is rejected outright. For every
+    trusted attribute that is itself a function, ALSO compares its
+    CURRENT `__code__` against the code object captured at import
+    time -- catching a function object whose identity never changed
+    but whose underlying bytecode did."""
     current = dict(vars(cls))
     changed = sorted(set(current) ^ set(trusted_snapshot))
     changed += sorted(
         name
         for name in set(current) & set(trusted_snapshot)
         if current[name] is not trusted_snapshot[name]
+    )
+    changed += sorted(
+        name
+        for name in trusted_code_objects
+        if name in current and inspect.isfunction(current[name]) and current[name].__code__ is not trusted_code_objects[name]
     )
     if changed:
         raise RepositoryConstructionQualificationError(
@@ -182,14 +225,14 @@ def _reject_altered_transport_class_implementation() -> None:
     moments later. Every call site in this file now runs this check
     first, before touching the transport in any way that could invoke
     a class dunder method on it."""
-    _reject_altered_class_implementation(LocalGitRepositoryTransport, _TRUSTED_TRANSPORT_CLASS_ATTRIBUTES, "LocalGitRepositoryTransport")
+    _reject_altered_class_implementation(LocalGitRepositoryTransport, _TRUSTED_TRANSPORT_CLASS_ATTRIBUTES, _TRUSTED_TRANSPORT_CLASS_CODE_OBJECTS, "LocalGitRepositoryTransport")
 
 
 def _reject_altered_facility_class_implementation() -> None:
     """See `_TRUSTED_FACILITY_CLASS_ATTRIBUTES`'s own docstring for the
     finding this closes. Called alongside `_reject_altered_transport_class_implementation`
     everywhere `self._facility`'s own methods are about to be invoked."""
-    _reject_altered_class_implementation(RepositoryFacility, _TRUSTED_FACILITY_CLASS_ATTRIBUTES, "RepositoryFacility")
+    _reject_altered_class_implementation(RepositoryFacility, _TRUSTED_FACILITY_CLASS_ATTRIBUTES, _TRUSTED_FACILITY_CLASS_CODE_OBJECTS, "RepositoryFacility")
 
 
 @dataclass(frozen=True)
@@ -599,35 +642,53 @@ def _reject_alternate_git_config_sources(name: str, git_dir: Path) -> None:
         )
 
 
-def _reject_untrusted_transport_git_executable(transport: LocalGitRepositoryTransport) -> None:
-    """Review finding (PR #86, round 36, P1, Codex, reproduced by the
-    reviewer -- "Validate transport values before snapshotting them"):
-    every prior `_git` finding (rounds 18-28) protected against a
-    POST-admission reassignment, by pinning `_git`'s VALUE into
-    `established_instance_state` at admission time and rejecting any
-    later deviation from that pinned baseline. None of them asked
-    whether the baseline ITSELF was trustworthy. The reviewer
-    reproduced constructing a `LocalGitRepositoryTransport` normally,
-    then assigning `transport._git` to a shell shim BEFORE ever
-    calling `gen1_wrap_repository_construction_facility` -- admission
-    itself blessed the tampered value as the trusted baseline (the
-    shim even ran during this function's own hook-neutralization
-    step), and every subsequent comparison correctly found it
-    "unchanged" from that already-poisoned baseline, since it never
-    had anything independent to compare against.
+#: Review finding (PR #86, round 37, P1, Codex, reproduced by the
+#: reviewer -- "Resolve Git independently of caller-controlled PATH"):
+#: round 36's `_reject_untrusted_transport_git_executable` re-resolved
+#: `shutil.which("git")` FRESH, at admission time, as its "independent"
+#: ground truth -- but `shutil.which` walks `PATH`, itself ordinary,
+#: caller-controlled process environment state, no more independent
+#: than `transport._git` itself. The reviewer reproduced prepending a
+#: shell shim's directory to `PATH` AFTER importing this module but
+#: BEFORE constructing the transport: `LocalGitRepositoryTransport.__init__`'s
+#: own `shutil.which("git")` call and round 36's validation call both
+#: resolve the SAME poisoned `PATH` to the SAME malicious path, so the
+#: "independent" check just compared the tampered value against
+#: itself and passed.
+#:
+#: Resolved exactly ONCE, here, at THIS module's own import time --
+#: the same trust boundary `_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES` and
+#: every other import-time snapshot in this file already rely on: a
+#: caller must import this module to reach
+#: `gen1_wrap_repository_construction_facility` at all, so `PATH`
+#: tampering that happens (as the reviewer's own reproduction does)
+#: AFTER import but before construction/admission no longer has any
+#: effect on this ALREADY-CAPTURED value -- `_reject_untrusted_transport_git_executable`
+#: now compares `transport._git` against THIS constant, never a fresh
+#: `shutil.which` call, so a transport constructed under a
+#: post-import-poisoned `PATH` resolves to a DIFFERENT `_git` value
+#: than this trusted baseline and is correctly rejected. (This does
+#: not defend against an attacker who already controls `PATH` BEFORE
+#: this module is ever imported -- the same disclosed,
+#: construction-time-review trust model `_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES`'s
+#: own docstring already names, not a new category of gap.)
+_TRUSTED_GIT_EXECUTABLE = (lambda resolved: str(Path(resolved).resolve()) if resolved else None)(shutil.which("git"))
 
-    `LocalGitRepositoryTransport.__init__` itself only ever resolves
-    `_git` two ways: an explicit `git_executable` constructor argument
-    (confirmed, by a full-codebase search, never used anywhere in this
-    repository -- there is no legitimate scenario today that needs
-    it), or `shutil.which("git")` resolved to an absolute path. That
-    means, unlike `_author_name`/`_author_email` (free-form strings
-    with no independently-derivable "correct" value) or
-    `_repositories` (legitimately varies per admission, supplied by
-    the caller), `_git` DOES have a genuinely independent ground
-    truth this function can check against, before ever trusting it as
-    a baseline: the real system `git` executable `shutil.which` itself
-    would resolve to, right now, in this process."""
+
+def _reject_untrusted_transport_git_executable(transport: LocalGitRepositoryTransport) -> None:
+    """See `_TRUSTED_GIT_EXECUTABLE`'s own module-level comment for
+    the round-36/37 findings this closes. `LocalGitRepositoryTransport.__init__`
+    itself only ever resolves `_git` two ways: an explicit
+    `git_executable` constructor argument (confirmed, by a
+    full-codebase search, never used anywhere in this repository --
+    there is no legitimate scenario today that needs it), or
+    `shutil.which("git")` resolved to an absolute path -- so, unlike
+    `_author_name`/`_author_email` (free-form strings with no
+    independently-derivable "correct" value) or `_repositories`
+    (legitimately varies per admission, supplied by the caller),
+    `_git` DOES have a genuine, PATH-independent ground truth this
+    function checks against, before ever trusting it as this
+    admission's baseline."""
     current_git = transport._git  # noqa: SLF001 -- genuine safety enforcement, mirrors _reject_altered_transport_instance_state's own established pattern
     # Round 28's exact-type lesson, replayed here: an attacker-controlled
     # `str` subclass with a lying `__eq__`/`__ne__` could otherwise claim
@@ -637,13 +698,11 @@ def _reject_untrusted_transport_git_executable(transport: LocalGitRepositoryTran
             f"_reject_untrusted_transport_git_executable: transport._git is not a plain str "
             f"(got {type(current_git).__name__}) -- refusing to trust it as this admission's baseline"
         )
-    resolved = shutil.which("git")
-    expected_git = str(Path(resolved).resolve()) if resolved else None
-    if expected_git is None or current_git != expected_git:
+    if _TRUSTED_GIT_EXECUTABLE is None or current_git != _TRUSTED_GIT_EXECUTABLE:
         raise RepositoryConstructionQualificationError(
             f"_reject_untrusted_transport_git_executable: transport._git ({current_git!r}) does not match "
-            f"the independently resolved system git executable ({expected_git!r}) -- refusing to trust it "
-            f"as this admission's baseline"
+            f"the git executable resolved at this module's own import time ({_TRUSTED_GIT_EXECUTABLE!r}) -- "
+            f"refusing to trust it as this admission's baseline"
         )
 
 
@@ -1404,7 +1463,55 @@ class _FrozenClassMeta(type):
     disclosed explicitly here because this is the first round where
     that boundary was concretely, empirically probed rather than
     assumed. See `test_sc23_wrapper_class_freeze_cannot_defend_against_a_direct_type_setattr_bypass`
-    for the permanent, executable record of this disclosed limitation."""
+    for the permanent, executable record of this disclosed limitation.
+
+    SECURITY NOTE -- DISCLOSED LIMITATION, WIDENED (review finding, PR
+    #86, round 37, P1, Codex, reproduced by the reviewer -- "Protect
+    wrapper methods' mutable code objects"): the round-27 narrowing
+    above excluded "invoking a base dunder implementation by name to
+    route around virtual dispatch" -- but the reviewer found a bypass
+    that needs NEITHER `type.__setattr__` NOR any dunder trick at all:
+    `type(facility).create_branch.__code__ = malicious.__code__`. This
+    is ORDINARY attribute assignment, using NORMAL Python syntax, on a
+    plain `function` OBJECT -- `__code__` is just one more mutable
+    attribute a `function` instance carries, exactly like any other
+    object's mutable state, and this metaclass's own `__setattr__`
+    override only ever intercepts assignment ON THE CLASS
+    (`SomeClass.attr = x`); it has no way to intercept, and no
+    jurisdiction over, an assignment on some OTHER object the class
+    happens to hold a reference to as one of its attribute VALUES.
+    Confirmed empirically: the reassignment succeeds without raising,
+    and the next `facility.create_branch(None)` call runs the injected
+    bytecode with none of the real method's containment, authority, or
+    lease checks -- worse than round 27's own bypass, since this one
+    falls squarely INSIDE the trust model round 27 already narrowed to
+    ("ordinary syntax... not a new kind of gap"), not outside it.
+
+    Round 37's OTHER finding this same round (see
+    `_TRUSTED_TRANSPORT_CLASS_CODE_OBJECTS`'s own docstring) shows the
+    identical `__code__`-mutation technique IS genuinely defensible
+    for `LocalGitRepositoryTransport`/`RepositoryFacility` -- because a
+    SEPARATE, EARLIER function (`_revalidate_transport_integrity`)
+    exists and can snapshot-compare their code objects BEFORE ever
+    delegating to them. THIS wrapper's own dispatch methods have no
+    such earlier checkpoint: `create_branch` IS the function whose
+    code gets replaced, so by the time it starts running, the
+    malicious bytecode is what is already executing -- the same
+    "no hook point from within" structural fact round 25/26 already
+    established, replaying a third time for a third kind of mutable
+    state (instance `__dict__` shadowing, then class-attribute
+    rebinding, now a function object's own `__code__`). There is
+    consequently no further code-level fix available inside this
+    single Python process; the admitted identity's trust model is
+    narrowed once more, explicitly, to also exclude a caller mutating
+    the `__code__` (or `__defaults__`/`__closure__`/`__globals__`) of
+    any function object reachable from the returned wrapper -- the
+    same materially different, separately-deliberated undertaking
+    (protecting the boundary outside the interpreter) round 27's own
+    disclosure already named, not a new kind of gap. See
+    `test_sc23_wrapper_dispatch_method_code_object_cannot_be_defended_against_in_process`
+    for the permanent, executable record of this disclosed
+    limitation."""
 
     def __setattr__(cls, name, value):
         raise AttributeError(
