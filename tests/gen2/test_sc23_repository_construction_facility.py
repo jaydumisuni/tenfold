@@ -1796,6 +1796,55 @@ def test_sc23_wrapper_denies_delegated_access_to_admitted_collaborators(tmp_path
         facility.state.put_receipt = lambda receipt: None
 
 
+def test_sc23_wrapper_revalidates_facility_class_implementation_before_delegating_writer_methods(tmp_path) -> None:
+    """Review finding (PR #86, round 35, P1, Codex, reproduced by the
+    reviewer -- "Revalidate allowlisted writer methods before
+    delegation"): `acquire_writer`/`release_writer` were delegated via
+    a bare `getattr(admitted.facility, name)`, never calling
+    `_revalidate_transport_integrity` the way `create_branch`/
+    `commit`/`read`/`open_pr`/`merge_pr` all do. The reviewer
+    reproduced rebinding `RepositoryFacility.acquire_writer` at the
+    CLASS level, then calling `facility.acquire_writer(...)` -- the
+    injected method ran and returned successfully without recording
+    the writer, entirely bypassing
+    `_reject_altered_facility_class_implementation`, even though the
+    same class tampering is rejected by every one of the other five
+    delegated methods. `__getattr__` now runs the same full
+    revalidation before returning either bound method."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+    from tenfold.repository_facility import RepositoryFacility
+
+    repo_root = tmp_path / "existing-repo"
+    _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    original_acquire_writer = RepositoryFacility.acquire_writer
+    try:
+        RepositoryFacility.acquire_writer = lambda self, *args, **kwargs: "injected-lock-token"
+
+        with pytest.raises(RepositoryConstructionQualificationError):
+            facility.acquire_writer("existing", "sc23/writer-class-tamper-probe", "assign-probe")
+    finally:
+        RepositoryFacility.acquire_writer = original_acquire_writer
+
+    original_release_writer = RepositoryFacility.release_writer
+    try:
+        RepositoryFacility.release_writer = lambda self, *args, **kwargs: None
+
+        with pytest.raises(RepositoryConstructionQualificationError):
+            facility.release_writer("existing", "sc23/writer-class-tamper-probe", "assign-probe")
+    finally:
+        RepositoryFacility.release_writer = original_release_writer
+
+    # Untampered, the allowlisted delegation still works exactly as
+    # before -- this fix revalidates, it does not deny.
+    facility.acquire_writer("existing", "sc23/writer-class-tamper-probe", "assign-probe")
+    facility.release_writer("existing", "sc23/writer-class-tamper-probe", "assign-probe")
+
+
 def test_sc23_wrapper_does_not_expose_current_transport_as_a_method(tmp_path) -> None:
     """Review finding (PR #86, round 33, P1, Codex, reproduced by the
     reviewer -- "Stop returning the raw transport from the wrapper"):

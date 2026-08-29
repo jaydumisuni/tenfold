@@ -1607,7 +1607,24 @@ class _ContainmentReCheckedRepositoryFacility(metaclass=_FrozenClassMeta):
                 f"_ContainmentReCheckedRepositoryFacility.{name}: this attribute is not delegated -- "
                 f"use create_branch/commit/read/open_pr/merge_pr instead, which revalidate before delegating"
             )
-        return getattr(_admitted_state_for(self).facility, name)
+        # Review finding (PR #86, round 35, P1, Codex, reproduced by
+        # the reviewer -- "Revalidate allowlisted writer methods
+        # before delegation"): `acquire_writer`/`release_writer` were
+        # delegated via a bare `getattr(admitted.facility, name)`,
+        # never calling `_revalidate_transport_integrity` the way all
+        # five dispatch methods do. The reviewer reproduced rebinding
+        # `RepositoryFacility.acquire_writer` at the CLASS level, then
+        # calling `facility.acquire_writer(...)` -- the injected
+        # method ran and returned successfully, entirely bypassing
+        # `_reject_altered_facility_class_implementation`, even though
+        # that exact same tampering is rejected by every one of the
+        # other five delegated methods. Fixed by running the SAME
+        # full revalidation here before returning the bound method --
+        # matching every other delegation path in this class rather
+        # than special-casing these two as "lock bookkeeping only,
+        # nothing to check."
+        admitted = _revalidate_transport_integrity(self)
+        return getattr(admitted.facility, name)
 
     def create_branch(self, *args, **kwargs):
         # Round 24 (see `_AdmittedTransportState`'s own docstring):

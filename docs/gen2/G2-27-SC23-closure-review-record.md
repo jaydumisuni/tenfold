@@ -2050,6 +2050,47 @@ verdict (see below) rather than a hardcoded stale expectation.
     `test_g2_27_self_construction.py` (33/33), and full repository
     sweep (1376 passed, 2 skipped, only the 9 known pre-existing
     Windows-only failures, zero regressions).
+35. A fresh Codex pass against the round-34 commit (`609fcb7`/`c1fb756`)
+    found 1 further genuine P1 finding:
+    - **P1 ("Revalidate allowlisted writer methods before
+      delegation"), Codex**: `__getattr__`'s allowlisted delegation
+      for `acquire_writer`/`release_writer` (round 33's
+      `_ALLOWED_DELEGATED_ATTRIBUTES`) used a bare
+      `getattr(admitted.facility, name)`, never calling
+      `_revalidate_transport_integrity` the way all five dispatch
+      methods (`create_branch`/`commit`/`read`/`open_pr`/`merge_pr`)
+      do. The reviewer reproduced rebinding
+      `RepositoryFacility.acquire_writer` at the CLASS level, then
+      calling `facility.acquire_writer(...)` -- the injected method
+      ran and returned successfully without recording the writer,
+      entirely bypassing `_reject_altered_facility_class_implementation`,
+      even though that exact same class tampering is rejected by
+      every one of the other five delegated methods. This traces back
+      to an original design assumption from round 32 (see
+      `_ALLOWED_DELEGATED_ATTRIBUTES`'s own docstring): these two were
+      reasoned to be safe because they "never expose a raw
+      collaborator object and touch only lock bookkeeping" -- true of
+      their RETURN VALUE, but that reasoning never considered that the
+      METHOD ITSELF, reached via delegation, could be a tampered
+      implementation.
+
+      Fixed by running the same full `_revalidate_transport_integrity`
+      check in `__getattr__` before returning either bound method,
+      matching every other delegation path in this class rather than
+      special-casing these two -- closing the same class of "we
+      assumed a narrower risk profile" mistake round 33 already closed
+      once for `open_pr`/`merge_pr`, now replaying for the allowlisted
+      delegation path itself. A new permanent regression test
+      reproduces the reviewer's exact class-level rebind for both
+      `acquire_writer` and `release_writer`, and also confirms
+      untampered delegation still works unchanged (this revalidates,
+      it does not deny).
+
+    Fixed in commit `<pending>`, with 1 new permanent regression test.
+    Full local re-verification: full test file (81/81), full mutation
+    suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (pending, only the 9 known pre-existing
+    Windows-only failures expected).
 
 ## Real, honest end-to-end result
 
