@@ -1989,6 +1989,67 @@ verdict (see below) rather than a hardcoded stale expectation.
     (37/37), `test_g2_27_self_construction.py` (33/33), and full
     repository sweep (1375 passed, only the 9 known pre-existing
     Windows-only failures, zero regressions).
+34. A fresh Codex pass against the round-33 commit (`60eb629`) found 1
+    further genuine P1 finding -- the SECOND finding in this closure
+    record's history (after round 27) that is disclosed rather than
+    fixed with code, this time reached from a different angle:
+    - **P1 ("Stop module helpers from returning the raw transport"),
+      Codex**: round 33 moved `_current_transport`/
+      `_revalidate_transport_integrity` to MODULE scope, closing the
+      ORDINARY-ATTRIBUTE-LOOKUP path a caller previously had via
+      `facility._current_transport()`. But a leading underscore on a
+      MODULE-LEVEL name is, exactly like everywhere else in Python,
+      convention ONLY: `from module import _private_name` has ALWAYS
+      worked, with no way to disable it. The reviewer reproduced
+      exactly that -- importing `_current_transport` by name and
+      calling it directly on the returned `facility` object, obtaining
+      the RAW transport with none of `_revalidate_transport_integrity`'s
+      further checks ever running. **Verified this is WORSE than even
+      the reviewer's own reproduction, independently**: a caller
+      holding ONLY the returned `facility` object, with NO explicit
+      import of ANYTHING from this module at all, can STILL reach the
+      SAME function purely through standard-library introspection
+      every Python object exposes by construction --
+      `sys.modules[type(facility).__module__]._current_transport(facility)`
+      -- confirmed empirically. `type(obj).__module__` is a builtin,
+      unavoidable property; `sys.modules` is the standard,
+      always-populated registry of every module Python has ever
+      loaded (which this one necessarily has been, for `facility` to
+      exist at all); once the MODULE object is in hand, every one of
+      its top-level names -- function or otherwise, underscore-
+      prefixed or not -- is an ordinary, reachable attribute. **This
+      is NOT a new category of gap**: it is the SAME fundamental
+      property of Python's object model already disclosed in round 27
+      (`type.__setattr__` bypassing a metaclass's own `__setattr__`)
+      -- no interpreter-level mechanism can make a name defined in
+      this module genuinely unreachable from code that already holds
+      ANY object this module produced, short of enforcing the boundary
+      OUTSIDE the interpreter entirely (OS-level process isolation, a
+      capability-sandboxed subprocess), the same materially different,
+      separately-deliberated undertaking round 27's own disclosure
+      named. **Also verified**: replacing the module-level function
+      with a CLOSURE captured at admission time would not help either
+      -- the closure itself would need to live somewhere reachable by
+      the wrapper's own methods, which reduces to either an instance
+      attribute (rounds 30/31's own, structurally analogous, already-
+      closed battle) or the SAME module-level reachability this
+      finding just demonstrated. There is consequently no further
+      code-level fix available. **Disclosed, not fixed**: extended
+      round 27's `_FrozenClassMeta` disclosure precedent to
+      `_current_transport`'s own docstring. A new permanent regression
+      test does NOT assert protection -- it documents the bypass
+      succeeding via the `sys.modules` introspection path specifically
+      (a STRONGER reproduction than the reviewer's own explicit-import
+      one), so the disclosed boundary stays a verified, executable fact
+      rather than an assumption.
+
+    Fixed (via disclosure, not code) in commit `<pending>`, with 1 new
+    permanent regression test that documents the limitation rather
+    than defending against it. Full local re-verification: full test
+    file (80/80), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (pending), and full repository
+    sweep (pending, only the 9 known pre-existing Windows-only
+    failures expected).
 
 ## Real, honest end-to-end result
 

@@ -1305,7 +1305,51 @@ def _current_transport(wrapper: "_ContainmentReCheckedRepositoryFacility") -> Lo
     `facility._current_transport` now falls through to `__getattr__`,
     which correctly denies it (not on the allowlist) -- the SAME
     structural fix `__slots__` (round 25) already gave instance
-    attributes, now applied to what were previously instance methods."""
+    attributes, now applied to what were previously instance methods.
+
+    SECURITY NOTE -- DISCLOSED LIMITATION (review finding, PR #86,
+    round 34, P1, Codex, reproduced by the reviewer -- "Stop module
+    helpers from returning the raw transport"): moving this function
+    to module scope closes the ORDINARY-ATTRIBUTE-LOOKUP path (round
+    33's own finding), but a leading underscore on a MODULE-LEVEL name
+    is, just like everywhere else in Python, convention ONLY -- `from
+    module import _private_name` has ALWAYS worked, with no way to
+    disable it. The reviewer reproduced exactly that: importing this
+    function by name and calling `_current_transport(facility)`
+    directly. Verified this is WORSE than even that, independently of
+    the reviewer's own reproduction: a caller holding ONLY the returned
+    `facility` object, with NO explicit import of anything from this
+    module at all, can STILL reach this function purely through
+    standard-library introspection every Python object exposes by
+    construction --
+    `sys.modules[type(facility).__module__]._current_transport(facility)`
+    -- confirmed empirically. `type(obj).__module__` is a builtin,
+    unavoidable property; `sys.modules` is the standard, always-populated
+    registry of every module Python has ever loaded (which this one
+    necessarily has been, for `facility` to exist at all); once the
+    MODULE object is in hand, every one of its top-level names --
+    function or otherwise, underscore-prefixed or not -- is an ordinary
+    attribute, reachable exactly like any other. This is NOT a new
+    category of gap: it is the SAME fundamental property of Python's
+    object model already disclosed in round 27 (`type.__setattr__`
+    bypassing a metaclass's own `__setattr__`) -- no interpreter-level
+    mechanism can make a name defined in this module genuinely
+    unreachable from code that already has a reference to ANY object
+    this module produced, short of enforcing the boundary OUTSIDE the
+    interpreter entirely (OS-level process isolation, a
+    capability-sandboxed subprocess), the same materially different,
+    separately-deliberated undertaking round 27's own disclosure named.
+    Also verified: replacing this module-level function with a CLOSURE
+    captured at admission time would not help either -- the closure
+    itself would need to live somewhere reachable by the wrapper's own
+    methods, which reduces to either an instance attribute (round
+    30/31's already-closed, but structurally analogous, losing battle)
+    or the SAME module-level reachability this finding just
+    demonstrated. There is consequently no further code-level fix
+    available. See
+    `test_sc23_current_transport_cannot_be_fully_hidden_from_module_introspection`
+    for the permanent, executable record of this disclosed limitation,
+    matching round 27's `_FrozenClassMeta` precedent exactly."""
     admitted = _admitted_state_for(wrapper)
     _reject_altered_facility_class_implementation()
     current = admitted.facility.transport

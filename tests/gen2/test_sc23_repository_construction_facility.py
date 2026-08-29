@@ -1890,6 +1890,46 @@ def test_sc23_wrapper_getattr_denies_unlisted_attributes_including_dunder_fallth
         facility.some_never_imagined_attribute_name
 
 
+def test_sc23_current_transport_cannot_be_fully_hidden_from_module_introspection(tmp_path) -> None:
+    """SECURITY NOTE -- DISCLOSED LIMITATION (review finding, PR #86,
+    round 34, P1, Codex, reproduced by the reviewer -- "Stop module
+    helpers from returning the raw transport"). See `_current_transport`'s
+    own docstring for the full account. Round 33 moved
+    `_current_transport` to module scope, closing the ORDINARY-
+    ATTRIBUTE-LOOKUP path -- but a leading underscore on a MODULE-LEVEL
+    name is convention only, exactly like everywhere else in Python:
+    `from module import _private_name` has always worked. The reviewer
+    reproduced exactly that. This test goes further, independently of
+    the reviewer's own reproduction: it reaches the SAME function with
+    NO explicit import of anything from this module at all, purely via
+    standard-library introspection every Python object exposes by
+    construction (`type(obj).__module__` plus `sys.modules`) --
+    confirming this is the SAME fundamental property of Python's object
+    model already disclosed in round 27, not a new kind of gap. This
+    test does NOT assert protection -- it documents, honestly and
+    permanently, that the bypass succeeds, so the disclosed boundary
+    stays a verified, executable fact rather than an assumption."""
+    import sys
+
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    # No `from tenfold.gen2.repository_construction_facility import
+    # _current_transport` anywhere -- reached purely via introspection
+    # off the wrapper object itself, which is the ONLY thing a genuine
+    # external caller is assumed to hold.
+    module = sys.modules[type(facility).__module__]
+    raw_transport = module._current_transport(facility)  # noqa: SLF001 -- test-only, documenting the disclosed limitation
+
+    assert raw_transport is transport
+
+
 def test_sc23_wrapper_rejects_an_included_git_config(tmp_path) -> None:
     """Review finding (PR #86, round 16, P1, reproduced by the
     reviewer): the round-15 exact-byte-snapshot check is airtight
