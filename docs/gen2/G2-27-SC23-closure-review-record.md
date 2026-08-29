@@ -1591,6 +1591,78 @@ verdict (see below) rather than a hardcoded stale expectation.
     full mutation suite (37/37), `test_g2_27_self_construction.py`
     (33/33), and full repository sweep (1366 passed, only the 9 known
     pre-existing Windows-only failures, zero regressions).
+27. A fresh Codex + CodeRabbit pass against the round-26 commit
+    (`e8f9e37`) found the SAME genuine finding independently from both
+    reviewers (P1, Codex; Major, CodeRabbit), and it is the first
+    finding in this closure record's entire 27-round history that is
+    NOT fixed with a code change -- it is genuinely, empirically
+    unfixable inside a single Python process, and is instead disclosed
+    honestly, matching the round-14 TOCTOU precedent:
+    - **"Prevent direct base-metaclass rebinding" / "Do not rely on
+      `_FrozenClassMeta` as a security boundary"**: round 26's
+      metaclass blocks NORMAL attribute-assignment syntax
+      (`type(facility).create_branch = malicious_fn`), but both
+      reviewers independently reproduced
+      `type.__setattr__(type(facility), "create_branch", malicious_fn)`
+      -- explicitly invoking `type`'s ROOT `__setattr__` implementation
+      by name, sidestepping virtual dispatch through the metaclass's
+      own MRO entirely. The replacement then genuinely ran on the next
+      `create_branch` call, with no containment, transport-integrity,
+      authority, or lease check firing at all. **Verified empirically,
+      independently of the reviewers' own reproductions**: this is a
+      FUNDAMENTAL property of Python's object model, not a fixable
+      defect in this metaclass or a gap a cleverer metaclass could
+      close -- `type.__setattr__` is the root implementation every
+      class ultimately inherits, it is always a publicly reachable
+      builtin, and no override anywhere in an MRO can prevent a caller
+      from invoking a LESS-derived implementation of the same dunder
+      directly by name. This is structurally the SAME bypass round
+      25's `object.__setattr__`-defeats-`@dataclass(frozen=True)`
+      finding already demonstrated for INSTANCE-level freezing,
+      replaying here for CLASS-level freezing. Also verified
+      empirically: the REACTIVE snapshot-comparison approach that
+      protects the Gen1-owned `LocalGitRepositoryTransport`/
+      `RepositoryFacility` classes (`_reject_altered_class_implementation`,
+      rounds 21/23) remains fully sound against this exact technique
+      -- it detects the CURRENT class state regardless of HOW it was
+      mutated, so the bypass changes nothing about whether it gets
+      caught THERE. But that same reactive pattern could never have
+      protected THIS wrapper's own dispatch methods, with or without
+      round 26's metaclass: if `create_branch` itself is successfully
+      replaced, by ANY technique, no code inside it -- including a
+      hypothetical check -- would ever run to notice. There is
+      consequently no further code-level fix available inside this
+      single Python process; the only genuine defense would be
+      enforcing this boundary OUTSIDE the interpreter entirely (OS-level
+      process isolation, a capability-sandboxed subprocess), a
+      materially different, separately-deliberated undertaking, not a
+      rewrite of this module -- matching CodeRabbit's own explicit
+      framing of the choice ("protect this boundary outside the
+      interpreter, or narrow the documented attacker model").
+      **Disclosed, not fixed**: `_FrozenClassMeta`'s own docstring now
+      states this limitation explicitly, narrowing the admitted
+      local-commit-only identity's attacker model to a caller using
+      Python's NORMAL attribute-access surface (ordinary syntax,
+      `getattr`/`setattr` builtins) rather than one deliberately
+      invoking a base dunder implementation by name to route around
+      virtual dispatch -- the SAME category of trust boundary this
+      module's own top-level docstring already discloses for the
+      admitted identity generally (construction-time review discipline,
+      not runtime cryptographic/interpreter-level tamper-proofing), not
+      a new kind of gap. A new permanent regression test
+      (`test_sc23_wrapper_class_freeze_cannot_defend_against_a_direct_type_setattr_bypass`)
+      deliberately does NOT assert protection -- it documents the
+      bypass succeeding, executing the reviewers' own reproduction, so
+      the disclosed boundary stays a verified, executable fact rather
+      than an assumption that could silently drift.
+
+    Fixed (via disclosure, not code) in commit `<pending>`, with 1 new
+    permanent regression test that documents the limitation rather
+    than defending against it. Full local re-verification: full test
+    file (71/71), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (pending), and full repository
+    sweep (pending, only the 9 known pre-existing Windows-only
+    failures expected).
 
 ## Real, honest end-to-end result
 

@@ -1031,7 +1031,62 @@ class _FrozenClassMeta(type):
     possible instead: this metaclass makes the class object itself
     reject any attribute assignment or deletion after it is defined,
     closing the entire class of attack at the language level, the same
-    kind of guarantee `__slots__` already gives at the instance level."""
+    kind of guarantee `__slots__` already gives at the instance level.
+
+    SECURITY NOTE -- DISCLOSED LIMITATION (review finding, PR #86,
+    round 27, P1/Major, Codex and CodeRabbit, both independently
+    reproduced by the reviewers): `__setattr__`/`__delattr__` above
+    only intercept Python's NORMAL attribute-assignment SYNTAX
+    (`SomeClass.attr = x`, which is sugar for
+    `type(SomeClass).__setattr__(SomeClass, "attr", x)` -- virtual
+    dispatch through the metaclass's own MRO). Calling
+    `type.__setattr__(SomeClass, "attr", x)` EXPLICITLY sidesteps that
+    dispatch entirely, invoking the base implementation directly --
+    confirmed empirically:
+    `type.__setattr__(type(facility), "create_branch", malicious_fn)`
+    succeeds and the next `facility.create_branch(...)` call runs the
+    replacement, unconditionally. This is a FUNDAMENTAL property of
+    Python's object model, not a defect in this metaclass or a gap
+    that a cleverer metaclass could close: `type.__setattr__` is the
+    ROOT implementation every class ultimately inherits (directly or
+    through its metaclass chain), it is always PUBLICLY reachable as a
+    builtin, and no override anywhere in the MRO can prevent a caller
+    from invoking a LESS-derived implementation of the same dunder by
+    name -- exactly the same structural bypass round 25's
+    `object.__setattr__`-defeats-`@dataclass(frozen=True)` finding
+    already demonstrated for INSTANCE-level freezing, replaying here
+    for CLASS-level freezing. The REACTIVE snapshot-comparison approach
+    (`_reject_altered_class_implementation`) that protects the
+    Gen1-owned `LocalGitRepositoryTransport`/`RepositoryFacility`
+    classes remains fully sound against this exact technique (verified
+    empirically) -- it detects the CURRENT state regardless of HOW it
+    was mutated, so bypassing `__setattr__` changes nothing about
+    whether it gets caught. But that same reactive pattern could never
+    have protected THIS wrapper's own dispatch methods regardless of
+    round 26's implementation choice: if `create_branch` itself is
+    successfully replaced, by ANY technique, no code inside it --
+    including a hypothetical check -- would ever run to notice. There
+    is consequently no further code-level fix available inside this
+    single Python process. Matching CodeRabbit's own explicit
+    suggestion ("narrow the documented attacker model" when the
+    alternative -- protecting the boundary outside the interpreter,
+    e.g. OS-level process isolation or a capability-sandboxed
+    subprocess -- is a materially different, separately-deliberated
+    undertaking, not a rewrite of this module): the admitted
+    local-commit-only identity's trust model is explicitly narrowed
+    here to a caller using Python's NORMAL attribute-access surface
+    (ordinary syntax, `getattr`/`setattr` builtins, `__slots__`-aware
+    reflection) -- not one deliberately invoking a base dunder
+    implementation by name to route around virtual dispatch. This is
+    the SAME category of trust boundary this module's own top-level
+    docstring already discloses for the admitted identity generally
+    ("construction/qualification time... review discipline... the same
+    trust model every other PropertyQualificationRecord/Trust Table
+    row in this codebase already uses"), not a new kind of gap --
+    disclosed explicitly here because this is the first round where
+    that boundary was concretely, empirically probed rather than
+    assumed. See `test_sc23_wrapper_class_freeze_cannot_defend_against_a_direct_type_setattr_bypass`
+    for the permanent, executable record of this disclosed limitation."""
 
     def __setattr__(cls, name, value):
         raise AttributeError(

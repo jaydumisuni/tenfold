@@ -1440,6 +1440,54 @@ def test_sc23_wrapper_rejects_a_class_level_rebound_dispatch_method(tmp_path) ->
         del type(facility).create_branch
 
 
+def test_sc23_wrapper_class_freeze_cannot_defend_against_a_direct_type_setattr_bypass(tmp_path) -> None:
+    """SECURITY NOTE -- DISCLOSED LIMITATION (review finding, PR #86,
+    round 27, P1/Major, Codex and CodeRabbit, both independently
+    reproduced by the reviewers). See `_FrozenClassMeta`'s own
+    docstring for the full account.
+    `type.__setattr__(type(facility), "create_branch", malicious_fn)`
+    sidesteps the metaclass's own `__setattr__` override entirely by
+    invoking `type`'s ROOT implementation directly, bypassing virtual
+    dispatch through the metaclass's MRO -- a FUNDAMENTAL property of
+    Python's object model (the same structural bypass round 25's
+    `object.__setattr__`-vs-`@dataclass(frozen=True)` finding already
+    demonstrated for INSTANCE-level freezing), not a fixable defect in
+    this metaclass or a gap a cleverer metaclass could close.
+
+    This test does NOT assert protection -- it documents, honestly and
+    permanently, that the bypass succeeds, executing the same
+    reproduction the reviewers used so the disclosed boundary stays a
+    verified, executable fact rather than an assumption that could
+    silently drift. Ordinary syntax (round 26's own regression test,
+    immediately above) remains genuinely blocked; only this explicit,
+    low-level dunder invocation defeats the freeze."""
+    from tenfold.gen2.repository_construction_facility import (
+        RepositoryStateStore,
+        _ContainmentReCheckedRepositoryFacility,
+        _MutableAuthorityStore,
+        _empty_snapshot,
+    )
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    original_create_branch = _ContainmentReCheckedRepositoryFacility.create_branch
+    try:
+        type.__setattr__(type(facility), "create_branch", lambda self, *args, **kwargs: "0" * 40)  # noqa: SLF001 -- test-only, reproducing the reviewer's exact bypass
+
+        # The replacement genuinely runs -- no containment,
+        # transport-integrity, authority, or lease check fires,
+        # confirming this is a real, not merely theoretical, disclosed
+        # limitation.
+        assert facility.create_branch(None) == "0" * 40
+    finally:
+        type.__setattr__(type(facility), "create_branch", original_create_branch)
+
+
 def test_sc23_wrapper_rejects_a_reassigned_repository_registration(tmp_path) -> None:
     """Review finding (PR #86, round 19, Major, CodeRabbit): the round-18
     instance-attribute allowlist validates attribute NAMES only --
