@@ -2290,13 +2290,12 @@ verdict (see below) rather than a hardcoded stale expectation.
 
     2 of 3 findings fixed with real mechanisms; 1 disclosed (matching
     round 27/34 precedent, confirmed genuinely unfixable in-process,
-    not merely difficult). 4 new permanent regression tests reproduce
-    each finding exactly. Fixed in commit `<pending>`, with 4 new
+    not merely difficult). Fixed in commit `a00752c`, with 4 new
     permanent regression tests. Full local re-verification: full test
     file (87/87), full mutation suite (37/37),
     `test_g2_27_self_construction.py` (33/33), and full repository
-    sweep (pending, only the 9 known pre-existing Windows-only
-    failures expected).
+    sweep (1383 passed, 2 skipped, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
 
 ## Real, honest end-to-end result
 
