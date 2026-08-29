@@ -1849,13 +1849,13 @@ verdict (see below) rather than a hardcoded stale expectation.
       `facility.transport` and `facility._facility` calls and confirms
       both now raise `AttributeError`.
 
-    Fixed in commit `<pending>`, with 1 new permanent regression test
+    Fixed in commit `b1e63c6`, with 1 new permanent regression test
     (plus 4 existing tests updated to use the module-private lookup
     the code itself now relies on). Full local re-verification: full
     test file (75/75), full mutation suite (37/37),
-    `test_g2_27_self_construction.py` (pending), and full repository
-    sweep (pending, only the 9 known pre-existing Windows-only
-    failures expected).
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (1371 passed, only the 9 known pre-existing Windows-only
+    failures, zero regressions).
 
 ## Real, honest end-to-end result
 
