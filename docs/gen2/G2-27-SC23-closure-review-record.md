@@ -2188,12 +2188,12 @@ verdict (see below) rather than a hardcoded stale expectation.
     including a REAL, fully-authorized `create_branch` (not a
     placeholder `task=None`) proving the malicious `authority_store`
     replacement genuinely never runs, not merely that some other check
-    happens to reject the call first. Fixed in commit `<pending>`,
+    happens to reject the call first. Fixed in commit `d662fd5`,
     with 2 new permanent regression tests. Full local re-verification:
     full test file (83/83), full mutation suite (37/37),
     `test_g2_27_self_construction.py` (33/33), and full repository
-    sweep (pending, only the 9 known pre-existing Windows-only
-    failures expected).
+    sweep (1379 passed, 2 skipped, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
 
 ## Real, honest end-to-end result
 
