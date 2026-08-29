@@ -2087,6 +2087,138 @@ def test_sc23_wrapper_seals_authority_store_against_a_caller_retained_reference_
     assert triggered["called"] is False
 
 
+def test_sc23_wrapper_seals_state_store_against_a_caller_retained_reference_mutation(tmp_path) -> None:
+    """Review finding (PR #86, round 38, P1, Codex, reproduced by the
+    reviewer -- "Seal the caller-retained state store"): round 36
+    deliberately left `state_store` unsealed, reasoning that this
+    module's own crash-recovery harness legitimately monkeypatches
+    `put_receipt`. The reviewer proved that reasoning insufficient:
+    `state.claim_writer` (a method the harness never touches) is
+    EQUALLY reachable via a caller-retained reference, and
+    `RepositoryFacility.create_branch` calls
+    `self.state.claim_writer(...)` in the SAME post-containment-scan,
+    pre-git-mutation window `self.authority_store.read(...)` (round
+    36) already demonstrated. The reviewer reproduced replacing
+    `claim_writer` with a callback planting an external symlink before
+    the real git mutation, with an authorized `create_branch` still
+    returning a successful receipt. `state` is now sealed identically
+    to `authority_store` -- this performs a REAL, fully-authorized
+    `create_branch` dispatch to prove the malicious replacement
+    genuinely never runs."""
+    from tenfold.gen2.repository_construction_facility import (
+        DisposableRepositoryConstructionRig,
+        RepositoryStateStore,
+        _MutableAuthorityStore,
+        _dispatch,
+        _empty_snapshot,
+    )
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+    from tenfold.repository_facility import repository_ref_resource, repository_request_binding
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    state_store = RepositoryStateStore(str(tmp_path / "state.db"))
+    authority_store = _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1))
+    facility = gen1_wrap_repository_construction_facility(transport, state_store, authority_store)
+    rig = DisposableRepositoryConstructionRig(facility, transport, authority_store, "existing", initial_sha, repo_root, tmp_path / "state.db")
+
+    triggered = {"called": False}
+    original_claim_writer = state_store.claim_writer
+
+    def malicious_claim_writer(repository, branch, owner):
+        triggered["called"] = True
+        return original_claim_writer(repository, branch, owner)
+
+    state_store.claim_writer = malicious_claim_writer  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack: the caller's own retained reference
+
+    request = {"operation_id": "op-state-seal-probe", "repository": "existing", "branch": "sc23/state-seal-probe", "owner": "assign-post", "base_ref": "main", "expected_base_sha": initial_sha}
+    binding = repository_request_binding("create_branch", **request)
+    resource = repository_ref_resource("existing", request["branch"])
+    task = _dispatch(rig, assignment_id="assign-post", attempt=1, campaign_generation=1, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=resource, request_binding=binding)
+    receipt = rig.facility.create_branch(task, repository=request["repository"], branch=request["branch"], owner=request["owner"], base_ref=request["base_ref"], expected_base_sha=request["expected_base_sha"], operation_id=request["operation_id"], foreman_epoch=1)
+
+    assert receipt is not None
+    assert triggered["called"] is False
+
+
+def test_sc23_wrapper_rejects_a_transport_git_executable_with_content_replaced_in_place(tmp_path) -> None:
+    """Review finding (PR #86, round 38, P1, Codex, reproduced by the
+    reviewer -- "Verify the Git executable rather than only its
+    path"): `_TRUSTED_GIT_EXECUTABLE` (round 37) pins only the
+    PATHNAME -- when that path resolves to a caller-writable location,
+    a caller can leave `_git`'s string value untouched while replacing
+    the FILE'S OWN CONTENT at that same path, in place, at any point
+    after import or admission. The reviewer reproduced admitting
+    through a real, delegating shim, then overwriting that same file
+    afterward with a side-effecting replacement -- every existing
+    check kept passing, since none of them ever read the file's own
+    bytes. `_TRUSTED_GIT_EXECUTABLE_DIGEST` now hashes the trusted
+    executable's content at import time and re-verifies it on every
+    revalidation, not merely once at admission."""
+    from tenfold.gen2.repository_construction_facility import (
+        RepositoryStateStore,
+        _MutableAuthorityStore,
+        _empty_snapshot,
+        _revalidate_transport_integrity,
+    )
+    import tenfold.gen2.repository_construction_facility as _module
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    import os
+
+    # A copy of the real git binary run under an unrecognized argv[0]
+    # name can itself refuse certain subcommands ("cannot handle
+    # <name> as a builtin") -- the shim keeps git's own expected
+    # basename, just resolved from a separate, disposable directory,
+    # so it is a genuinely distinct FILE at a genuinely distinct PATH
+    # (the attack this test reproduces) without tripping that
+    # unrelated git quirk.
+    shim_dir = tmp_path / "shim-dir"
+    shim_dir.mkdir()
+    shim_name = "git.exe" if os.name == "nt" else "git"
+    shim = shim_dir / shim_name
+    shim.write_bytes(_module._TRUSTED_GIT_EXECUTABLE and Path(_module._TRUSTED_GIT_EXECUTABLE).read_bytes() or b"")
+    if os.name != "nt":
+        shim.chmod(0o755)
+
+    original_executable = _module._TRUSTED_GIT_EXECUTABLE
+    original_digest = _module._TRUSTED_GIT_EXECUTABLE_DIGEST
+    try:
+        # Simulate "this shim was the real, trusted baseline at this
+        # module's own import time" -- a real repository-construction
+        # deployment would have resolved `_TRUSTED_GIT_EXECUTABLE` to
+        # whatever `shutil.which("git")` genuinely returns; this test
+        # substitutes a controlled shim in that constant's place so it
+        # can safely overwrite ITS content without touching the real
+        # system git executable.
+        from hashlib import sha256
+        _module._TRUSTED_GIT_EXECUTABLE = str(shim.resolve())
+        _module._TRUSTED_GIT_EXECUTABLE_DIGEST = sha256(shim.read_bytes()).hexdigest()
+
+        transport = LocalGitRepositoryTransport({"existing": repo_root})
+        transport._git = str(shim.resolve())  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+        facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+        # Unmodified content: revalidation genuinely passes.
+        _revalidate_transport_integrity(facility)
+
+        # Replace the SAME file's content in place, after admission --
+        # `_git`'s string value never changes.
+        shim.write_bytes(b"MALICIOUS-REPLACEMENT-CONTENT")
+
+        with pytest.raises(RepositoryConstructionQualificationError):
+            _revalidate_transport_integrity(facility)
+    finally:
+        _module._TRUSTED_GIT_EXECUTABLE = original_executable
+        _module._TRUSTED_GIT_EXECUTABLE_DIGEST = original_digest
+
+
 def test_sc23_wrapper_does_not_expose_current_transport_as_a_method(tmp_path) -> None:
     """Review finding (PR #86, round 33, P1, Codex, reproduced by the
     reviewer -- "Stop returning the raw transport from the wrapper"):

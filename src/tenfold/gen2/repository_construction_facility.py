@@ -673,22 +673,48 @@ def _reject_alternate_git_config_sources(name: str, git_dir: Path) -> None:
 #: construction-time-review trust model `_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES`'s
 #: own docstring already names, not a new category of gap.)
 _TRUSTED_GIT_EXECUTABLE = (lambda resolved: str(Path(resolved).resolve()) if resolved else None)(shutil.which("git"))
+#: Review finding (PR #86, round 38, P1, Codex, reproduced by the
+#: reviewer -- "Verify the Git executable rather than only its path"):
+#: `_TRUSTED_GIT_EXECUTABLE` closes PATH-resolution tampering (round
+#: 37), but pins only the PATHNAME -- when that path resolves to a
+#: caller-writable location (a common, ordinary case: a user-local
+#: git install, a venv-bundled one, many CI images), a caller can
+#: leave `_git`'s STRING value completely untouched while replacing
+#: the FILE'S OWN CONTENT at that same path, in place, at any point
+#: after import or admission. The reviewer reproduced exactly this:
+#: importing and admitting through a real, delegating git shim, then
+#: overwriting that SAME file afterward with a side-effecting
+#: replacement -- every existing check (pathname pinning, exact-type,
+#: instance-value pinning) kept passing, since none of them ever read
+#: the file's own bytes, only compared the unchanged path STRING.
+#: Hashed here, at THIS module's own import time -- the file's
+#: content, not merely its location, becomes part of the trusted
+#: baseline every other import-time snapshot in this file already
+#: establishes.
+_TRUSTED_GIT_EXECUTABLE_DIGEST = sha256(Path(_TRUSTED_GIT_EXECUTABLE).read_bytes()).hexdigest() if _TRUSTED_GIT_EXECUTABLE else None
 
 
 def _reject_untrusted_transport_git_executable(transport: LocalGitRepositoryTransport) -> None:
-    """See `_TRUSTED_GIT_EXECUTABLE`'s own module-level comment for
-    the round-36/37 findings this closes. `LocalGitRepositoryTransport.__init__`
-    itself only ever resolves `_git` two ways: an explicit
-    `git_executable` constructor argument (confirmed, by a
-    full-codebase search, never used anywhere in this repository --
-    there is no legitimate scenario today that needs it), or
-    `shutil.which("git")` resolved to an absolute path -- so, unlike
-    `_author_name`/`_author_email` (free-form strings with no
-    independently-derivable "correct" value) or `_repositories`
-    (legitimately varies per admission, supplied by the caller),
-    `_git` DOES have a genuine, PATH-independent ground truth this
-    function checks against, before ever trusting it as this
-    admission's baseline."""
+    """See `_TRUSTED_GIT_EXECUTABLE`/`_TRUSTED_GIT_EXECUTABLE_DIGEST`'s
+    own module-level comments for the round-36/37/38 findings this
+    closes. `LocalGitRepositoryTransport.__init__` itself only ever
+    resolves `_git` two ways: an explicit `git_executable` constructor
+    argument (confirmed, by a full-codebase search, never used
+    anywhere in this repository -- there is no legitimate scenario
+    today that needs it), or `shutil.which("git")` resolved to an
+    absolute path -- so, unlike `_author_name`/`_author_email`
+    (free-form strings with no independently-derivable "correct"
+    value) or `_repositories` (legitimately varies per admission,
+    supplied by the caller), `_git` DOES have a genuine, PATH- and
+    content-independent ground truth this function checks against.
+    Called both at admission AND on every per-mutation revalidation
+    (`_revalidate_transport_integrity`, not merely once at admission)
+    -- a pathname-only check would need only one pass, but a
+    CONTENT check must be repeated every time, since the file at a
+    caller-writable path can be replaced again at any later moment;
+    re-hashing here narrows that residual window to the same
+    TOCTOU-class, disclosed-and-accepted race round 14 already
+    established, rather than leaving it open indefinitely."""
     current_git = transport._git  # noqa: SLF001 -- genuine safety enforcement, mirrors _reject_altered_transport_instance_state's own established pattern
     # Round 28's exact-type lesson, replayed here: an attacker-controlled
     # `str` subclass with a lying `__eq__`/`__ne__` could otherwise claim
@@ -703,6 +729,19 @@ def _reject_untrusted_transport_git_executable(transport: LocalGitRepositoryTran
             f"_reject_untrusted_transport_git_executable: transport._git ({current_git!r}) does not match "
             f"the git executable resolved at this module's own import time ({_TRUSTED_GIT_EXECUTABLE!r}) -- "
             f"refusing to trust it as this admission's baseline"
+        )
+    try:
+        current_digest = sha256(Path(current_git).read_bytes()).hexdigest()
+    except OSError as exc:
+        raise RepositoryConstructionQualificationError(
+            f"_reject_untrusted_transport_git_executable: could not read transport._git ({current_git!r}) "
+            f"to verify its content ({exc}) -- refusing to trust it as this admission's baseline"
+        ) from exc
+    if _TRUSTED_GIT_EXECUTABLE_DIGEST is None or current_digest != _TRUSTED_GIT_EXECUTABLE_DIGEST:
+        raise RepositoryConstructionQualificationError(
+            f"_reject_untrusted_transport_git_executable: the file at transport._git ({current_git!r}) no "
+            f"longer matches the content hashed at this module's own import time -- the executable has been "
+            f"replaced in place, refusing to trust it as this admission's baseline"
         )
 
 
@@ -748,28 +787,44 @@ def _reject_untrusted_transport_git_executable(transport: LocalGitRepositoryTran
 #: 32), so nothing external ever gets a chance to tamper with the
 #: proxy itself.
 #:
-#: `state_store` is DELIBERATELY NOT sealed the same way, despite the
-#: identical caller-retained-reference reasoning applying to it in
-#: principle: this module's own `RepositoryConstructionPropertyQualificationHarness`
-#: (SC-23's own required crash/recovery qualification scenarios)
-#: genuinely, legitimately reassigns
-#: `_admitted_state_for(...).facility.state.put_receipt` mid-scenario
-#: to simulate a crash-before-persist for idempotency/recovery
-#: testing -- a real, required test pattern, not an attacker
-#: reproduction. Sealing `state` the same way would break that
-#: existing, legitimate coverage. `authority_store` carries the
-#: sharper risk in any case -- it is the access-control DECISION
-#: source (tampering bypasses authorization outright), while `state`
-#: is idempotency/lock bookkeeping (tampering risks double-execution
-#: or a stuck lock, not an unauthorized mutation) -- so sealing it
-#: alone, and naming this asymmetry explicitly rather than silently
-#: leaving it undocumented, is the correct, minimal fix for the
-#: demonstrated finding. `state` remains protected by round 29's
-#: identity pin and round 32's delegation denial; a caller-retained-
-#: reference mutation of `state` specifically is an accepted, narrower
-#: residual risk, the same class this closure's own plan already named
-#: for FacilityContract identity-matching generally.
+#: ROUND 36->38 REVERSAL: `state_store` was ORIGINALLY left
+#: deliberately unsealed here, reasoning that
+#: `RepositoryConstructionPropertyQualificationHarness`'s own
+#: legitimate `put_receipt` crash-simulation pattern needed a mutable
+#: `state`. Round 38, P1, Codex, reproduced by the reviewer -- "Seal
+#: the caller-retained state store" -- proved that reasoning
+#: insufficient: `state.claim_writer`/`state.receipt` (methods the
+#: harness never touches) are EQUALLY reachable via a caller-retained
+#: reference, and `RepositoryFacility.create_branch` calls
+#: `self.state.claim_writer(...)` in the SAME post-containment-scan,
+#: pre-git-mutation window `self.authority_store.read(...)` (round 36)
+#: already demonstrated. The reviewer reproduced replacing
+#: `claim_writer` with a callback planting an external symlink,
+#: exactly the round-29/36 pattern replayed for a THIRD collaborator
+#: method. `state` is now sealed identically to `authority_store` --
+#: see `_STATE_STORE_CAPTURED_METHODS` below -- and the harness's own
+#: crash-simulation need is met through `_SealedCollaboratorProxy`'s
+#: own `_inject_fault_for_qualification_harness`, an explicit,
+#: narrowly-scoped seam reachable ONLY via `_admitted_state_for`'s
+#: module-private registry lookup (the SAME trust boundary this
+#: module's own internal code already relies on everywhere else, not
+#: a new, general-purpose unsealing mechanism) -- never by directly
+#: reassigning an attribute on the caller-retained original object,
+#: which is precisely the pattern this fix closes.
 _AUTHORITY_STORE_CAPTURED_METHODS = ("read",)
+#: See the ROUND 36->38 REVERSAL comment above. `RepositoryFacility`
+#: itself only ever calls five of these methods on `self.state`
+#: (confirmed by grep against `src/tenfold/repository_facility.py`):
+#: `receipt`/`put_receipt` (idempotency bookkeeping), `acquire_writer`/
+#: `release_writer` (the wrapper's own allowlisted delegated methods),
+#: and `claim_writer` (the reviewer's own reproduction target).
+#: `writer` is ALSO captured, even though `RepositoryFacility` never
+#: calls it itself -- this module's own property-qualification harness
+#: legitimately calls it, via the SAME `_admitted_state_for` registry
+#: access every other module-internal read in this file already uses,
+#: to independently confirm real, durable writer-lock state (not to
+#: dispatch through Gen1's own authority checks).
+_STATE_STORE_CAPTURED_METHODS = ("receipt", "put_receipt", "acquire_writer", "release_writer", "claim_writer", "writer")
 
 
 class _SealedCollaboratorProxy:
@@ -806,6 +861,37 @@ class _SealedCollaboratorProxy:
 
     def __setattr__(self, name: str, value: object) -> None:
         raise AttributeError("_SealedCollaboratorProxy instances are immutable after construction")
+
+    def _inject_fault_for_qualification_harness(self, name: str, replacement) -> None:
+        """See the ROUND 36->38 REVERSAL comment on
+        `_AUTHORITY_STORE_CAPTURED_METHODS` for why this exists:
+        `RepositoryConstructionPropertyQualificationHarness`'s own
+        genuine crash/recovery scenarios need to substitute ONE
+        captured method mid-scenario (simulating a crash-before-persist
+        in `put_receipt`, for instance) without reopening the
+        caller-retained-reference gap round 36/38 close. This is
+        reachable ONLY by code that already holds a direct reference
+        to THIS proxy object -- which means going through
+        `_admitted_state_for`'s module-private registry lookup, since
+        neither the wrapper's `__getattr__` (round 32/36) nor any
+        caller-retained reference to the ORIGINAL `state_store`/
+        `authority_store` (this proxy is never constructed FROM one
+        that any external caller still holds a live path to) can reach
+        it. Not a general-purpose unsealing mechanism -- a narrowly
+        named, explicitly test-labeled escape hatch for this module's
+        own internal harness, the same trust boundary
+        `_admitted_state_for` itself already represents everywhere
+        else in this file."""
+        if not callable(replacement):
+            raise RepositoryConstructionQualificationError(
+                f"_SealedCollaboratorProxy._inject_fault_for_qualification_harness: replacement for {name!r} is not callable"
+            )
+        captured = object.__getattribute__(self, "_captured")
+        if name not in captured:
+            raise AttributeError(
+                f"_SealedCollaboratorProxy._inject_fault_for_qualification_harness: {name!r} was not captured at admission"
+            )
+        captured[name] = replacement
 
 
 def gen1_wrap_repository_construction_facility(transport, state_store, authority_store) -> "_ContainmentReCheckedRepositoryFacility":
@@ -963,15 +1049,16 @@ def gen1_wrap_repository_construction_facility(transport, state_store, authority
     }
     _reject_symlinked_git_storage_for_every_registered_repository(transport)
     established_no_hooks_dirs = _neutralize_hooks_for_every_registered_repository(transport)
-    # Round 36 (see `_AUTHORITY_STORE_CAPTURED_METHODS`'s own
-    # module-level comment): `RepositoryFacility` is handed a sealed
-    # proxy capturing `authority_store.read` at THIS admission, never
-    # `authority_store` itself -- immune to the caller's own retained
-    # reference being mutated in place afterward. `state_store` is
-    # deliberately passed through unsealed; see the same comment for
-    # why.
+    # Round 36/38 (see `_AUTHORITY_STORE_CAPTURED_METHODS`'s own
+    # module-level comment for the full "ROUND 36->38 REVERSAL"
+    # account): `RepositoryFacility` is handed sealed proxies capturing
+    # both `authority_store.read` and `state_store`'s five methods at
+    # THIS admission, never the raw collaborators themselves -- immune
+    # to either caller's own retained reference being mutated in place
+    # afterward.
     sealed_authority_store = _SealedCollaboratorProxy(authority_store, _AUTHORITY_STORE_CAPTURED_METHODS, "authority_store")
-    facility = RepositoryFacility(transport, state_store, sealed_authority_store)
+    sealed_state_store = _SealedCollaboratorProxy(state_store, _STATE_STORE_CAPTURED_METHODS, "state_store")
+    facility = RepositoryFacility(transport, sealed_state_store, sealed_authority_store)
     # Round 22/24 (see `_AdmittedTransportState`'s own docstring): this
     # trusted state -- including `facility` itself, the genuine
     # instance every dispatch method delegates to (round 24) -- is
@@ -1677,6 +1764,11 @@ def _revalidate_transport_integrity(wrapper: "_ContainmentReCheckedRepositoryFac
     which needs no such ordering care at all -- both centralized in
     ONE place instead of duplicated at every call site."""
     transport = _current_transport(wrapper)
+    # Round 38 (see `_TRUSTED_GIT_EXECUTABLE_DIGEST`'s own docstring):
+    # a pathname-only check needed only one pass, at admission -- a
+    # CONTENT check must be repeated every time, since the file at a
+    # caller-writable path can be replaced again at any later moment.
+    _reject_untrusted_transport_git_executable(transport)
     admitted = _admitted_state_for(wrapper)
     _reject_instance_overridden_facility_methods(admitted.facility)
     _reject_altered_facility_collaborators(admitted.facility, admitted.established_facility_state, admitted.established_facility_authority_store)
@@ -2666,14 +2758,20 @@ class RepositoryConstructionPropertyQualificationHarness:
         def _crash_before_persisting(receipt):
             raise _SimulatedCrashBeforeReceiptPersisted("simulated crash after commit_files landed, before put_receipt")
 
-        _admitted_state_for(self.rig.facility).facility.state.put_receipt = _crash_before_persisting
+        # Round 38 (see `_SealedCollaboratorProxy._inject_fault_for_qualification_harness`'s
+        # own docstring): `state` is now sealed, so a plain attribute
+        # reassignment here would raise -- this explicit,
+        # module-private seam is the sanctioned way this harness
+        # injects a fault, without reopening the caller-retained-
+        # reference gap sealing closes.
+        _admitted_state_for(self.rig.facility).facility.state._inject_fault_for_qualification_harness("put_receipt", _crash_before_persisting)
         crashed = False
         try:
             self.rig.facility.commit(commit_task, repository=self.rig.repository, branch=request["branch"], owner="assign-ack", expected_head=self.rig.initial_sha, files={"ack.txt": b"ack"}, message="ack\n", operation_id="op-ack-commit", foreman_epoch=1)
         except _SimulatedCrashBeforeReceiptPersisted:
             crashed = True
         finally:
-            _admitted_state_for(self.rig.facility).facility.state.put_receipt = real_put_receipt
+            _admitted_state_for(self.rig.facility).facility.state._inject_fault_for_qualification_harness("put_receipt", real_put_receipt)
 
         # The real git mutation genuinely landed (commit_files ran before
         # the injected crash) -- confirm via real, independent state

@@ -2296,6 +2296,88 @@ verdict (see below) rather than a hardcoded stale expectation.
     `test_g2_27_self_construction.py` (33/33), and full repository
     sweep (1383 passed, 2 skipped, only the 9 known pre-existing
     Windows-only failures, zero regressions).
+38. A fresh Codex pass against the round-37 commit (`a00752c`/`8f8d48a`)
+    found 2 further genuine P1 findings:
+    - **P1 ("Seal the caller-retained state store"), Codex**: this
+      DIRECTLY OVERTURNS a deliberate decision made two rounds ago.
+      Round 36's own docstring reasoned `state_store` should stay
+      unsealed because this module's own
+      `RepositoryConstructionPropertyQualificationHarness` legitimately
+      monkeypatches `state.put_receipt` for crash-recovery testing --
+      sealing would have broken that real, required coverage. The
+      reviewer proved that reasoning insufficient: `state.claim_writer`/
+      `state.receipt` (methods the harness never touches at all) are
+      EQUALLY reachable via a caller-retained reference, and
+      `RepositoryFacility.create_branch` calls
+      `self.state.claim_writer(...)` in the SAME post-containment-scan,
+      pre-git-mutation window `self.authority_store.read(...)` (round
+      36) already demonstrated. The reviewer reproduced replacing
+      `claim_writer` with a callback planting an external symlink
+      before the real git mutation, with an authorized `create_branch`
+      still returning a successful receipt -- the round-29/36 pattern
+      replayed for a third collaborator method.
+
+      Fixed properly this time, rather than re-asserting the same
+      incomplete asymmetry: `state` is now sealed identically to
+      `authority_store`, via the same `_SealedCollaboratorProxy`,
+      capturing all six of `RepositoryStateStore`'s public methods
+      (`receipt`/`put_receipt`/`acquire_writer`/`release_writer`/
+      `claim_writer`, confirmed by grep to be the exact set
+      `RepositoryFacility` itself calls, plus `writer`, which only
+      this module's own harness calls for read-back verification).
+      The harness's legitimate crash-simulation need -- the ORIGINAL
+      justification for leaving `state` unsealed -- is now met through
+      a new, explicit, narrowly-scoped seam,
+      `_SealedCollaboratorProxy._inject_fault_for_qualification_harness`,
+      reachable ONLY via `_admitted_state_for`'s module-private
+      registry lookup (the same trust boundary this module's own
+      internal code already relies on everywhere else, not a
+      general-purpose unsealing mechanism) -- never by directly
+      reassigning an attribute on the caller-retained original object,
+      which is precisely the pattern this fix closes. The harness's
+      existing `put_receipt` crash-simulation test was updated to use
+      this seam instead of a plain attribute reassignment, which the
+      sealed proxy now correctly refuses.
+    - **P1 ("Verify the Git executable rather than only its path"),
+      Codex**: round 37's `_TRUSTED_GIT_EXECUTABLE` closed
+      PATH-resolution tampering by pinning the resolved PATHNAME at
+      import time -- but pinning the pathname is not the same as
+      verifying the FILE. When that path resolves to a caller-writable
+      location (an ordinary case: a user-local git install, a
+      venv-bundled binary, many CI images), a caller can leave `_git`'s
+      STRING value completely untouched while replacing the file's own
+      CONTENT at that same path, in place, at any point after import
+      or admission. The reviewer reproduced importing and admitting
+      through a real, delegating git shim, then overwriting that SAME
+      file afterward with a side-effecting replacement -- every
+      existing check (pathname pinning, exact-type, instance-value
+      pinning) kept passing, since none of them ever read the file's
+      own bytes.
+
+      Fixed by `_TRUSTED_GIT_EXECUTABLE_DIGEST`: the trusted
+      executable's content is hashed (`sha256`) at this module's own
+      import time, and `_reject_untrusted_transport_git_executable`
+      now re-hashes and compares on EVERY call -- critically, it is
+      now ALSO invoked from `_revalidate_transport_integrity`, not
+      merely once at admission, since a content check (unlike a
+      pathname check) must be repeated every time the underlying file
+      could have been replaced again. This does still leave a narrow
+      TOCTOU window between the hash check and the actual subprocess
+      invocation -- the same disclosed, accepted race class round 14
+      already established for a structurally different check, not a
+      new kind of gap; re-hashing on every revalidation narrows what
+      was an indefinitely-open door into that same narrow race, the
+      honest, achievable bound here.
+
+    Both fixed with real mechanisms, not disclosures. New permanent
+    regression tests reproduce each reviewer finding exactly, including
+    a REAL, fully-authorized `create_branch` dispatch proving the
+    malicious `state.claim_writer` replacement genuinely never runs.
+    Fixed in commit `<pending>`, with 2 new permanent regression tests.
+    Full local re-verification: full test file (89/89), full mutation
+    suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (pending, only the 9 known pre-existing
+    Windows-only failures expected).
 
 ## Real, honest end-to-end result
 
