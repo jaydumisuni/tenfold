@@ -1663,6 +1663,53 @@ verdict (see below) rather than a hardcoded stale expectation.
     `test_g2_27_self_construction.py` (33/33), and full repository
     sweep (1367 passed, only the 9 known pre-existing Windows-only
     failures, zero regressions).
+28. A fresh Codex pass against the round-27 commit (`a9691c1`) found 1
+    further genuine P1 finding, back to a real code fix after round
+    27's disclosure:
+    - **P1 ("Reject transport values with overloaded equality"),
+      Codex**: `current[name] != established_instance_state[name]`
+      (rounds 19/20) dispatches through WHICHEVER operand's TYPE
+      implements `__ne__`/`__eq__` -- and `current[name]` is exactly
+      the value a caller may have just reassigned. The reviewer
+      reproduced assigning `transport._git` a `str` SUBCLASS (a
+      genuine, distinct type with its own `__ne__` defined in its
+      class body -- Python's special-method dispatch for operators
+      always goes through the TYPE, never an instance `__dict__`, so
+      this is a real subclass, not an instance-level monkeypatch of
+      `__ne__`, which would not participate in `!=` dispatch at all)
+      that always claims `!= -> False` regardless of its actual
+      content, while holding a malicious executable path: the
+      comparison "passed" while the value had genuinely changed, and
+      the injected executable ran during a fully-authorized
+      `create_branch`. Confirmed empirically (a minimal reproduction
+      outside the codebase showed the identical behavior). **Fixed**:
+      every comparison in `_reject_altered_transport_instance_state`
+      is now preceded by an EXACT-type check (`type(x) is str`, never
+      `isinstance`, which also accepts subclasses) on the CURRENT
+      value before trusting ANY comparison operator on it -- a
+      genuine, unmodified `str`'s own `__eq__`/`__ne__` are fixed,
+      C-implemented, non-overridable-per-instance methods, so once the
+      exact type is confirmed the comparison is safe
+      (`_trusted_transport_value_matches`). Applied SYSTEMICALLY
+      rather than narrowly to `_git` alone: `_repositories`' own
+      comparison previously relied on `dict.__eq__`, which itself
+      compares each VALUE via `==` -- the exact same
+      attacker-controlled-equality risk one level deeper, this time
+      via `_RegisteredRepository`'s own dataclass-generated `__eq__`
+      or a malicious non-`_RegisteredRepository` object entirely.
+      Every field of every registration (`root`/`device`/`inode`) is
+      now manually, exact-type-checked before being compared at all
+      (`_registered_repositories_match`), rather than trusting any
+      dict or dataclass equality machinery to dispatch safely on its
+      own. New permanent regression test reproduces the exact
+      `str`-subclass attack (a genuine class with its own
+      `__ne__`/`__eq__` always claiming "unchanged").
+
+    Fixed in commit `<pending>`, with 1 new permanent regression test.
+    Full local re-verification: full test file (72/72), full mutation
+    suite (37/37), `test_g2_27_self_construction.py` (pending), and
+    full repository sweep (pending, only the 9 known pre-existing
+    Windows-only failures expected).
 
 ## Real, honest end-to-end result
 

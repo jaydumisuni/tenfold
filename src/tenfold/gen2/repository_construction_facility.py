@@ -881,7 +881,36 @@ def _reject_altered_transport_instance_state(
     confirmed the incoming instance carries no unexpected names), and
     every mutation now re-verifies `vars(transport)` is EXACTLY that
     snapshot -- no attribute added, removed, or reassigned to a
-    different value, whatever its name."""
+    different value, whatever its name.
+
+    ATTACKER-CONTROLLED EQUALITY FINDING (review finding, PR #86,
+    round 28, P1, Codex, reproduced by the reviewer -- "Reject
+    transport values with overloaded equality"): `current[name] !=
+    established_instance_state[name]` dispatches through WHICHEVER
+    operand's type implements `__ne__`/`__eq__` -- and `current[name]`
+    is exactly the value a caller may have just reassigned. The
+    reviewer reproduced assigning `transport._git` a `str` SUBCLASS
+    (a new, genuine TYPE with its own `__ne__` defined in its class
+    body -- Python's special-method dispatch for operators always goes
+    through the TYPE, never an instance `__dict__`, so this is a real
+    subclass, not an instance-level monkeypatch of `__ne__`, which
+    would not participate in `!=` dispatch at all) that always claims
+    `!= -> False` regardless of its actual content, which then held a
+    malicious executable path: the comparison "passed" the check while
+    the value had genuinely changed, and the injected executable ran
+    (in place of the real `git` binary) during a fully-authorized
+    `create_branch`. Confirmed empirically. Every comparison in this
+    function is now preceded by an EXACT-type check (`type(x) is str`,
+    never `isinstance`, which also accepts subclasses) on the
+    CURRENT (potentially attacker-controlled) value before trusting
+    ANY comparison operator on it -- a genuine, unmodified `str`'s own
+    `__eq__`/`__ne__` are fixed, C-implemented, non-overridable-per-
+    instance methods, so once the exact type is confirmed, the
+    comparison itself is safe. `_repositories`' values are handled the
+    same way, one level deeper (see `_registered_repositories_match`'s
+    own docstring), rather than trusting `_RegisteredRepository`'s own
+    dataclass-generated `__eq__` (or a dict's own `!=`) to dispatch
+    safely without first confirming every operand's exact type."""
     current = vars(transport)
     unexpected_or_missing = sorted(set(current) ^ set(established_instance_state))
     if unexpected_or_missing:
@@ -890,12 +919,59 @@ def _reject_altered_transport_instance_state(
             f"the set admitted at construction time ({', '.join(unexpected_or_missing)}), "
             f"breaking the local-commit-only boundary"
         )
-    changed = sorted(name for name in established_instance_state if current[name] != established_instance_state[name])
+    changed = sorted(
+        name
+        for name in established_instance_state
+        if not _trusted_transport_value_matches(name, current[name], established_instance_state[name])
+    )
     if changed:
         raise RepositoryConstructionQualificationError(
             f"_reject_altered_transport_instance_state: transport instance attribute value(s) changed "
             f"since construction time ({', '.join(changed)}) -- rejecting the same as a symlinked git directory"
         )
+
+
+def _trusted_transport_value_matches(name: str, current_value, established_value) -> bool:
+    """See `_reject_altered_transport_instance_state`'s own ATTACKER-
+    CONTROLLED EQUALITY FINDING docstring. `established_value` is
+    always genuinely trustworthy (captured immediately after the real
+    `LocalGitRepositoryTransport.__init__` ran, before any tampering
+    could occur -- its own constructor always assigns a real `str` via
+    `str(Path(...).resolve())`), so only `current_value` -- read FRESH
+    before each mutation, potentially already tampered with -- needs
+    its exact type verified before any comparison operator on it is
+    trusted."""
+    if name == "_repositories":
+        return _registered_repositories_match(current_value, established_value)
+    return type(current_value) is str and current_value == established_value
+
+
+def _registered_repositories_match(current: object, established: dict) -> bool:
+    """See `_reject_altered_transport_instance_state`'s own ATTACKER-
+    CONTROLLED EQUALITY FINDING docstring. Rather than trusting a bare
+    `current != established` dict comparison (which would dispatch
+    through `dict.__eq__`, itself comparing each VALUE via `==` --
+    exactly the same attacker-controlled-equality risk one level
+    deeper, this time via `_RegisteredRepository`'s own
+    dataclass-generated `__eq__` or a malicious non-`_RegisteredRepository`
+    object entirely), every field of every registration is manually,
+    exact-type-checked before being compared at all."""
+    if type(current) is not dict or set(current) != set(established):
+        return False
+    for name, established_registered in established.items():
+        current_registered = current[name]
+        if type(current_registered) is not _RegisteredRepository:
+            return False
+        if (
+            type(current_registered.root) is not type(established_registered.root)
+            or current_registered.root != established_registered.root
+            or type(current_registered.device) is not int
+            or current_registered.device != established_registered.device
+            or type(current_registered.inode) is not int
+            or current_registered.inode != established_registered.inode
+        ):
+            return False
+    return True
 
 
 @dataclass

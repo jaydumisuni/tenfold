@@ -1574,6 +1574,52 @@ def test_sc23_wrapper_rejects_a_reassigned_transport_git_executable(tmp_path) ->
         facility.create_branch(None, repository="existing", branch="sc23/reassigned-git-executable", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-reassigned-git-executable", foreman_epoch=1)
 
 
+def test_sc23_wrapper_rejects_a_transport_value_with_overloaded_equality(tmp_path) -> None:
+    """Review finding (PR #86, round 28, P1, Codex, reproduced by the
+    reviewer -- "Reject transport values with overloaded equality"):
+    `current[name] != established_instance_state[name]` dispatches
+    through WHICHEVER operand's TYPE implements `__ne__`/`__eq__` --
+    the reviewer reproduced assigning `transport._git` a `str`
+    SUBCLASS (a genuine, distinct type with its own `__ne__` defined
+    in its class body, participating in normal operator dispatch --
+    not an instance-level monkeypatch, which would not) that always
+    claims `!= -> False` regardless of its actual content, while
+    holding a malicious executable path. The comparison "passed" while
+    the value had genuinely changed, and the injected executable ran
+    during a fully-authorized `create_branch`. Every comparison is now
+    preceded by an exact-type check (`type(x) is str`, never
+    `isinstance`) on the CURRENT, potentially attacker-controlled
+    value, so a subclass is rejected outright regardless of what its
+    own `__eq__`/`__ne__` claims."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    class _LyingStr(str):
+        """A genuine, distinct type -- not an instance monkeypatch --
+        whose own __ne__/__eq__ always claim "unchanged" regardless of
+        actual content, reproducing the reviewer's exact attack."""
+
+        def __ne__(self, other):
+            return False
+
+        def __eq__(self, other):
+            return True
+
+        def __hash__(self):
+            return super().__hash__()
+
+    transport._git = _LyingStr("not-a-real-git-executable")  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        facility.create_branch(None, repository="existing", branch="sc23/lying-equality-git-executable", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-lying-equality-git-executable", foreman_epoch=1)
+
+
 def test_sc23_wrapper_rejects_an_included_git_config(tmp_path) -> None:
     """Review finding (PR #86, round 16, P1, reproduced by the
     reviewer): the round-15 exact-byte-snapshot check is airtight
