@@ -1795,11 +1795,11 @@ verdict (see below) rather than a hardcoded stale expectation.
       test reproduces the exact `facility._transport.create_branch(...)`
       call and confirms it now raises `AttributeError`.
 
-    Fixed in commit `<pending>`, with 1 new permanent regression test.
+    Fixed in commit `ff68cf7`, with 1 new permanent regression test.
     Full local re-verification: full test file (74/74), full mutation
-    suite (37/37), `test_g2_27_self_construction.py` (pending), and
-    full repository sweep (pending, only the 9 known pre-existing
-    Windows-only failures expected).
+    suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1370 passed, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
 
 ## Real, honest end-to-end result
 
