@@ -1984,11 +1984,11 @@ verdict (see below) rather than a hardcoded stale expectation.
     New permanent regression tests reproduce all three findings
     exactly, including the `wrapper.__dict__` reproduction and an
     arbitrary, never-imagined attribute name. Fixed in commit
-    `<pending>`, with 3 new permanent regression tests. Full local
+    `39e3ea0`, with 3 new permanent regression tests. Full local
     re-verification: full test file (79/79), full mutation suite
-    (37/37), `test_g2_27_self_construction.py` (pending), and full
-    repository sweep (pending, only the 9 known pre-existing
-    Windows-only failures expected).
+    (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1375 passed, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
 
 ## Real, honest end-to-end result
 
