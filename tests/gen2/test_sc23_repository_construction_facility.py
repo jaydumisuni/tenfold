@@ -588,9 +588,17 @@ def test_sc23_wrapper_rejects_a_nested_symlink_under_git_objects_fanout(tmp_path
 
     # .git/objects itself stays a real directory -- only one fan-out
     # prefix directory (a descendant) is redirected outside repo_root.
+    # "zz" is deliberately NOT a valid 2-hex-digit fanout prefix (real
+    # ones are always 00-ff) -- a real hex prefix like "ab" flaked in
+    # CI once the initial commit's own SHA genuinely started with it,
+    # since `git commit` had already created that directory for real
+    # before this line ever ran, and `symlink_to` cannot replace an
+    # existing entry. Using a name git itself can never produce here
+    # makes this collision impossible while still exercising the same
+    # "any entry beneath .git/objects" walk.
     external_fanout = tmp_path / "external-object-fanout"
     external_fanout.mkdir()
-    (repo_root / ".git" / "objects" / "ab").symlink_to(external_fanout, target_is_directory=True)
+    (repo_root / ".git" / "objects" / "zz").symlink_to(external_fanout, target_is_directory=True)
 
     transport = LocalGitRepositoryTransport({"existing": repo_root})
     with pytest.raises(RepositoryConstructionQualificationError):

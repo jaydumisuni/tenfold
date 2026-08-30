@@ -3434,6 +3434,33 @@ verdict (see below) rather than a hardcoded stale expectation.
     the 9 known pre-existing Windows-only failures, zero
     regressions).
 
+PROCESS NOTE: while polling CI for round 52's commit (`7fc0ef9`/`b65f0f4`),
+the real `verify` job failed -- not a reviewer finding, a genuine,
+pre-existing test flake in
+`test_sc23_wrapper_rejects_a_nested_symlink_under_git_objects_fanout`
+(present since PR #84, round 11, untouched by round 52). The test
+hardcoded a 2-hex-digit git object fan-out prefix (`"ab"`) to
+symlink, but that name is EXACTLY the shape `git commit` itself
+generates for real loose-object directories; CI's own real commit
+happened to produce an object whose SHA genuinely started `ab`, so
+`.git/objects/ab` already existed as a real directory before the
+test's own `symlink_to` call ran, and `symlink_to` cannot replace an
+existing entry -- `FileExistsError`, roughly a 1-in-256 chance on any
+given run, confirmed by re-running the local suite repeatedly without
+reproducing it before finding the root cause via the CI log itself.
+Fixed by using `"zz"` instead -- not a valid hex digit pair, so git
+itself can never produce a real fan-out directory with that name,
+permanently eliminating the collision while exercising the exact same
+"any entry beneath `.git/objects`" containment-scan code path. A
+self-audit of every other hardcoded symlink target name in this test
+file found no other instance of this same class (every other target
+is a fixed, well-known git path -- `objects`, `refs/heads`,
+`logs/refs/heads`, `config` -- never a variable, hash-shaped one).
+Fixed in commit `<pending>`. Full local re-verification: full test
+file (114/114), full mutation suite (37/37),
+`test_g2_27_self_construction.py` (pending), and full repository
+sweep (pending).
+
 ## Real, honest end-to-end result
 
 Running `execute_self_construction_gate()` for real against the live
