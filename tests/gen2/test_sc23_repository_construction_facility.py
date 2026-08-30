@@ -1541,6 +1541,7 @@ def test_sc23_wrapper_rejects_a_rebound_authority_causal_chain_global(tmp_path) 
         "repository_pr_resource",
         "repository_request_binding",
         "_file_digests",
+        "stable_digest",
     ):
         original = getattr(repository_facility_module, name)
         try:
@@ -1553,6 +1554,110 @@ def test_sc23_wrapper_rejects_a_rebound_authority_causal_chain_global(tmp_path) 
 
     # Untampered, the check still passes exactly as before.
     _reject_altered_authority_validation_globals()
+
+
+def test_sc23_wrapper_rejects_a_rebound_stable_digest_global(tmp_path) -> None:
+    """Review finding (PR #86, round 47, P1, Codex, reproduced by the
+    reviewer -- "Pin stable_digest behind request binding"): round
+    46's own pass pinned `repository_request_binding`/`_file_digests`
+    THEMSELVES but not `stable_digest`, which THOSE functions call
+    internally to compute the digest baked into a task's request
+    binding -- the SAME "one level deeper" oversight round 45 already
+    fixed once for `validate_live_task`->`validate_task`. The reviewer
+    reproduced rebinding `stable_digest` to a function that always
+    returns a task's EXISTING, already-sealed binding regardless of
+    its actual argument, then committing DIFFERENT file contents and a
+    DIFFERENT message under that same legitimately sealed task -- the
+    recomputed binding still "matched" the sealed one. `stable_digest`
+    is now ALSO pinned via the same
+    `_reject_altered_authority_validation_globals` check."""
+    import tenfold.repository_facility as repository_facility_module
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    original_stable_digest = repository_facility_module.stable_digest
+    try:
+        repository_facility_module.stable_digest = lambda *args, **kwargs: "CONSTANT-DIGEST"  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+        with pytest.raises(RepositoryConstructionQualificationError):
+            facility.create_branch(None, repository="existing", branch="sc23/rebound-stable-digest", owner="assign-post", base_ref="main", expected_base_sha="0" * 40, operation_id="op-rebound-stable-digest", foreman_epoch=1)
+    finally:
+        repository_facility_module.stable_digest = original_stable_digest
+
+
+def test_sc23_wrapper_rejects_a_rebound_canonical_digest_global(tmp_path) -> None:
+    """Review finding (PR #86, round 47, P1, Codex, reproduced by the
+    reviewer -- "Pin canonical_digest behind task validation"):
+    `validate_task` (pinned since round 45) itself calls
+    `canonical_digest` internally as the cryptographic check that a
+    task genuinely IS what it claims to be (`canonical_digest(raw) !=
+    claimed`) -- more foundational than any single call site, and the
+    SAME "one level deeper" oversight recurring for a fourth name. The
+    reviewer reproduced rebinding `canonical_digest` to a function
+    that always matches, then cloning a legitimately narrow-scope task
+    with an EXPANDED scope and a NEW request binding while keeping its
+    ORIGINAL `dispatch_digest` -- the seal check still "passed."
+    `canonical_digest` is now ALSO pinned, via
+    `_TRUSTED_AUTHORITY_VALIDATION_FACILITY_MODULE_GLOBALS` (it is
+    resolved from `tenfold.facility`'s own namespace, the same module
+    `validate_task` itself is pinned from)."""
+    import tenfold.facility as facility_module
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    original_canonical_digest = facility_module.canonical_digest
+    try:
+        facility_module.canonical_digest = lambda *args, **kwargs: "CONSTANT-DIGEST"  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+        with pytest.raises(RepositoryConstructionQualificationError):
+            facility.create_branch(None, repository="existing", branch="sc23/rebound-canonical-digest", owner="assign-post", base_ref="main", expected_base_sha="0" * 40, operation_id="op-rebound-canonical-digest", foreman_epoch=1)
+    finally:
+        facility_module.canonical_digest = original_canonical_digest
+
+
+def test_sc23_function_defaults_match_never_invokes_truthiness_on_kwdefaults() -> None:
+    """SELF-CAUGHT TRUTHINESS-BEFORE-TYPE-CHECK FINDING (review
+    finding, PR #86, round 47, P2, Codex, reproduced by the reviewer
+    -- "Avoid truthiness check on __kwdefaults__ before type
+    validation"): `func.__kwdefaults__ or {}` invokes `bool()` on the
+    LEFT operand -- dispatching to an attacker-controlled `__bool__`
+    with a malicious side effect -- BEFORE the exact-type check on the
+    next line ever ran, the same class of lesson as round 45's
+    sort-before-type-check finding, now for the `or` operator's
+    implicit truthiness dispatch instead of `sorted()`'s implicit
+    ordering dispatch. `_coerce_defaults_attr` now checks `is None`/
+    `type(x) is expected_type` only, never `bool()`/`len()`, before
+    trusting the attribute."""
+    from tenfold.gen2.repository_construction_facility import _function_defaults_match, _function_defaults_snapshot
+
+    triggered = {"bool_called": False}
+
+    class _MaliciousDict(dict):
+        def __bool__(self):
+            triggered["bool_called"] = True
+            return True
+
+    def dummy(*, x=None):
+        pass
+
+    dummy.__kwdefaults__ = _MaliciousDict()
+    assert _function_defaults_match(dummy, ((), ())) is False
+    assert triggered["bool_called"] is False, "_function_defaults_match invoked __bool__ on an untyped __kwdefaults__ before checking its exact type"
+
+    with pytest.raises(TypeError):
+        _function_defaults_snapshot(dummy)
 
 
 def test_sc23_wrapper_ignores_a_wholesale_replaced_inner_facility(rig) -> None:

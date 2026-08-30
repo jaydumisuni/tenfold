@@ -2949,6 +2949,93 @@ verdict (see below) rather than a hardcoded stale expectation.
     sweep (1399 passed, 2 skipped, only the 9 known pre-existing
     Windows-only failures, zero regressions).
 
+47. A fresh Codex pass against the round-46 commit (`1da3b00`/`30da846`)
+    found 3 further genuine findings -- two the same recurring "one
+    level deeper" pattern for a THIRD and FOURTH time, and one a
+    self-inflicted bug in this closure's OWN defensive helper code:
+    - **P1 ("Pin stable_digest behind request binding"), Codex**:
+      round 46's own pass pinned `repository_request_binding`/
+      `_file_digests` THEMSELVES but not `stable_digest`, which THOSE
+      functions call internally to compute the digest baked into a
+      task's request binding. The reviewer reproduced rebinding
+      `stable_digest` to a function that always returns a task's
+      EXISTING, already-sealed binding regardless of its actual
+      argument, then committing DIFFERENT file contents and a
+      DIFFERENT message under that same legitimately sealed task --
+      the recomputed binding still "matched" the sealed one, and Git
+      stored the substituted bytes.
+    - **P1 ("Pin canonical_digest behind task validation"), Codex**:
+      `validate_task` (pinned since round 45) itself calls
+      `canonical_digest` internally as the cryptographic check that a
+      task genuinely IS what it claims to be (`canonical_digest(raw)
+      != claimed`) -- more foundational than any single call site. The
+      reviewer reproduced rebinding `canonical_digest` to a function
+      that always matches, then cloning a legitimately narrow-scope
+      task with an EXPANDED scope and a NEW request binding while
+      keeping its ORIGINAL `dispatch_digest` -- the seal check still
+      "passed," and an out-of-scope file was committed.
+    - **P2 ("Avoid truthiness check on `__kwdefaults__` before type
+      validation"), Codex**: `_function_defaults_snapshot`/
+      `_function_defaults_match` (this closure's OWN round-44/45
+      defensive helpers) both wrote `func.__kwdefaults__ or {}` --
+      `or` invokes `bool()` on the left operand, dispatching to an
+      attacker-controlled `__bool__` with a malicious side effect,
+      BEFORE either function's own exact-type check on the next line
+      ever ran. The SAME class of lesson as round 45's own
+      sort-before-type-check finding in this SAME pair of functions,
+      now for the `or` operator's implicit truthiness dispatch instead
+      of `sorted()`'s implicit ordering dispatch -- and, unlike the
+      other two findings this round, not a Gen1 dependency at all but
+      a bug in code this closure itself wrote.
+
+      This round's two "one level deeper" findings mark the pattern's
+      THIRD and FOURTH recurrence (round 45: `validate_live_task`->
+      `validate_task`; round 46: `_path_in_scope`->`_path_parts`;
+      round 47: `repository_request_binding`/`_file_digests`->
+      `stable_digest`, `validate_task`->`canonical_digest`) --
+      confirming round 46's own self-audit, while more thorough than
+      round 45's, still was not exhaustive: it checked which
+      LOCALLY-DEFINED functions existed in the causal chain but not
+      what THOSE (and already-pinned) functions call internally via
+      their own imports. Recorded here explicitly, rather than only
+      in the module's own docstring, so a future round rediscovering
+      the same class of gap treats it as the pattern's confirmation,
+      not a surprise.
+
+      Fixed the two Gen1-dependency findings with the SAME data-driven
+      mechanism round 46 built for exactly this purpose: `stable_digest`
+      added to `_TRUSTED_AUTHORITY_VALIDATION_GLOBALS`'s tuple of
+      names (eight names now, resolved from
+      `tenfold.repository_facility`'s own namespace) and
+      `canonical_digest` added to
+      `_TRUSTED_AUTHORITY_VALIDATION_FACILITY_MODULE_GLOBALS`'s tuple
+      (two names now, resolved from `tenfold.facility`'s own
+      namespace) -- a two-name addition, not a new mechanism, exactly
+      validating the refactor's stated purpose. Fixed the self-inflicted
+      P2 by extracting a new `_coerce_defaults_attr(raw, expected_type,
+      empty_value)` helper that checks only `is None` (identity, never
+      overridable) and `type(raw) is expected_type` (the same
+      exact-type discipline used everywhere else in this file) --
+      never `bool()`, `len()`, or any other implicit-dispatch check --
+      before trusting `__defaults__`/`__kwdefaults__`; used by both
+      `_function_defaults_snapshot` (raises `TypeError`) and
+      `_function_defaults_match` (returns `False`), replacing all four
+      prior `x or default` call sites (both attributes, both
+      functions). No new adjudicated residual-Gen1-dependency
+      exception needed -- `stable_digest`/`canonical_digest` are
+      pinned via the SAME already-adjudicated
+      `_reject_altered_authority_validation_globals` function name;
+      confirmed via a clean residual-dependency scan after the fix.
+
+    Fixed with a real mechanism. 3 new permanent regression tests
+    reproduce the reviewer's exact `stable_digest`, `canonical_digest`,
+    and `__kwdefaults__`-truthiness findings; the existing causal-chain
+    test was also widened to cover `stable_digest` directly. Fixed in
+    commit `<pending>`. Full local re-verification: full test file
+    (106/106), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (pending), and full repository
+    sweep (pending).
+
 ## Real, honest end-to-end result
 
 Running `execute_self_construction_gate()` for real against the live
