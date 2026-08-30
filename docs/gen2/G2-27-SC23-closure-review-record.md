@@ -3250,6 +3250,114 @@ verdict (see below) rather than a hardcoded stale expectation.
     repository sweep (1406 passed, 2 skipped, only the 9 known
     pre-existing Windows-only failures, zero regressions).
 
+51. A fresh Codex pass against the round-50 commit (`db4b1e6`/`26945ec`)
+    found 3 further genuine P1 findings -- the largest single round
+    since the transitive-closure work began, spanning a general
+    module gap, a general mutable-attribute gap, and a genuinely new
+    class of finding (data, not code):
+    - **P1 ("Pin transport methods' module globals"), Codex**: unlike
+      `RepositoryFacility` (whose effect-bearing module dependencies
+      are already covered transitively via
+      `_TRUSTED_AUTHORITY_VALIDATION_GLOBALS` -- confirmed by
+      self-audit before fixing anything, finding no gap there),
+      `LocalGitRepositoryTransport`'s class-implementation pin (rounds
+      21/37/44) never had ANY module-globals coverage at all. The
+      reviewer reproduced rebinding
+      `tenfold.local_git_transport.subprocess` after admission: every
+      existing transport check kept passing, since `subprocess` was
+      never a class attribute. Fixed via a new
+      `_TRUSTED_TRANSPORT_CLASS_MODULE_GLOBALS`, seeded from EVERY
+      function `LocalGitRepositoryTransport` itself defines (there is
+      no narrower "authority validation" subset here -- the
+      transport's methods ARE the effect-bearing surface) and reusing
+      `_capture_transitive_authority_globals` directly, verified via a
+      newly extracted, shared `_reject_altered_transitive_globals`
+      helper alongside the existing class-implementation check.
+    - **P1 ("Snapshot mutable attributes of captured modules"),
+      Codex**: every module captured as an identity-only leaf
+      (`sqlite3`, `json`, ...) was verified by OBJECT identity alone
+      -- `current is trusted_value` says nothing about whether one of
+      that module's OWN attributes was mutated in place afterward.
+      The reviewer reproduced `sqlite3.connect = malicious` directly
+      (the `sqlite3` module reference itself untouched, so the
+      round-50 fix's own identity check kept passing) while
+      `_connect`'s own body -- unchanged, still code-pinned --
+      resolved the tampered `.connect` attribute the moment it ran.
+      Fixed via a new `_module_attribute_roots` helper: for one
+      function's `__code__.co_names`, finds every name resolving to a
+      MODULE, pairs it with every OTHER co_name that is a genuine
+      attribute of that module, and feeds those pairs back into
+      `_capture_transitive_authority_globals` as additional roots -- a
+      module's own `__dict__` is an ordinary globals-shaped namespace,
+      so this needed no new verification mechanism, only a new way of
+      discovering roots. Wired into BOTH the module-globals mechanism
+      (closing this finding, and proactively closing the identical,
+      not-yet-demonstrated `json.dumps` gap via self-audit) AND the
+      collaborator-instance mechanism (round 50's own `sqlite3`
+      coverage) AND the new round-51 transport mechanism above, since
+      all three now build on the SAME underlying walk.
+    - **P1 ("Pin the admitted state store's storage identity"),
+      Codex**: a genuinely different KIND of finding than every prior
+      one this campaign -- not a code-identity gap at all.
+      `RepositoryStateStore.path`, an ordinary DATA attribute set once
+      in `__init__` and never reassigned by any of this class's own
+      methods, determines which physical durable SQLite file every
+      captured method actually reads/writes -- and was never checked
+      by ANY of rounds 36-50's own mechanisms, since reassigning it is
+      neither a method shadow, a class rebind, nor a module-global
+      rebind. The reviewer reproduced acquiring a branch writer as one
+      owner, reassigning `state_store.path` to a second,
+      independently-initialized database, then acquiring the SAME
+      branch as a second owner through the sealed proxy -- the
+      mutable-writer ownership record was silently bypassed. Fixed via
+      a NEW, deliberately narrow mechanism rather than widening any
+      existing one: `_SealedCollaboratorProxy` gained an
+      `immutable_data_attributes` parameter, an EXPLICITLY curated
+      allowlist (mirroring `_STATE_STORE_CAPTURED_METHODS` itself, not
+      a blanket "pin every instance attribute" default) -- a blanket
+      default would have incorrectly broken `_MutableAuthorityStore`'s
+      own legitimate `.snapshot` reassignment, a real, load-bearing
+      capability this module's own qualification harness depends on
+      to simulate campaign progression between scenarios. Only
+      `state_store`'s `path` is pinned; `authority_store`'s own proxy
+      construction passes none, confirmed via a clean full test-file
+      run (no regression in any scenario relying on `.snapshot`
+      reassignment).
+
+      All three findings, together, mark this round as the point
+      where the transitive-closure mechanisms built across rounds
+      47-50 finally converge into a genuinely uniform, composable
+      set: `_capture_transitive_authority_globals` (module globals,
+      now covering BOTH module-name rebinds and module-attribute
+      mutations), `_capture_collaborator_relied_upon_attributes`
+      (collaborator instance/class/module axes, reusing the globals
+      mechanism directly), and the new
+      `_TRUSTED_TRANSPORT_CLASS_MODULE_GLOBALS` (also reusing it) all
+      now share the SAME underlying walk and the SAME verification
+      helpers, rather than three structurally similar but
+      independently-drifting copies -- closing the risk that a future
+      finding against any ONE of them would need its own fix replayed
+      against the other two, exactly the concern round 50's own
+      closure entry named explicitly.
+
+      No new adjudicated residual-Gen1-dependency exceptions needed --
+      every new/widened function is reached via an already-adjudicated
+      name (`_reject_altered_transport_class_implementation`,
+      `_reject_altered_authority_validation_globals`,
+      `_SealedCollaboratorProxy`); confirmed via a clean
+      residual-dependency scan after the fix.
+
+    Fixed with real mechanisms, generalizing rather than patching. 4
+    new permanent regression tests reproduce the reviewer's exact
+    `tenfold.local_git_transport.subprocess` rebind, the self-audited
+    `subprocess.run` attribute-mutation sibling, and the
+    `state_store.path` storage-identity redirect; rounds 36-50's own
+    regression tests for every prior axis remain valid and pass
+    unmodified. Fixed in commit `<pending>`. Full local
+    re-verification: full test file (113/113), full mutation suite
+    (37/37), `test_g2_27_self_construction.py` (pending), and full
+    repository sweep (pending).
+
 ## Real, honest end-to-end result
 
 Running `execute_self_construction_gate()` for real against the live

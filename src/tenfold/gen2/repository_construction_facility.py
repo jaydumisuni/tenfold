@@ -391,8 +391,15 @@ def _reject_altered_transport_class_implementation() -> None:
     `__hash__`'s side effect ran even though the call correctly raised
     moments later. Every call site in this file now runs this check
     first, before touching the transport in any way that could invoke
-    a class dunder method on it."""
+    a class dunder method on it.
+
+    ROUND 51 WIDENING (see `_TRUSTED_TRANSPORT_CLASS_MODULE_GLOBALS`'s
+    own module-level comment for the full finding): also revalidates
+    every module-global (and module-attribute) name the transport's
+    own methods reference, closing the gap that class-implementation
+    pinning alone never covered a method's OWN module dependencies."""
     _reject_altered_class_implementation(LocalGitRepositoryTransport, _TRUSTED_TRANSPORT_CLASS_ATTRIBUTES, _TRUSTED_TRANSPORT_CLASS_CODE_OBJECTS, _TRUSTED_TRANSPORT_CLASS_DEFAULTS, "LocalGitRepositoryTransport")
+    _reject_altered_transitive_globals(_TRUSTED_TRANSPORT_CLASS_MODULE_GLOBALS)
 
 
 def _reject_altered_facility_class_implementation() -> None:
@@ -594,6 +601,45 @@ def _tenfold_owned_function(value: object) -> bool:
 #: reachable name is still genuinely local, first-party code; see
 #: `_tenfold_owned_function`'s own docstring for where that boundary
 #: is deliberately drawn and why.
+def _module_attribute_roots(func) -> list:
+    """SELF-CAUGHT FINDING (review finding, PR #86, round 51, P1,
+    Codex, reproduced by the reviewer -- "Snapshot mutable attributes
+    of captured modules"): a module captured as an identity-only leaf
+    (`sqlite3`, `json`, ...) has its OWN attributes verified by
+    NOTHING -- `current is trusted_value` only checks that the MODULE
+    OBJECT itself was never rebound; it says nothing about whether one
+    of that module's OWN attributes was mutated in place afterward.
+    The reviewer reproduced assigning `sqlite3.connect = malicious`
+    directly (the `sqlite3` module reference itself untouched, so the
+    round-50 fix's own identity check kept passing) while `_connect`'s
+    own body -- unchanged, still code-pinned -- resolved the tampered
+    `.connect` attribute the moment it ran.
+
+    A module's own `__dict__` is an ordinary globals-shaped namespace
+    (exactly what `_capture_transitive_authority_globals` already
+    walks for a REGULAR module's top-level names), so the fix is not a
+    new mechanism: for one function's `__code__.co_names`, this finds
+    every name that resolves to a MODULE in that function's
+    `__globals__`, then pairs it with every OTHER co_name that is a
+    genuine attribute of that SAME module (`sqlite3`/`connect`, for a
+    body that calls `sqlite3.connect(...)`) -- returning
+    `(module.__dict__, attr_name)` pairs that feed directly back into
+    `_capture_transitive_authority_globals` as additional roots.
+    Bounded the same way the rest of this file's transitive walks are:
+    only attributes THIS SAME function's own bytecode actually
+    references are ever pinned, never a module's full, unbounded
+    attribute surface."""
+    referenced = func.__code__.co_names
+    pairs = []
+    for name in referenced:
+        candidate = func.__globals__.get(name)
+        if inspect.ismodule(candidate):
+            for attr_name in referenced:
+                if attr_name != name and hasattr(candidate, attr_name):
+                    pairs.append((candidate.__dict__, attr_name))
+    return pairs
+
+
 def _capture_transitive_authority_globals(roots: tuple) -> dict:
     """Walks outward from each `(globals_dict, name)` root pin,
     following every name a trusted function's own `__code__.co_names`
@@ -608,10 +654,13 @@ def _capture_transitive_authority_globals(roots: tuple) -> dict:
     code/defaults check `_reject_altered_class_implementation` uses
     elsewhere in this file); every other captured value (a stdlib
     function, a builtin, a module, a class, ...) is verified by
-    IDENTITY alone. Memoized by `(id(globals_dict), name)` so a name
-    reachable via more than one path in the walk is captured exactly
-    once, and so mutually- or self-referential functions cannot cause
-    unbounded recursion."""
+    IDENTITY alone -- see `_module_attribute_roots`'s own docstring
+    for the round-51 finding that identity-alone is not enough for a
+    MODULE specifically, and how this walk also captures its
+    OWN referenced attributes for exactly that reason. Memoized by
+    `(id(globals_dict), name)` so a name reachable via more than one
+    path in the walk is captured exactly once, and so mutually- or
+    self-referential functions cannot cause unbounded recursion."""
     captured: dict = {}
     stack = list(roots)
     while stack:
@@ -625,6 +674,7 @@ def _capture_transitive_authority_globals(roots: tuple) -> dict:
             for referenced_name in value.__code__.co_names:
                 if referenced_name in value.__globals__:
                     stack.append((value.__globals__, referenced_name))
+            stack.extend(_module_attribute_roots(value))
         else:
             captured[key] = (globals_dict, name, value, None, None)
     return captured
@@ -656,6 +706,26 @@ def _transitive_global_entry_matches(entry: tuple) -> bool:
     return current is trusted_value
 
 
+def _reject_altered_transitive_globals(trusted: dict) -> None:
+    """Shared verification loop, used by every caller of
+    `_capture_transitive_authority_globals` that wants a simple
+    "raise on the first mismatch" check rather than the collaborator-
+    instance mechanism's own more specific error message: re-reads
+    every entry FRESH via `_transitive_global_entry_matches` and
+    raises `RepositoryConstructionQualificationError` naming the
+    entry's own originating module (`globals_dict["__name__"]`) and
+    name on the first one that no longer matches."""
+    for entry in trusted.values():
+        if not _transitive_global_entry_matches(entry):
+            globals_dict, name = entry[0], entry[1]
+            label = globals_dict.get("__name__", "<unknown module>")
+            raise RepositoryConstructionQualificationError(
+                f"_reject_altered_transitive_globals: {label}'s own {name} binding "
+                f"no longer matches what was admitted at import time, breaking the "
+                f"local-commit-only boundary"
+            )
+
+
 _TRUSTED_AUTHORITY_VALIDATION_GLOBALS = _capture_transitive_authority_globals(tuple(
     (_REPOSITORY_FACILITY_MODULE_GLOBALS, name)
     for name in (
@@ -675,6 +745,42 @@ _TRUSTED_AUTHORITY_VALIDATION_FACILITY_MODULE_GLOBALS = _capture_transitive_auth
     for name in ("validate_task", "canonical_digest")
 ))
 
+#: Review finding (PR #86, round 51, P1, Codex, reproduced by the
+#: reviewer -- "Pin transport methods' module globals"):
+#: `_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES`/`_CODE_OBJECTS`/`_DEFAULTS`
+#: (rounds 21/37/44) pin `LocalGitRepositoryTransport`'s own class
+#: attributes/code/defaults -- but, unlike `RepositoryFacility` (whose
+#: effect-bearing dependencies are already covered transitively via
+#: `_TRUSTED_AUTHORITY_VALIDATION_GLOBALS`'s own roots -- confirmed by
+#: self-audit: every module-global name any `RepositoryFacility`
+#: method's own code references is either already a root or an
+#: already-disclosed exception-class/evidence-container dependency),
+#: the transport NEVER had ANY module-globals coverage at all. The
+#: reviewer reproduced rebinding `tenfold.local_git_transport.subprocess`
+#: after admission: every existing transport check (class attributes,
+#: code objects, defaults) kept passing, since `subprocess` itself was
+#: never a class attribute -- it's an ordinary module-level global
+#: `_run`'s own body resolves via `_run.__globals__`. Fixed the same
+#: way `_TRUSTED_AUTHORITY_VALIDATION_GLOBALS` covers
+#: `RepositoryFacility`'s authority-validation chain, seeded from
+#: EVERY function `LocalGitRepositoryTransport` itself defines (there
+#: is no narrower "authority validation" subset to curate here -- the
+#: transport's methods ARE the effect-bearing surface) rather than a
+#: hand-picked list, so a future method added to the class is covered
+#: automatically rather than needing its own round.
+_TRUSTED_TRANSPORT_CLASS_MODULE_GLOBALS = _capture_transitive_authority_globals(tuple(
+    (value.__globals__, referenced_name)
+    for value in _TRUSTED_TRANSPORT_CLASS_ATTRIBUTES.values()
+    if inspect.isfunction(value)
+    for referenced_name in value.__code__.co_names
+    if referenced_name in value.__globals__
+) + tuple(
+    (module_dict, attr_name)
+    for value in _TRUSTED_TRANSPORT_CLASS_ATTRIBUTES.values()
+    if inspect.isfunction(value)
+    for module_dict, attr_name in _module_attribute_roots(value)
+))
+
 
 def _reject_altered_authority_validation_globals() -> None:
     """See `_capture_transitive_authority_globals`'s own module-level
@@ -691,17 +797,11 @@ def _reject_altered_authority_validation_globals() -> None:
     message directly, rather than a single label per root dict, since
     the transitive walk now reaches more than one real module from
     each root (`tenfold.facility` AND `tenfold.contracts`, in
-    particular)."""
+    particular). Delegates to the shared `_reject_altered_transitive_globals`
+    (round 51), rather than its own independent copy of this same
+    loop."""
     for trusted in (_TRUSTED_AUTHORITY_VALIDATION_GLOBALS, _TRUSTED_AUTHORITY_VALIDATION_FACILITY_MODULE_GLOBALS):
-        for entry in trusted.values():
-            if not _transitive_global_entry_matches(entry):
-                globals_dict, name = entry[0], entry[1]
-                label = globals_dict.get("__name__", "<unknown module>")
-                raise RepositoryConstructionQualificationError(
-                    f"_reject_altered_authority_validation_globals: {label}'s own {name} binding "
-                    f"no longer matches what was admitted at import time, breaking the "
-                    f"local-commit-only boundary"
-                )
+        _reject_altered_transitive_globals(trusted)
 
 
 @dataclass(frozen=True)
@@ -1395,6 +1495,42 @@ _AUTHORITY_STORE_CAPTURED_METHODS = ("read",)
 #: `_reject_altered_authority_validation_globals` uses.
 _STATE_STORE_CAPTURED_METHODS = ("receipt", "put_receipt", "acquire_writer", "release_writer", "claim_writer", "writer")
 
+#: Review finding (PR #86, round 51, P1, Codex, reproduced by the
+#: reviewer -- "Pin the admitted state store's storage identity"):
+#: rounds 48-50 together seal every axis a captured METHOD can be
+#: tampered through (instance shadow, class rebind, module-global
+#: rebind) -- but `RepositoryStateStore.path`, an ordinary DATA
+#: attribute set once in `__init__` and never reassigned by any of
+#: this class's own methods, was never checked at all. `path`
+#: determines which physical durable SQLite file every captured
+#: method actually reads and writes -- reassigning it after admission
+#: silently redirects the ENTIRE writer-ownership ledger to a
+#: different backing store, with every method/class/module identity
+#: check still passing (nothing about `path` itself is a method,
+#: class attribute, or module global). The reviewer reproduced
+#: acquiring a branch writer as one owner, reassigning
+#: `state_store.path` to a second, independently-initialized
+#: database, then acquiring the SAME branch as a second owner through
+#: the wrapper -- the mutable-writer ownership record was silently
+#: bypassed, since the second acquisition read/wrote an entirely
+#: different, empty ledger.
+#:
+#: Fixed via a NEW, narrower mechanism (see
+#: `_SealedCollaboratorProxy`'s own `immutable_data_attributes`
+#: parameter) rather than widening any of the method-focused ones
+#: above: an EXPLICIT, curated allowlist of data-attribute names
+#: (mirroring how `_STATE_STORE_CAPTURED_METHODS` itself is curated,
+#: not a blanket "pin every instance attribute" default) -- a blanket
+#: default would incorrectly reject `_MutableAuthorityStore`'s own
+#: `.snapshot` reassignment, a genuine, load-bearing capability this
+#: module's own qualification harness relies on to simulate campaign
+#: progression between scenarios (see
+#: `RepositoryConstructionPropertyQualificationHarness`), so ONLY
+#: `state_store`'s `path` -- confirmed, via this same class's own
+#: source, to never be legitimately reassigned after construction --
+#: is pinned; `authority_store`'s own proxy construction passes none.
+_STATE_STORE_IMMUTABLE_DATA_ATTRIBUTES = ("path",)
+
 
 #: Review finding (PR #86, round 41 -- an independently-launched
 #: adversarial re-review, run because Codex's review quota was
@@ -1440,7 +1576,15 @@ _STATE_STORE_CAPTURED_METHODS = ("receipt", "put_receipt", "acquire_writer", "re
 #: own docstring documents this consequence for this specific
 #: registry; not a new reachability fact, but a stronger, previously
 #: undemonstrated one.
-_SEALED_PROXY_CAPTURED_STATE: "weakref.WeakKeyDictionary[_SealedCollaboratorProxy, tuple[dict, dict, object, dict, dict]]" = weakref.WeakKeyDictionary()
+_SEALED_PROXY_CAPTURED_STATE: "weakref.WeakKeyDictionary[_SealedCollaboratorProxy, tuple[dict, dict, object, dict, dict, dict]]" = weakref.WeakKeyDictionary()
+#: Sentinel for `_SealedCollaboratorProxy.__getattr__`'s own
+#: `immutable_data_attributes` check (round 51): `getattr(source,
+#: attr_name, ...)` needs a default distinguishable from any REAL
+#: attribute value (including `None`) for the case where the
+#: attribute was deleted entirely after admission -- a plain module-
+#: level `object()` can never legitimately equal, nor share the exact
+#: type of, any value this file itself ever captures.
+_SEALED_PROXY_MISSING_DATA_ATTRIBUTE = object()
 
 
 def _capture_collaborator_relied_upon_attributes(source_cls: type, method_names: tuple[str, ...]) -> tuple[dict, dict]:
@@ -1514,6 +1658,16 @@ def _capture_collaborator_relied_upon_attributes(source_cls: type, method_names:
     `_reject_altered_authority_validation_globals` uses, rather than a
     third independently-maintained copy of that check.
 
+    ROUND 51 WIDENING (P1, Codex, reproduced by the reviewer --
+    "Snapshot mutable attributes of captured modules"): the round-50
+    fix above pins a module like `sqlite3` by IDENTITY -- but that
+    says nothing about whether one of THAT module's OWN attributes
+    (`sqlite3.connect`) was mutated in place afterward, with the
+    module reference itself untouched. Fixed by ALSO collecting
+    `_module_attribute_roots(func)` for each relied-upon method, the
+    exact same helper `_capture_transitive_authority_globals`'s own
+    internal walk now uses for the identical reason.
+
     Deliberately EXCLUDES `method_names` themselves from the returned
     per-class-method dict (though they are still walked, to discover
     what THEY call): those top-level names are already fully protected
@@ -1547,6 +1701,8 @@ def _capture_collaborator_relied_upon_attributes(source_cls: type, method_names:
                     stack.append(referenced_name)
             if referenced_name in func.__globals__:
                 global_roots[(id(func.__globals__), referenced_name)] = (func.__globals__, referenced_name)
+        for module_dict, attr_name in _module_attribute_roots(func):
+            global_roots[(id(module_dict), attr_name)] = (module_dict, attr_name)
     for name in method_names:
         relied_upon_methods.pop(name, None)
     relied_upon_globals = _capture_transitive_authority_globals(tuple(global_roots.values()))
@@ -1659,11 +1815,30 @@ class _SealedCollaboratorProxy:
     `_reject_altered_authority_validation_globals` uses. All three
     checks (instance shadow, class rebind, module-global rebind) are
     checked fresh on every access, the same "repeat the check every
-    time" discipline as the top-level code-object pin."""
+    time" discipline as the top-level code-object pin.
+
+    SIXTH-LAYER FIX (review finding, PR #86, round 51, P1, Codex,
+    reproduced by the reviewer -- "Pin the admitted state store's
+    storage identity"; see `_STATE_STORE_IMMUTABLE_DATA_ATTRIBUTES`'s
+    own module-level comment for the full account): every fix above
+    seals a captured METHOD's own tampering surface -- none of them
+    say anything about an ordinary DATA attribute the collaborator
+    holds. `RepositoryStateStore.path` determines which physical
+    durable file every captured method reads/writes; reassigning it
+    is neither a method shadow, a class rebind, nor a module-global
+    rebind, so nothing above catches it. Fixed via a new, EXPLICITLY
+    curated `immutable_data_attributes` parameter (deliberately NOT a
+    blanket "pin every instance attribute" default -- see
+    `_STATE_STORE_IMMUTABLE_DATA_ATTRIBUTES`'s own comment for why a
+    blanket default would break `_MutableAuthorityStore`'s own
+    legitimate `.snapshot` reassignment): each named attribute's exact
+    type and value are captured once at construction, and revalidated
+    -- type first, matching round 28's exact-type-before-`==`
+    discipline used throughout this file -- on every access."""
 
     __slots__ = ("__weakref__",)
 
-    def __init__(self, source: object, method_names: tuple[str, ...], label: str) -> None:
+    def __init__(self, source: object, method_names: tuple[str, ...], label: str, immutable_data_attributes: tuple[str, ...] = ()) -> None:
         captured = {}
         captured_code = {}
         for name in method_names:
@@ -1677,10 +1852,11 @@ class _SealedCollaboratorProxy:
             if func is not None:
                 captured_code[name] = func.__code__
         relied_upon_methods, relied_upon_globals = _capture_collaborator_relied_upon_attributes(type(source), method_names)
-        _SEALED_PROXY_CAPTURED_STATE[self] = (captured, captured_code, source, relied_upon_methods, relied_upon_globals)
+        data_snapshot = {attr_name: (type(getattr(source, attr_name)), getattr(source, attr_name)) for attr_name in immutable_data_attributes}
+        _SEALED_PROXY_CAPTURED_STATE[self] = (captured, captured_code, source, relied_upon_methods, relied_upon_globals, data_snapshot)
 
     def __getattr__(self, name):
-        captured, captured_code, source, relied_upon_methods, relied_upon_globals = _SEALED_PROXY_CAPTURED_STATE[self]
+        captured, captured_code, source, relied_upon_methods, relied_upon_globals, data_snapshot = _SEALED_PROXY_CAPTURED_STATE[self]
         try:
             bound = captured[name]
         except KeyError:
@@ -1724,6 +1900,13 @@ class _SealedCollaboratorProxy:
                     f"_SealedCollaboratorProxy: {label}'s own {global_name} binding no longer "
                     f"matches what was captured at admission time -- a module dependency one of "
                     f"its captured methods relies on internally was rebound"
+                )
+        for attr_name, (trusted_type, trusted_value) in data_snapshot.items():
+            current_value = getattr(source, attr_name, _SEALED_PROXY_MISSING_DATA_ATTRIBUTE)
+            if type(current_value) is not trusted_type or current_value != trusted_value:
+                raise RepositoryConstructionQualificationError(
+                    f"_SealedCollaboratorProxy: the collaborator's own {attr_name!r} data attribute "
+                    f"no longer matches what was captured at admission time -- refusing to dispatch"
                 )
         return bound
 
@@ -1771,7 +1954,7 @@ class _SealedCollaboratorProxy:
             raise RepositoryConstructionQualificationError(
                 f"_SealedCollaboratorProxy._inject_fault_for_qualification_harness: replacement for {name!r} is not callable"
             )
-        captured, captured_code, _source, _relied_upon_methods, _relied_upon_globals = _SEALED_PROXY_CAPTURED_STATE[self]
+        captured, captured_code, _source, _relied_upon_methods, _relied_upon_globals, _data_snapshot = _SEALED_PROXY_CAPTURED_STATE[self]
         if name not in captured:
             raise AttributeError(
                 f"_SealedCollaboratorProxy._inject_fault_for_qualification_harness: {name!r} was not captured at admission"
@@ -1982,7 +2165,7 @@ def gen1_wrap_repository_construction_facility(transport, state_store, authority
     # to either caller's own retained reference being mutated in place
     # afterward.
     sealed_authority_store = _SealedCollaboratorProxy(authority_store, _AUTHORITY_STORE_CAPTURED_METHODS, "authority_store")
-    sealed_state_store = _SealedCollaboratorProxy(state_store, _STATE_STORE_CAPTURED_METHODS, "state_store")
+    sealed_state_store = _SealedCollaboratorProxy(state_store, _STATE_STORE_CAPTURED_METHODS, "state_store", _STATE_STORE_IMMUTABLE_DATA_ATTRIBUTES)
     facility = RepositoryFacility(transport, sealed_state_store, sealed_authority_store)
     # Round 22/24 (see `_AdmittedTransportState`'s own docstring): this
     # trusted state -- including `facility` itself, the genuine

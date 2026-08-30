@@ -1911,6 +1911,122 @@ def test_sc23_wrapper_seals_state_store_against_a_module_global_transitive_rebin
     assert triggered["called"] is False
 
 
+def test_sc23_wrapper_rejects_a_rebound_transport_module_global(rig) -> None:
+    """Review finding (PR #86, round 51, P1, Codex, reproduced by the
+    reviewer -- "Pin transport methods' module globals"): rounds
+    21/37/44 pin `LocalGitRepositoryTransport`'s own class attributes/
+    code/defaults, but never had ANY coverage of the module-level
+    globals its own methods reference -- `_run` calls
+    `subprocess.run(...)`, where `subprocess` is an ordinary
+    module-level global in `tenfold.local_git_transport`. The
+    reviewer reproduced rebinding
+    `tenfold.local_git_transport.subprocess` after admission: every
+    existing transport check (class attributes, code, defaults) kept
+    passing, since `subprocess` was never a class attribute at all.
+    Fixed via `_TRUSTED_TRANSPORT_CLASS_MODULE_GLOBALS`, seeded from
+    every function `LocalGitRepositoryTransport` itself defines and
+    verified by `_reject_altered_transport_class_implementation`
+    alongside its existing class-implementation check. This performs
+    a REAL, fully-authorized `create_branch` dispatch to prove the
+    malicious replacement genuinely never runs."""
+    import tenfold.local_git_transport as local_git_transport_module
+
+    triggered = {"called": False}
+
+    class _MaliciousSubprocess:
+        PIPE = local_git_transport_module.subprocess.PIPE
+        STDOUT = local_git_transport_module.subprocess.STDOUT
+
+        @staticmethod
+        def run(*args, **kwargs):
+            triggered["called"] = True
+            raise RuntimeError("malicious subprocess.run should never actually be called through the sealed transport")
+
+    original_subprocess = local_git_transport_module.subprocess
+    local_git_transport_module.subprocess = _MaliciousSubprocess  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack: a MODULE-level rebind on the transport's own module
+    try:
+        with pytest.raises(RepositoryConstructionQualificationError):
+            _real_create_branch_on_rig(rig, branch="sc23/rebound-transport-subprocess", operation_id="op-rebound-transport-subprocess")
+    finally:
+        local_git_transport_module.subprocess = original_subprocess
+
+    assert triggered["called"] is False
+
+
+def test_sc23_wrapper_rejects_a_mutated_transport_module_attribute(rig) -> None:
+    """Self-audited sibling of the round-51 transport finding (see
+    `test_sc23_wrapper_rejects_a_rebound_transport_module_global`'s
+    own docstring): `_module_attribute_roots` closes not only a
+    wholesale module rebind but also an in-place mutation of one of
+    that module's OWN attributes (`subprocess.run` reassigned directly,
+    `subprocess` itself untouched) -- the exact same axis round 51's
+    OWN "Snapshot mutable attributes of captured modules" finding
+    closes for the collaborator-instance mechanism, confirmed here for
+    the transport's module-globals mechanism too via a real,
+    fully-authorized `create_branch` dispatch. `subprocess.run` is
+    restored in a `finally` block, since `subprocess` is a real,
+    shared, process-global module."""
+    import subprocess as real_subprocess_module
+
+    triggered = {"called": False}
+    original_run = real_subprocess_module.run
+
+    def malicious_run(*args, **kwargs):
+        triggered["called"] = True
+        raise RuntimeError("malicious subprocess.run attribute should never actually be called through the sealed transport")
+
+    real_subprocess_module.run = malicious_run  # noqa: SLF001 -- test-only, reproducing the reviewer's own established class of attack one layer deeper: an ATTRIBUTE mutation, not a module rebind
+    try:
+        with pytest.raises(RepositoryConstructionQualificationError):
+            _real_create_branch_on_rig(rig, branch="sc23/mutated-transport-subprocess-run", operation_id="op-mutated-transport-subprocess-run")
+    finally:
+        real_subprocess_module.run = original_run
+
+    assert triggered["called"] is False
+
+
+def test_sc23_sealed_state_store_rejects_a_reassigned_storage_path(tmp_path) -> None:
+    """Review finding (PR #86, round 51, P1, Codex, reproduced by the
+    reviewer -- "Pin the admitted state store's storage identity"):
+    rounds 48-50 together seal every axis a captured METHOD can be
+    tampered through, but `RepositoryStateStore.path` -- an ordinary
+    DATA attribute set once in `__init__`, never reassigned by any of
+    this class's own methods -- was never checked at all, even though
+    it determines which physical durable SQLite file every captured
+    method actually reads/writes. The reviewer reproduced acquiring a
+    branch writer as one owner, reassigning `state_store.path` to a
+    second, independently-initialized database, then acquiring the
+    SAME branch as a second owner through the sealed proxy --
+    bypassing the mutable-writer ownership record, since the second
+    acquisition read/wrote an entirely different, empty ledger, with
+    no captured method/class/module identity ever changing. Fixed via
+    `_SealedCollaboratorProxy`'s new `immutable_data_attributes`
+    parameter (`_STATE_STORE_IMMUTABLE_DATA_ATTRIBUTES`), which
+    captures `state_store.path`'s exact type and value at admission
+    and revalidates it on every access -- through the SAME sealed
+    proxy `gen1_wrap_repository_construction_facility` itself
+    constructs (`acquire_writer` is not one of the outer wrapper's own
+    five delegated methods, so this drives the proxy directly, exactly
+    as the reviewer's own reproduction did)."""
+    from tenfold.gen2.repository_construction_facility import (
+        RepositoryStateStore,
+        _SealedCollaboratorProxy,
+        _STATE_STORE_CAPTURED_METHODS,
+        _STATE_STORE_IMMUTABLE_DATA_ATTRIBUTES,
+    )
+
+    state_store = RepositoryStateStore(str(tmp_path / "state.db"))
+    proxy = _SealedCollaboratorProxy(state_store, _STATE_STORE_CAPTURED_METHODS, "state_store", _STATE_STORE_IMMUTABLE_DATA_ATTRIBUTES)
+
+    proxy.acquire_writer("existing", "sc23/path-redirect-probe", "owner1")
+
+    other_store = RepositoryStateStore(str(tmp_path / "other-state.db"))
+    state_store.path = other_store.path  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack: redirecting the caller-retained store's own storage identity
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        proxy.acquire_writer("existing", "sc23/path-redirect-probe", "owner2")
+
+
 def test_sc23_wrapper_ignores_a_wholesale_replaced_inner_facility(rig) -> None:
     """Review finding (PR #86, round 24, P1, Codex, reproduced by the
     reviewer -- "Verify the inner facility identity before
