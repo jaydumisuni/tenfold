@@ -2485,11 +2485,11 @@ verdict (see below) rather than a hardcoded stale expectation.
     that reproduces the reviewer's exact `__func__.__code__` mutation
     and confirms the sealed proxy rejects it, that access still works
     normally once restored, and that the fault-injection seam remains
-    functional. Fixed in commit `<pending>`. Full local
+    functional. Fixed in commit `5cde00e`. Full local
     re-verification: full test file (91/91), full mutation suite
     (37/37), `test_g2_27_self_construction.py` (33/33), and full
-    repository sweep (pending, only the 9 known pre-existing
-    Windows-only failures expected).
+    repository sweep (1387 passed, 2 skipped, only the 9 known
+    pre-existing Windows-only failures, zero regressions).
 
 ## Real, honest end-to-end result
 
