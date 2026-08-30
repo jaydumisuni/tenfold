@@ -3427,10 +3427,12 @@ verdict (see below) rather than a hardcoded stale expectation.
     `create_branch` dispatch (restored in a `finally` block, since
     `pathlib.Path` is a real, shared, process-global class), followed
     by a sanity dispatch confirming the mechanism doesn't
-    over-reject genuine, untampered use. Fixed in commit `<pending>`.
+    over-reject genuine, untampered use. Fixed in commit `7fc0ef9`.
     Full local re-verification: full test file (114/114), full
     mutation suite (37/37), `test_g2_27_self_construction.py`
-    (pending), and full repository sweep (pending).
+    (33/33), and full repository sweep (1410 passed, 2 skipped, only
+    the 9 known pre-existing Windows-only failures, zero
+    regressions).
 
 ## Real, honest end-to-end result
 
