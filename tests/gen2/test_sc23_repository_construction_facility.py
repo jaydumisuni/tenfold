@@ -2130,6 +2130,98 @@ def test_sc23_wrapper_rejects_a_mutated_concrete_path_subclass_attribute(rig) ->
     assert receipt is not None
 
 
+def test_sc23_trust_dicts_reject_a_direct_entry_mutation() -> None:
+    """Review finding (PR #86, round 54, P1, Codex, reproduced by the
+    reviewer -- "Make class-integrity snapshots immutable"): every
+    trust dict this file builds at import time
+    (`_TRUSTED_FACILITY_CLASS_ATTRIBUTES`,
+    `_TRUSTED_FACILITY_CLASS_CODE_OBJECTS`, and by extension every
+    sibling this same treatment now covers) was, until this round, an
+    ORDINARY, MUTABLE dict -- reachable by any same-process caller
+    that imports this module, the same way every other module-private
+    name in this file already is. The reviewer reproduced tampering
+    `RepositoryFacility.create_branch` AND updating
+    `_TRUSTED_FACILITY_CLASS_ATTRIBUTES`/
+    `_TRUSTED_FACILITY_CLASS_CODE_OBJECTS` to match, in the SAME
+    attack: `_reject_altered_class_implementation`'s own comparison
+    found both sides equal, since both were set to the identical
+    malicious value, and a fully-authorized `create_branch` ran the
+    injected method with no containment, authority, lease, or
+    request-binding validation at all. Fixed by wrapping every trust
+    dict in `types.MappingProxyType` -- a read-only VIEW whose
+    `__setitem__` unconditionally raises `TypeError`. This test proves
+    the ENTRY-mutation itself is now rejected, at the assignment,
+    before it could ever reach a comparison to defeat."""
+    from tenfold.gen2.repository_construction_facility import _TRUSTED_FACILITY_CLASS_ATTRIBUTES, _TRUSTED_FACILITY_CLASS_CODE_OBJECTS
+
+    with pytest.raises(TypeError):
+        _TRUSTED_FACILITY_CLASS_ATTRIBUTES["create_branch"] = None  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack: a direct entry mutation
+
+    with pytest.raises(TypeError):
+        _TRUSTED_FACILITY_CLASS_CODE_OBJECTS["create_branch"] = None  # noqa: SLF001 -- test-only, same class of attack against the sibling trust dict
+
+
+def test_sc23_wrapper_ignores_a_wholesale_reassigned_trust_dict() -> None:
+    """DISCLOSED LIMITATION (review finding, PR #86, round 54, P1,
+    Codex -- "Make class-integrity snapshots immutable"; see
+    `_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES`'s own module-level ROUND 54
+    WIDENING comment for the full account): `types.MappingProxyType`
+    protects a trust dict's own CONTENTS from mutation, but NOT the
+    MODULE-LEVEL NAME binding itself --
+    `tenfold.gen2.repository_construction_facility._TRUSTED_FACILITY_CLASS_ATTRIBUTES
+    = a_different_mappingproxy_wrapping_a_malicious_dict` is an
+    ORDINARY module-attribute reassignment, exactly the same
+    already-disclosed round-27/34 reachability fact ("any code
+    holding a reference this module produces can reach anything
+    reachable from it," and importing the module IS such a reference)
+    applied one level further out to the trust store itself, not a
+    new category of gap. This is a genuinely unfixable limitation
+    within a single Python process without OS-level sandboxing --
+    documented here, executably, as a PERMANENT record that the
+    bypass succeeds (matching this campaign's own established
+    disclosed-limitation precedent, e.g. rounds 27/34/37/39), rather
+    than asserting false protection this file cannot actually
+    provide. Both trust dicts are restored to their ORIGINAL objects
+    in a `finally` block, since they are real, shared, process-global
+    module attributes."""
+    import types
+
+    import tenfold.gen2.repository_construction_facility as repository_construction_facility_module
+    from tenfold.repository_facility import RepositoryFacility
+
+    original_trust = repository_construction_facility_module._TRUSTED_FACILITY_CLASS_ATTRIBUTES
+    original_code_trust = repository_construction_facility_module._TRUSTED_FACILITY_CLASS_CODE_OBJECTS
+    original_create_branch = RepositoryFacility.create_branch
+
+    def malicious_create_branch(self, *args, **kwargs):
+        return "MALICIOUS-RESULT-NO-VALIDATION"
+
+    RepositoryFacility.create_branch = malicious_create_branch  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+    try:
+        replacement_trust = dict(original_trust)
+        replacement_trust["create_branch"] = malicious_create_branch
+        replacement_code_trust = dict(original_code_trust)
+        replacement_code_trust["create_branch"] = malicious_create_branch.__code__
+        repository_construction_facility_module._TRUSTED_FACILITY_CLASS_ATTRIBUTES = types.MappingProxyType(replacement_trust)  # noqa: SLF001 -- test-only, a WHOLESALE rebind, not a mutation
+        repository_construction_facility_module._TRUSTED_FACILITY_CLASS_CODE_OBJECTS = types.MappingProxyType(replacement_code_trust)  # noqa: SLF001
+
+        # DISCLOSED: this genuinely does NOT raise -- documenting the
+        # bypass succeeding, not asserting protection this file cannot
+        # actually provide against a same-process caller able to
+        # rebind its own module attributes.
+        repository_construction_facility_module._reject_altered_class_implementation(
+            RepositoryFacility,
+            repository_construction_facility_module._TRUSTED_FACILITY_CLASS_ATTRIBUTES,
+            repository_construction_facility_module._TRUSTED_FACILITY_CLASS_CODE_OBJECTS,
+            repository_construction_facility_module._TRUSTED_FACILITY_CLASS_DEFAULTS,
+            "RepositoryFacility",
+        )
+    finally:
+        RepositoryFacility.create_branch = original_create_branch
+        repository_construction_facility_module._TRUSTED_FACILITY_CLASS_ATTRIBUTES = original_trust
+        repository_construction_facility_module._TRUSTED_FACILITY_CLASS_CODE_OBJECTS = original_code_trust
+
+
 def test_sc23_wrapper_ignores_a_wholesale_replaced_inner_facility(rig) -> None:
     """Review finding (PR #86, round 24, P1, Codex, reproduced by the
     reviewer -- "Verify the inner facility identity before

@@ -3530,6 +3530,94 @@ Windows-only failures, zero regressions).
     sweep (1411 passed, 2 skipped, only the 9 known pre-existing
     Windows-only failures, zero regressions).
 
+54. A fresh Codex pass against the round-53 commit (`b3af388`/`d1e2c6b`)
+    found 1 further genuine P1 finding -- a category-different finding
+    from every prior round: not a new thing left unpinned, but the
+    trust STORE itself left mutable:
+    - **P1 ("Make class-integrity snapshots immutable"), Codex**:
+      every trust dict this file builds at import time
+      (`_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES`,
+      `_TRUSTED_FACILITY_CLASS_ATTRIBUTES`,
+      `_TRUSTED_AUTHORITY_VALIDATION_GLOBALS`, and every sibling built
+      the same way) was, until this round, an ORDINARY, MUTABLE dict
+      -- reachable by any same-process caller that imports this
+      module, the same way every other module-private name in this
+      file already is. The reviewer reproduced tampering
+      `RepositoryFacility.create_branch` AND updating
+      `_TRUSTED_FACILITY_CLASS_ATTRIBUTES`/
+      `_TRUSTED_FACILITY_CLASS_CODE_OBJECTS` to MATCH, in the SAME
+      attack: `_reject_altered_class_implementation`'s own comparison
+      (`current[name] is not trusted_snapshot[name]`) found both
+      sides equal, since both were set to the identical malicious
+      value -- `wrapper.create_branch(None)` then ran the injected
+      method with NO containment, authority, lease, or
+      request-binding validation at all. This is the trust-STORE
+      analogue of every prior round's trust-SUBJECT finding: pinning
+      what a function/class/module REFERENCES protects nothing if the
+      PINS THEMSELVES remain attacker-writable.
+
+      Fixed by wrapping every trust dict in this file in
+      `types.MappingProxyType` -- a read-only VIEW whose
+      `__setitem__` unconditionally raises `TypeError`, closing the
+      reviewer's exact ENTRY-level mutation. Applied uniformly: the
+      six class-implementation dicts
+      (`_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES`/`_CODE_OBJECTS`/
+      `_DEFAULTS` and their `_TRUSTED_FACILITY_CLASS_*` siblings)
+      individually, and `_capture_transitive_authority_globals` ITSELF
+      now returns a `MappingProxyType` (covering
+      `_TRUSTED_AUTHORITY_VALIDATION_GLOBALS`,
+      `_TRUSTED_AUTHORITY_VALIDATION_FACILITY_MODULE_GLOBALS`,
+      `_TRUSTED_TRANSPORT_CLASS_MODULE_GLOBALS`, and
+      `_TRUSTED_CONTAINMENT_SCAN_MODULE_GLOBALS` automatically, at the
+      SOURCE, rather than remembering to wrap each call site). Self-
+      audit extended this to the collaborator-instance mechanism too:
+      `_capture_collaborator_relied_upon_attributes`'s own
+      `relied_upon_methods` dict and `_SealedCollaboratorProxy`'s own
+      `data_snapshot` are now ALSO wrapped, since both are trust
+      baselines `__getattr__` compares live state against on every
+      access -- but deliberately NOT `captured`/`captured_code` on
+      that same proxy, since
+      `_inject_fault_for_qualification_harness`'s own sanctioned
+      escape hatch legitimately WRITES to exactly those two, and
+      wrapping them would have broken that harness outright (verified
+      by running the full test file after the change, confirming the
+      harness's own crash/recovery scenarios still pass unmodified).
+
+      DISCLOSED, not fixed: `MappingProxyType` protects a trust
+      dict's own CONTENTS, not the MODULE-LEVEL NAME binding itself --
+      `m._TRUSTED_FACILITY_CLASS_ATTRIBUTES = new_mappingproxy` (a
+      WHOLESALE rebind, not a mutation) remains reachable, the exact
+      same already-disclosed round-27/34 reachability fact ("any code
+      holding a reference this module produces can reach anything
+      reachable from it," and importing the module IS such a
+      reference) applied one level further out to the trust store
+      itself -- not a new category of gap, and no more fixable here
+      than anywhere else in this file. Verified empirically, both
+      ways, before writing anything: the entry-mutation attack now
+      raises `TypeError` at the assignment itself; the wholesale-
+      rebind variant of the SAME attack still genuinely succeeds,
+      confirming the fix closes exactly what's closable and no more.
+
+      No new adjudicated residual-Gen1-dependency exceptions needed --
+      every mechanism name reached is unchanged; confirmed via a clean
+      residual-dependency scan after the fix.
+
+    Fixed with a real mechanism where genuinely fixable; disclosed,
+    with a permanent executable record, where it is not -- matching
+    this campaign's own established practice (rounds 27/34/37/39) for
+    a finding that turns out to be a fundamental same-process
+    reachability fact rather than a code-level oversight. 2 new
+    permanent regression tests: one proves the reviewer's exact
+    entry-mutation attack now raises `TypeError` immediately; the
+    other documents the wholesale-rebind bypass succeeding (never
+    asserting protection this file cannot actually provide), both
+    trust dicts restored to their original objects in a `finally`
+    block since they are real, shared, process-global module
+    attributes. Fixed in commit `<pending>`. Full local
+    re-verification: full test file (117/117), full mutation suite
+    (37/37), `test_g2_27_self_construction.py` (pending), and full
+    repository sweep (pending).
+
 ## Real, honest end-to-end result
 
 Running `execute_self_construction_gate()` for real against the live

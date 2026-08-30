@@ -235,7 +235,42 @@ def _function_defaults_match(func, captured_snapshot: tuple) -> bool:
 #: -- the same disclosed, construction-time-review trust model every
 #: other check in this file already relies on, not a new category of
 #: gap.)
-_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES = dict(vars(LocalGitRepositoryTransport))
+#:
+#: ROUND 54 WIDENING (P1, Codex, reproduced by the reviewer -- "Make
+#: class-integrity snapshots immutable"): capturing a trust snapshot
+#: at import time protects it from a LATER change to the REAL class --
+#: but says nothing about the snapshot ITSELF, which was, until this
+#: round, an ORDINARY, MUTABLE dict, reachable by any same-process
+#: caller that imports this module (`import
+#: tenfold.gen2.repository_construction_facility as m`) the SAME way
+#: every other module-private name in this file already is. The
+#: reviewer reproduced tampering `RepositoryFacility.create_branch`
+#: AND updating `_TRUSTED_FACILITY_CLASS_ATTRIBUTES`/
+#: `_TRUSTED_FACILITY_CLASS_CODE_OBJECTS` to match, in the SAME
+#: attack: `_reject_altered_class_implementation`'s own comparison
+#: (`current[name] is not trusted_snapshot[name]`) found both sides
+#: equal, since both were set to the identical malicious value --
+#: `wrapper.create_branch(None)` then ran the injected method with NO
+#: containment, authority, lease, or request-binding validation at
+#: all. This is the trust-STORE analogue of every prior round's
+#: trust-SUBJECT finding: pinning what a function/class/module
+#: REFERENCES protects nothing if the PINS THEMSELVES remain
+#: attacker-writable. Fixed by wrapping every trust dict in this file
+#: in `types.MappingProxyType` -- a read-only VIEW whose `__setitem__`
+#: unconditionally raises `TypeError`, closing the reviewer's exact
+#: ENTRY-level mutation. DISCLOSED, not fixed: `MappingProxyType`
+#: protects the dict's own CONTENTS, not the MODULE-LEVEL NAME binding
+#: itself -- `m._TRUSTED_FACILITY_CLASS_ATTRIBUTES = new_mappingproxy`
+#: (wholesale REBINDING, not mutating) remains reachable, the exact
+#: same already-disclosed round-27/34 reachability fact ("any code
+#: holding a reference this module produces can reach anything
+#: reachable from it," and importing the module IS such a reference)
+#: applied one level further out -- not a new category of gap, and no
+#: more fixable here than it is anywhere else in this file. See
+#: `test_sc23_wrapper_ignores_a_wholesale_reassigned_trust_dict`'s own
+#: docstring for the permanent, executable record of this disclosed
+#: limitation.
+_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES = types.MappingProxyType(dict(vars(LocalGitRepositoryTransport)))
 #: Review finding (PR #86, round 37, P1, Codex, reproduced by the
 #: reviewer -- "Snapshot method implementations rather than function
 #: identities"): `_reject_altered_class_implementation`'s
@@ -257,7 +292,7 @@ _TRUSTED_TRANSPORT_CLASS_ATTRIBUTES = dict(vars(LocalGitRepositoryTransport))
 #: captured bound method: this dict holds its OWN reference to the
 #: original code object, which a later `func.__code__ = other` cannot
 #: retroactively change.
-_TRUSTED_TRANSPORT_CLASS_CODE_OBJECTS = {name: value.__code__ for name, value in _TRUSTED_TRANSPORT_CLASS_ATTRIBUTES.items() if inspect.isfunction(value)}
+_TRUSTED_TRANSPORT_CLASS_CODE_OBJECTS = types.MappingProxyType({name: value.__code__ for name, value in _TRUSTED_TRANSPORT_CLASS_ATTRIBUTES.items() if inspect.isfunction(value)})
 #: Review finding (PR #86, round 44, P1, Codex, reproduced by the
 #: reviewer -- "Pin function keyword defaults during class checks"):
 #: round 37's `__code__` pin closes bytecode mutation, but a
@@ -280,7 +315,7 @@ _TRUSTED_TRANSPORT_CLASS_CODE_OBJECTS = {name: value.__code__ for name, value in
 #: items) -- immune to later in-place dict mutation for the same
 #: reason `_TRUSTED_TRANSPORT_CLASS_CODE_OBJECTS` is immune to a later
 #: `func.__code__` reassignment.
-_TRUSTED_TRANSPORT_CLASS_DEFAULTS = {name: _function_defaults_snapshot(value) for name, value in _TRUSTED_TRANSPORT_CLASS_ATTRIBUTES.items() if inspect.isfunction(value)}
+_TRUSTED_TRANSPORT_CLASS_DEFAULTS = types.MappingProxyType({name: _function_defaults_snapshot(value) for name, value in _TRUSTED_TRANSPORT_CLASS_ATTRIBUTES.items() if inspect.isfunction(value)})
 
 #: Review finding (PR #86, round 23, P1, Codex, reproduced by the
 #: reviewer -- "Seal the delegated RepositoryFacility operations"): the
@@ -310,7 +345,7 @@ _TRUSTED_TRANSPORT_CLASS_DEFAULTS = {name: _function_defaults_snapshot(value) fo
 #: `_current_transport`/`_admitted_state_for` -- pinning it here too
 #: would just reject every genuine round-16 swap a second, redundant
 #: way.
-_TRUSTED_FACILITY_CLASS_ATTRIBUTES = dict(vars(RepositoryFacility))
+_TRUSTED_FACILITY_CLASS_ATTRIBUTES = types.MappingProxyType(dict(vars(RepositoryFacility)))
 #: See `_TRUSTED_TRANSPORT_CLASS_CODE_OBJECTS`'s own docstring -- the
 #: identical round-37 fix, applied symmetrically to `RepositoryFacility`
 #: (whose own `create_branch`/`commit`/etc. are equally reachable,
@@ -318,13 +353,13 @@ _TRUSTED_FACILITY_CLASS_ATTRIBUTES = dict(vars(RepositoryFacility))
 #: THIS class-implementation check -- `_FrozenClassMeta` guards
 #: `_ContainmentReCheckedRepositoryFacility`'s own class, never
 #: `RepositoryFacility`'s).
-_TRUSTED_FACILITY_CLASS_CODE_OBJECTS = {name: value.__code__ for name, value in _TRUSTED_FACILITY_CLASS_ATTRIBUTES.items() if inspect.isfunction(value)}
+_TRUSTED_FACILITY_CLASS_CODE_OBJECTS = types.MappingProxyType({name: value.__code__ for name, value in _TRUSTED_FACILITY_CLASS_ATTRIBUTES.items() if inspect.isfunction(value)})
 #: See `_TRUSTED_TRANSPORT_CLASS_DEFAULTS`'s own module-level comment
 #: -- the identical round-44 fix, applied symmetrically to
 #: `RepositoryFacility` for the same reason
 #: `_TRUSTED_FACILITY_CLASS_CODE_OBJECTS` mirrors
 #: `_TRUSTED_TRANSPORT_CLASS_CODE_OBJECTS`.
-_TRUSTED_FACILITY_CLASS_DEFAULTS = {name: _function_defaults_snapshot(value) for name, value in _TRUSTED_FACILITY_CLASS_ATTRIBUTES.items() if inspect.isfunction(value)}
+_TRUSTED_FACILITY_CLASS_DEFAULTS = types.MappingProxyType({name: _function_defaults_snapshot(value) for name, value in _TRUSTED_FACILITY_CLASS_ATTRIBUTES.items() if inspect.isfunction(value)})
 _EXPECTED_FACILITY_INSTANCE_ATTRIBUTES = frozenset({"transport", "state", "authority_store"})
 
 
@@ -733,13 +768,16 @@ def _leaf_attribute_namespace_label(namespace) -> str:
     return namespace.get("__name__", "<unknown module>")
 
 
-def _capture_transitive_authority_globals(roots: tuple) -> dict:
+def _capture_transitive_authority_globals(roots: tuple) -> "types.MappingProxyType":
     """Walks outward from each `(globals_dict, name)` root pin,
     following every name a trusted function's own `__code__.co_names`
     references that actually resolves in that function's `__globals__`
     -- recursing further only while the referenced value is itself
     `_tenfold_owned_function`-owned (see that function's own docstring
-    for why recursion stops there). Returns a dict keyed by
+    for why recursion stops there). Returns an immutable
+    `types.MappingProxyType` VIEW (round 54 -- see
+    `_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES`'s own module-level ROUND 54
+    WIDENING comment for the finding this closes) of a dict keyed by
     `(id(globals_dict), name)` -> `(globals_dict, name, value,
     code_or_None, defaults_or_None)` -- `code_or_None`/
     `defaults_or_None` are populated only for entries that are
@@ -770,7 +808,14 @@ def _capture_transitive_authority_globals(roots: tuple) -> dict:
             stack.extend(_leaf_attribute_roots(value))
         else:
             captured[key] = (globals_dict, name, value, None, None)
-    return captured
+    # Round 54 (see `_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES`'s own
+    # module-level ROUND 54 WIDENING comment): every dict this
+    # function's own callers store as a module-level trust baseline
+    # gets the SAME immutable-view treatment -- done here, once, so
+    # every current and future caller of this function is covered
+    # automatically, rather than remembering to wrap the result at
+    # each of the (currently four) call sites individually.
+    return types.MappingProxyType(captured)
 
 
 def _transitive_global_entry_matches(entry: tuple) -> bool:
@@ -1838,7 +1883,14 @@ def _capture_collaborator_relied_upon_attributes(source_cls: type, method_names:
     for name in method_names:
         relied_upon_methods.pop(name, None)
     relied_upon_globals = _capture_transitive_authority_globals(tuple(global_roots.values()))
-    return relied_upon_methods, relied_upon_globals
+    # Round 54 (see `_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES`'s own
+    # module-level ROUND 54 WIDENING comment): this dict is ALSO a
+    # trust baseline (`_SealedCollaboratorProxy.__getattr__` compares
+    # against it on every access), so it gets the same immutable-view
+    # treatment as every other one in this file, for the identical
+    # reason -- `relied_upon_globals` is already immutable, since
+    # `_capture_transitive_authority_globals` itself now returns one.
+    return types.MappingProxyType(relied_upon_methods), relied_upon_globals
 
 
 class _SealedCollaboratorProxy:
@@ -1985,7 +2037,17 @@ class _SealedCollaboratorProxy:
                 captured_code[name] = func.__code__
         relied_upon_methods, relied_upon_globals = _capture_collaborator_relied_upon_attributes(type(source), method_names)
         data_snapshot = {attr_name: (type(getattr(source, attr_name)), getattr(source, attr_name)) for attr_name in immutable_data_attributes}
-        _SEALED_PROXY_CAPTURED_STATE[self] = (captured, captured_code, source, relied_upon_methods, relied_upon_globals, data_snapshot)
+        # Round 54 (see `_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES`'s own
+        # module-level ROUND 54 WIDENING comment): `data_snapshot` is
+        # ALSO a trust baseline `__getattr__` compares live state
+        # against on every access, and (unlike `captured`/
+        # `captured_code`) is NEVER legitimately mutated after
+        # construction -- `_inject_fault_for_qualification_harness`'s
+        # own sanctioned escape hatch only ever writes to `captured`/
+        # `captured_code`, so ONLY this one is wrapped here; the other
+        # two must stay genuinely mutable for that harness to keep
+        # working.
+        _SEALED_PROXY_CAPTURED_STATE[self] = (captured, captured_code, source, relied_upon_methods, relied_upon_globals, types.MappingProxyType(data_snapshot))
 
     def __getattr__(self, name):
         captured, captured_code, source, relied_upon_methods, relied_upon_globals, data_snapshot = _SEALED_PROXY_CAPTURED_STATE[self]
