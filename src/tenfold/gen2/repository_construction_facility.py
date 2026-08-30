@@ -642,23 +642,95 @@ def _leaf_attribute_roots(func) -> list:
     while every `git_dir.is_symlink()` containment check anywhere in
     this file resolves the tampered method the moment it runs, letting
     a symlinked `.git/refs/heads` escape detection during a fully
-    authorized `create_branch`. A class's own `__dict__` is written to
-    directly by ordinary class-attribute assignment (`Class.attr = x`)
-    the SAME way a module's is, and reading it back
-    (`cls.__dict__.get(name)`, a read-only `mappingproxy` but fully
-    supporting `.get`) works identically too -- so the fix widens the
-    SAME check from `inspect.ismodule(candidate)` to `inspect.ismodule(candidate)
-    or isinstance(candidate, type)`, with no other change to the
-    mechanism at all."""
+    authorized `create_branch`.
+
+    ROUND 53 WIDENING (P1, Codex, reproduced by the reviewer -- "Pin
+    concrete pathlib classes before containment scans"): the round-52
+    fix above only ever captured a class's OWN `__dict__` entry for a
+    name -- but `Path(...)` never actually returns a `Path` instance;
+    `Path.__new__` dispatches to a PLATFORM-SPECIFIC concrete subclass
+    (`PosixPath`/`WindowsPath`), which can carry its OWN,
+    independently overridable attribute for any name otherwise
+    inherited from `Path`. Worse, an attacker CREATING a brand-new
+    override where none existed before (exactly what the reviewer
+    reproduced: `type(Path()).is_symlink = lambda self: False`,
+    assigning directly onto `PosixPath`/`WindowsPath`, which had NO
+    `is_symlink` entry of its own beforehand) leaves nothing in that
+    subclass's OWN `__dict__` to compare against at capture time --
+    even a subclass-`__dict__`-aware version of the round-52 fix would
+    have found nothing to pin, since the entry simply didn't exist
+    yet. `Path` itself remains byte-for-byte untouched throughout, so
+    the round-52 check (and the round-51 module-identity check it's
+    modeled on) both keep passing while every instance's own
+    `.is_symlink()` call resolves the new override via ordinary MRO
+    lookup. Fixed by capturing the MRO-RESOLVED value
+    (`getattr(concrete_cls, attr_name)`, not
+    `concrete_cls.__dict__.get(attr_name)`) for `candidate` itself AND
+    every class reachable via `candidate.__subclasses__()`,
+    transitively (side-effect-free -- never constructs an instance,
+    just introspects already-loaded subclasses) -- the actual,
+    effective implementation any instance of that concrete class will
+    really call, regardless of WHERE in its own MRO the override
+    lands. `_capture_transitive_authority_globals`'s own lookup (see
+    that function's own docstring) now branches on whether a captured
+    namespace is a real dict-like object (module/class `__dict__`,
+    unchanged) or a CLASS ITSELF (this new case, verified via
+    `getattr`), so this needed no separate verification mechanism --
+    only a second kind of root and a small extension to the ONE
+    existing lookup used everywhere. This naturally subsumes round
+    52's own fix rather than merely adding to it: `candidate` itself
+    is the first node this new walk visits, so `Path`'s own attribute
+    is covered exactly as before, now alongside every concrete
+    subclass."""
     referenced = func.__code__.co_names
     pairs = []
     for name in referenced:
         candidate = func.__globals__.get(name)
-        if inspect.ismodule(candidate) or isinstance(candidate, type):
+        if inspect.ismodule(candidate):
             for attr_name in referenced:
                 if attr_name != name and hasattr(candidate, attr_name):
                     pairs.append((candidate.__dict__, attr_name))
+        elif isinstance(candidate, type):
+            stack = [candidate]
+            seen = {candidate}
+            while stack:
+                cls = stack.pop()
+                for attr_name in referenced:
+                    if attr_name != name and hasattr(cls, attr_name):
+                        pairs.append((cls, attr_name))
+                for subclass in cls.__subclasses__():
+                    if subclass not in seen:
+                        seen.add(subclass)
+                        stack.append(subclass)
     return pairs
+
+
+def _leaf_attribute_namespace_get(namespace, name):
+    """Round 53: reads one name from a captured-leaf NAMESPACE, which
+    is either an ordinary dict-like object (a module's or class's own
+    `__dict__`, unchanged since round 51/52 -- read via plain key
+    lookup, seeing only what that SPECIFIC object directly defines
+    itself) or a CLASS OBJECT itself (`_leaf_attribute_roots`'s new
+    concrete-subclass entries) -- read via ordinary MRO-resolved
+    attribute lookup (`getattr`), seeing the actual, EFFECTIVE value
+    any real instance of that class would get, from wherever in its
+    own MRO it's actually defined. Shared by
+    `_capture_transitive_authority_globals`'s own capture step and
+    `_transitive_global_entry_matches`'s own verification, so both
+    read a given namespace identically."""
+    if isinstance(namespace, type):
+        return getattr(namespace, name, None)
+    return namespace.get(name)
+
+
+def _leaf_attribute_namespace_label(namespace) -> str:
+    """Round 53: companion to `_leaf_attribute_namespace_get` for
+    error-message purposes -- a module's own `__name__` (unchanged),
+    or a CLASS's own `__qualname__` for the new class-object
+    namespace kind, which has no `__name__` KEY of its own to `.get`."""
+    if isinstance(namespace, type):
+        return getattr(namespace, "__qualname__", "<unknown class>")
+    return namespace.get("__name__", "<unknown module>")
 
 
 def _capture_transitive_authority_globals(roots: tuple) -> dict:
@@ -689,7 +761,7 @@ def _capture_transitive_authority_globals(roots: tuple) -> dict:
         key = (id(globals_dict), name)
         if key in captured:
             continue
-        value = globals_dict.get(name)
+        value = _leaf_attribute_namespace_get(globals_dict, name)
         if _tenfold_owned_function(value):
             captured[key] = (globals_dict, name, value, value.__code__, _function_defaults_snapshot(value))
             for referenced_name in value.__code__.co_names:
@@ -716,7 +788,7 @@ def _transitive_global_entry_matches(entry: tuple) -> bool:
     verification, rather than maintaining a second, independently
     drifting copy of it."""
     globals_dict, name, trusted_value, trusted_code, trusted_defaults = entry
-    current = globals_dict.get(name)
+    current = _leaf_attribute_namespace_get(globals_dict, name)
     if trusted_code is not None:
         return (
             current is trusted_value
@@ -739,7 +811,7 @@ def _reject_altered_transitive_globals(trusted: dict) -> None:
     for entry in trusted.values():
         if not _transitive_global_entry_matches(entry):
             globals_dict, name = entry[0], entry[1]
-            label = globals_dict.get("__name__", "<unknown module>")
+            label = _leaf_attribute_namespace_label(globals_dict)
             raise RepositoryConstructionQualificationError(
                 f"_reject_altered_transitive_globals: {label}'s own {name} binding "
                 f"no longer matches what was admitted at import time, breaking the "
@@ -1955,7 +2027,7 @@ class _SealedCollaboratorProxy:
         for entry in relied_upon_globals.values():
             if not _transitive_global_entry_matches(entry):
                 globals_dict, global_name = entry[0], entry[1]
-                label = globals_dict.get("__name__", "<unknown module>")
+                label = _leaf_attribute_namespace_label(globals_dict)
                 raise RepositoryConstructionQualificationError(
                     f"_SealedCollaboratorProxy: {label}'s own {global_name} binding no longer "
                     f"matches what was captured at admission time -- a module dependency one of "

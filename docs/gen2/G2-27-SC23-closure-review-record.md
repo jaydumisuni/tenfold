@@ -3462,6 +3462,73 @@ file (114/114), full mutation suite (37/37),
 sweep (1410 passed, 2 skipped, only the 9 known pre-existing
 Windows-only failures, zero regressions).
 
+53. A fresh Codex pass against the CI-flake-fix commit (`c29f130`/`95dfdd4`)
+    found 1 further genuine P1 finding -- round 52's own class-leaf
+    fix, widened past a stdlib class's own unusual factory pattern:
+    - **P1 ("Pin concrete pathlib classes before containment scans"),
+      Codex**: the round-52 fix only ever captured `Path`'s OWN
+      `__dict__` entry for a name -- but `Path(...)` never actually
+      returns a `Path` instance; `Path.__new__` dispatches to a
+      PLATFORM-SPECIFIC concrete subclass (`PosixPath`/`WindowsPath`),
+      which can carry its own, independently overridable attribute
+      for any name otherwise inherited from `Path`. Worse than a
+      simple reassignment: the reviewer reproduced
+      `type(Path()).is_symlink = lambda self: False` -- assigning
+      directly onto the concrete subclass, which had NO `is_symlink`
+      entry of its own beforehand, so even a subclass-`__dict__`-
+      aware version of the round-52 fix would have found nothing to
+      compare against at capture time (the entry simply didn't exist
+      yet). `Path` itself remained byte-for-byte untouched throughout,
+      so both the round-52 check and the round-51 module-identity
+      check it's modeled on kept passing, while every instance's own
+      `.is_symlink()` call resolved the new override via ordinary MRO
+      lookup, letting a symlinked `.git/refs/heads` escape detection
+      during a fully authorized `create_branch`.
+
+      Fixed by a genuine shift in WHAT gets captured, not merely
+      WHERE: instead of a class's own `__dict__` entry (which only
+      ever sees attributes ALREADY overridden at capture time), the
+      fix captures the MRO-RESOLVED value (`getattr(concrete_cls,
+      attr_name)`) for the referenced class AND every class reachable
+      via `.__subclasses__()`, transitively (side-effect-free --
+      never constructs an instance, just introspects already-loaded
+      subclasses) -- the actual, effective implementation any
+      instance of that concrete class will really call, regardless of
+      WHERE in its own MRO the override lands. This required a small,
+      general extension to the shared lookup
+      `_capture_transitive_authority_globals`/
+      `_transitive_global_entry_matches` already use everywhere: a
+      captured namespace is now either a dict-like object (module/
+      class `__dict__`, read via plain key lookup, unchanged) or a
+      CLASS OBJECT ITSELF (read via `getattr`, the new case) -- one
+      lookup helper (`_leaf_attribute_namespace_get`) and one label
+      helper (`_leaf_attribute_namespace_label`), shared by every
+      consumer of this mechanism (module-globals, collaborator-
+      instance, transport, and this module's own containment-scan
+      globals), rather than a parallel, separately-maintained check.
+      This naturally SUBSUMES round 52's own fix rather than merely
+      adding to it -- `Path` itself is the first node the new subclass
+      walk visits, so its own attribute is covered exactly as before,
+      now alongside every concrete runtime subclass.
+
+      No new adjudicated residual-Gen1-dependency exceptions needed --
+      every mechanism name reached is unchanged; confirmed via a clean
+      residual-dependency scan after the fix.
+
+    Fixed with a real mechanism, generalizing the existing one rather
+    than adding a parallel check. 1 new permanent regression test
+    reproduces the reviewer's exact `type(Path()).is_symlink`
+    concrete-subclass override via a real, fully-authorized
+    `create_branch` dispatch, restored to the EXACT prior state in a
+    `finally` block (distinguishing "was inherited" from "had its own
+    entry," since `pathlib.Path`/`PosixPath`/`WindowsPath` are real,
+    shared, process-global classes), followed by a sanity dispatch
+    confirming the mechanism doesn't over-reject genuine, untampered
+    use. Fixed in commit `<pending>`. Full local re-verification: full
+    test file (115/115), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (pending), and full repository
+    sweep (pending).
+
 ## Real, honest end-to-end result
 
 Running `execute_self_construction_gate()` for real against the live

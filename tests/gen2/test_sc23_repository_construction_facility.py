@@ -2076,6 +2076,60 @@ def test_sc23_wrapper_rejects_a_mutated_path_class_attribute(rig) -> None:
     assert receipt is not None
 
 
+def test_sc23_wrapper_rejects_a_mutated_concrete_path_subclass_attribute(rig) -> None:
+    """Review finding (PR #86, round 53, P1, Codex, reproduced by the
+    reviewer -- "Pin concrete pathlib classes before containment
+    scans"): the round-52 fix only ever captured `Path`'s OWN
+    `__dict__` entry for a name -- but `Path(...)` never actually
+    returns a `Path` instance; `Path.__new__` dispatches to a
+    platform-specific concrete subclass (`PosixPath`/`WindowsPath`),
+    which can carry its own, independently overridable attribute for
+    any name otherwise inherited from `Path`. The reviewer reproduced
+    `type(Path()).is_symlink = lambda self: False` -- assigning
+    directly onto the concrete subclass, which had NO `is_symlink`
+    entry of its own beforehand, so even a subclass-`__dict__`-aware
+    check would have found nothing to compare against; `Path` itself
+    remained byte-for-byte untouched throughout, so the round-52 check
+    kept passing while every instance's own `.is_symlink()` call
+    resolved the new override via ordinary MRO lookup, letting a
+    symlinked `.git/refs/heads` escape detection during a fully
+    authorized `create_branch`. Fixed by capturing the MRO-RESOLVED
+    value (`getattr(concrete_cls, attr_name)`) for `Path` and every
+    class reachable via `Path.__subclasses__()`, transitively, rather
+    than only each class's own `__dict__` entry -- catching an
+    override landing ANYWHERE in the concrete class's own MRO,
+    including a brand-new one. The concrete class's `is_symlink` is
+    restored in a `finally` block, since it is a real, shared,
+    process-global class (`pathlib.Path`/`PosixPath`/`WindowsPath`)."""
+    from pathlib import Path
+
+    concrete = type(Path())
+    had_own_entry = "is_symlink" in concrete.__dict__
+    original_is_symlink = concrete.is_symlink
+
+    def malicious_is_symlink(self):
+        return False
+
+    concrete.is_symlink = malicious_is_symlink  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack: a CONCRETE-SUBCLASS-level override, not Path itself
+    try:
+        with pytest.raises(RepositoryConstructionQualificationError):
+            _real_create_branch_on_rig(rig, branch="sc23/mutated-concrete-path-subclass-is-symlink", operation_id="op-mutated-concrete-path-subclass-is-symlink")
+    finally:
+        # Restore to the EXACT prior state -- `is_symlink` was
+        # inherited (no entry of its own) before this test ran, so
+        # leave the concrete class exactly that way again, rather than
+        # a reassignment that would leave a redundant (functionally
+        # equivalent, but no longer "inherited") entry behind on this
+        # real, shared, process-global class.
+        if had_own_entry:
+            concrete.is_symlink = original_is_symlink
+        else:
+            del concrete.is_symlink
+
+    receipt = _real_create_branch_on_rig(rig, branch="sc23/mutated-concrete-path-subclass-is-symlink-sanity", operation_id="op-mutated-concrete-path-subclass-is-symlink-sanity")
+    assert receipt is not None
+
+
 def test_sc23_wrapper_ignores_a_wholesale_replaced_inner_facility(rig) -> None:
     """Review finding (PR #86, round 24, P1, Codex, reproduced by the
     reviewer -- "Verify the inner facility identity before
