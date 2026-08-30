@@ -3524,10 +3524,11 @@ Windows-only failures, zero regressions).
     entry," since `pathlib.Path`/`PosixPath`/`WindowsPath` are real,
     shared, process-global classes), followed by a sanity dispatch
     confirming the mechanism doesn't over-reject genuine, untampered
-    use. Fixed in commit `<pending>`. Full local re-verification: full
+    use. Fixed in commit `b3af388`. Full local re-verification: full
     test file (115/115), full mutation suite (37/37),
-    `test_g2_27_self_construction.py` (pending), and full repository
-    sweep (pending).
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (1411 passed, 2 skipped, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
 
 ## Real, honest end-to-end result
 
