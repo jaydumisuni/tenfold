@@ -2943,11 +2943,11 @@ verdict (see below) rather than a hardcoded stale expectation.
     reproduce the reviewer's exact `_path_in_scope` finding and
     confirm all seven pinned globals (the original plus the six found
     via self-audit) are individually, correctly caught when rebound.
-    Fixed in commit `<pending>`. Full local re-verification: full test
+    Fixed in commit `1da3b00`. Full local re-verification: full test
     file (103/103), full mutation suite (37/37),
     `test_g2_27_self_construction.py` (33/33), and full repository
-    sweep (pending, only the 9 known pre-existing Windows-only
-    failures expected).
+    sweep (1399 passed, 2 skipped, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
 
 ## Real, honest end-to-end result
 
