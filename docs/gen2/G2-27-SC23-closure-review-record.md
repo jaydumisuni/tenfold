@@ -3186,6 +3186,69 @@ verdict (see below) rather than a hardcoded stale expectation.
     repository sweep (1405 passed, 2 skipped, only the 9 known
     pre-existing Windows-only failures, zero regressions).
 
+50. A fresh Codex pass against the round-49 commit (`75ed991`/`22f7fa2`)
+    found 1 further genuine P1 finding -- the SEVENTH recurrence of
+    the "one level deeper" pattern, closing the third and final axis
+    of the collaborator-instance mechanism rounds 48/49 built:
+    - **P1 ("Pin collaborator methods' module dependencies"), Codex**:
+      rounds 48/49 together protect a relied-upon method against being
+      shadowed on the instance (round 48) or rebound on the class
+      (round 49) -- but a relied-upon method's own body can ALSO
+      reference an ordinary MODULE-level global.
+      `RepositoryStateStore._connect` calls `sqlite3.connect(...)`,
+      where `sqlite3` is resolved via `_connect.__globals__` -- a
+      THIRD namespace entirely, distinct from both the instance and
+      the class. The reviewer reproduced rebinding
+      `tenfold.repository_facility.sqlite3` itself: `_connect` remains
+      byte-for-byte untouched, so rounds 48/49's own checks find
+      nothing wrong, while `_connect`'s own body resolves the tampered
+      `sqlite3` name the moment it runs, planting an external symlink
+      before the real git mutation with an authorized `create_branch`
+      still returning a successful receipt.
+
+      This is a genuinely different axis than either prior fix on
+      this same mechanism: round 48 checked the INSTANCE, round 49
+      checked the CLASS, and this closes the METHOD'S OWN MODULE
+      NAMESPACE -- the third and, given `self.<name>`/class-attribute
+      lookup and module-global lookup are Python's only two ways a
+      function resolves a bare name, LAST axis a captured method can
+      be tampered through without its own identity/code changing.
+      Rather than re-implementing a module-globals walk a third time,
+      the fix reuses `_capture_transitive_authority_globals` itself --
+      the EXACT mechanism already built in round 48 for
+      `RepositoryFacility`'s own authority-validation chain --
+      collecting every module-global name a relied-upon method's code
+      references as additional roots, and verifying them with a newly
+      extracted, SHARED `_transitive_global_entry_matches` helper both
+      `_reject_altered_authority_validation_globals` and
+      `_SealedCollaboratorProxy.__getattr__` now call, rather than two
+      independently maintained copies of the same check.
+
+      With this fix, `_capture_collaborator_relied_upon_attributes`
+      (the collaborator-instance mechanism) and
+      `_capture_transitive_authority_globals` (the module-globals
+      mechanism) now compose directly -- the former delegates to the
+      latter for its own module-dependency coverage -- rather than
+      remaining two structurally similar but independently-maintained
+      walks, closing the risk that a future finding against ONE would
+      need its OWN fix replayed against the other.
+
+      No new adjudicated residual-Gen1-dependency exception needed --
+      reached via the same already-adjudicated `_SealedCollaboratorProxy`
+      name; confirmed via a clean residual-dependency scan after the
+      fix.
+
+    Fixed with a real mechanism, reusing an existing one rather than
+    building a third. 1 new permanent regression test reproduces the
+    reviewer's exact `tenfold.repository_facility.sqlite3` rebind
+    (restored in a `finally` block, since the module is real, shared,
+    and process-global); rounds 36/38/48/49's own regression tests for
+    the instance- and class-level cases remain valid and pass
+    unmodified. Fixed in commit `<pending>`. Full local
+    re-verification: full test file (110/110), full mutation suite
+    (37/37), `test_g2_27_self_construction.py` (pending), and full
+    repository sweep (pending).
+
 ## Real, honest end-to-end result
 
 Running `execute_self_construction_gate()` for real against the live

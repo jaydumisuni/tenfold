@@ -630,6 +630,32 @@ def _capture_transitive_authority_globals(roots: tuple) -> dict:
     return captured
 
 
+def _transitive_global_entry_matches(entry: tuple) -> bool:
+    """See `_capture_transitive_authority_globals`'s own docstring for
+    the entry shape this verifies against. Shared verification logic
+    for one `(globals_dict, name, trusted_value, trusted_code,
+    trusted_defaults)` entry: `True` when the CURRENT live binding
+    still matches what was captured -- identity (plus `__code__`/
+    defaults, for entries that are themselves locally-owned
+    functions) -- `False` otherwise. Round 50 (see
+    `_capture_collaborator_relied_upon_attributes`'s own ROUND 50
+    WIDENING docstring section) extracted this from
+    `_reject_altered_authority_validation_globals`'s own inline check
+    so the collaborator-instance mechanism could reuse the EXACT same
+    verification, rather than maintaining a second, independently
+    drifting copy of it."""
+    globals_dict, name, trusted_value, trusted_code, trusted_defaults = entry
+    current = globals_dict.get(name)
+    if trusted_code is not None:
+        return (
+            current is trusted_value
+            and inspect.isfunction(current)
+            and current.__code__ is trusted_code
+            and _function_defaults_match(current, trusted_defaults)
+        )
+    return current is trusted_value
+
+
 _TRUSTED_AUTHORITY_VALIDATION_GLOBALS = _capture_transitive_authority_globals(tuple(
     (_REPOSITORY_FACILITY_MODULE_GLOBALS, name)
     for name in (
@@ -667,22 +693,10 @@ def _reject_altered_authority_validation_globals() -> None:
     each root (`tenfold.facility` AND `tenfold.contracts`, in
     particular)."""
     for trusted in (_TRUSTED_AUTHORITY_VALIDATION_GLOBALS, _TRUSTED_AUTHORITY_VALIDATION_FACILITY_MODULE_GLOBALS):
-        for globals_dict, name, trusted_value, trusted_code, trusted_defaults in trusted.values():
-            current = globals_dict.get(name)
-            label = globals_dict.get("__name__", "<unknown module>")
-            if trusted_code is not None:
-                if (
-                    current is not trusted_value
-                    or not inspect.isfunction(current)
-                    or current.__code__ is not trusted_code
-                    or not _function_defaults_match(current, trusted_defaults)
-                ):
-                    raise RepositoryConstructionQualificationError(
-                        f"_reject_altered_authority_validation_globals: {label}'s own {name} binding "
-                        f"no longer matches what was admitted at import time, breaking the "
-                        f"local-commit-only boundary"
-                    )
-            elif current is not trusted_value:
+        for entry in trusted.values():
+            if not _transitive_global_entry_matches(entry):
+                globals_dict, name = entry[0], entry[1]
+                label = globals_dict.get("__name__", "<unknown module>")
                 raise RepositoryConstructionQualificationError(
                     f"_reject_altered_authority_validation_globals: {label}'s own {name} binding "
                     f"no longer matches what was admitted at import time, breaking the "
@@ -1354,6 +1368,31 @@ _AUTHORITY_STORE_CAPTURED_METHODS = ("read",)
 #: cover every axis a captured entity can be tampered through (here:
 #: both the instance's own attributes AND the class's), not just the
 #: first one a reviewer happens to demonstrate.
+#:
+#: ROUND 50 WIDENING (P1, Codex, reproduced by the reviewer -- "Pin
+#: collaborator methods' module dependencies"): rounds 48/49 together
+#: cover the instance and class AXES for a transitively-relied-upon
+#: name, but a relied-upon method's own body can ALSO reference an
+#: ordinary MODULE-level global -- `RepositoryStateStore._connect`
+#: calls `sqlite3.connect(...)`, where `sqlite3` is resolved via
+#: `_connect.__globals__`, a THIRD namespace entirely, distinct from
+#: both the instance and the class. The reviewer reproduced rebinding
+#: `tenfold.repository_facility.sqlite3` itself: `_connect` remains
+#: byte-for-byte untouched, so rounds 48/49's own checks find nothing
+#: wrong, while `_connect`'s own body resolves the tampered name the
+#: moment it runs -- the SEVENTH recurrence of "pinning a function's
+#: own identity does not protect what it calls," and confirmation
+#: that a transitive-closure mechanism protecting a caller-retained
+#: OBJECT needs the SAME module-globals coverage this file's own
+#: `_capture_transitive_authority_globals` already gives
+#: `RepositoryFacility`'s authority-validation call chain. Fixed by
+#: reusing that EXACT mechanism rather than a third, independently
+#: maintained walk: `_capture_collaborator_relied_upon_attributes` now
+#: also collects every module-global name a relied-upon method's code
+#: references and hands it to `_capture_transitive_authority_globals`
+#: directly, verified via the SAME shared
+#: `_transitive_global_entry_matches` helper
+#: `_reject_altered_authority_validation_globals` uses.
 _STATE_STORE_CAPTURED_METHODS = ("receipt", "put_receipt", "acquire_writer", "release_writer", "claim_writer", "writer")
 
 
@@ -1401,10 +1440,10 @@ _STATE_STORE_CAPTURED_METHODS = ("receipt", "put_receipt", "acquire_writer", "re
 #: own docstring documents this consequence for this specific
 #: registry; not a new reachability fact, but a stronger, previously
 #: undemonstrated one.
-_SEALED_PROXY_CAPTURED_STATE: "weakref.WeakKeyDictionary[_SealedCollaboratorProxy, tuple[dict, dict, object, frozenset]]" = weakref.WeakKeyDictionary()
+_SEALED_PROXY_CAPTURED_STATE: "weakref.WeakKeyDictionary[_SealedCollaboratorProxy, tuple[dict, dict, object, dict, dict]]" = weakref.WeakKeyDictionary()
 
 
-def _capture_collaborator_relied_upon_attributes(source_cls: type, method_names: tuple[str, ...]) -> dict:
+def _capture_collaborator_relied_upon_attributes(source_cls: type, method_names: tuple[str, ...]) -> tuple[dict, dict]:
     """See `_STATE_STORE_CAPTURED_METHODS`'s own module-level ROUND 48
     WIDENING comment for the finding this closes. Starting from the
     names `_SealedCollaboratorProxy` was asked to capture, walks each
@@ -1441,26 +1480,55 @@ def _capture_collaborator_relied_upon_attributes(source_cls: type, method_names:
     fresh on every call -- straight to the tampered class attribute.
     This function now ALSO captures each relied-upon name's
     `(value, __code__, defaults snapshot)`, read off the class at THIS
-    proxy's own construction time -- returned as a dict, keyed by
-    name, so `_SealedCollaboratorProxy` can revalidate the CURRENT
+    proxy's own construction time -- returned in the FIRST dict, keyed
+    by name, so `_SealedCollaboratorProxy` can revalidate the CURRENT
     class-level binding's identity/code/defaults on every access,
     exactly mirroring how the top-level captured names are already
     protected via `captured_code`, one level further out.
 
+    ROUND 50 WIDENING (P1, Codex, reproduced by the reviewer -- "Pin
+    collaborator methods' module dependencies"): rounds 48/49 together
+    protect a relied-upon method against being shadowed on the
+    instance OR rebound on the class -- but say nothing about a NAME
+    THAT METHOD ITSELF references at MODULE scope. `RepositoryStateStore
+    ._connect` calls `sqlite3.connect(...)`, where `sqlite3` is an
+    ordinary module-level global in `tenfold.repository_facility`
+    (`import sqlite3`), resolved via `_connect.__globals__` -- a
+    COMPLETELY different namespace than either the instance or the
+    class. The reviewer reproduced rebinding
+    `tenfold.repository_facility.sqlite3` to a module-like object
+    whose `connect` plants an external symlink: `_connect` itself
+    (identity, code, defaults) is untouched, so rounds 48/49's own
+    checks find nothing wrong, while `_connect`'s own body resolves
+    the tampered `sqlite3` name the moment it runs. This is the exact
+    module-globals problem `_capture_transitive_authority_globals`
+    already solves for `RepositoryFacility`'s own authority-validation
+    call chain -- so rather than re-implementing it, THIS function now
+    also collects every module-global name each relied-upon method's
+    `__code__.co_names` references (that resolves in that method's OWN
+    `__globals__`) as an additional root, and hands the complete set
+    to `_capture_transitive_authority_globals` itself -- returned as
+    the SECOND dict, in the exact shape that function already
+    produces, so `_SealedCollaboratorProxy` can revalidate it with the
+    SAME shared `_transitive_global_entry_matches` helper
+    `_reject_altered_authority_validation_globals` uses, rather than a
+    third independently-maintained copy of that check.
+
     Deliberately EXCLUDES `method_names` themselves from the returned
-    dict (though they are still walked, to discover what THEY call):
-    those top-level names are already fully protected by
-    `_SealedCollaboratorProxy`'s own bound-method capture and
+    per-class-method dict (though they are still walked, to discover
+    what THEY call): those top-level names are already fully protected
+    by `_SealedCollaboratorProxy`'s own bound-method capture and
     `__func__.__code__` pin (rounds 36/40) -- calling the already-
     captured bound method never re-resolves `source.<name>` again, so
     neither an instance-level shadow nor a class-level rebind of one of
     THOSE specific names (exactly what rounds 36/38's own regression
     tests deliberately reproduce, as the now-safe case those fixes
     close) is itself tampering. Only a name discovered ONE STEP OR
-    MORE beyond the roots is a genuine instance of the round-48/49
-    gap, since those are resolved fresh, on `self`, every time a
-    captured method actually runs."""
-    relied_upon: dict = {}
+    MORE beyond the roots is a genuine instance of the round-48/49/50
+    gap, since those are resolved fresh, on `self` or on the method's
+    own module namespace, every time a captured method actually runs."""
+    relied_upon_methods: dict = {}
+    global_roots: dict = {}
     stack = list(method_names)
     seen: set = set()
     while stack:
@@ -1471,16 +1539,18 @@ def _capture_collaborator_relied_upon_attributes(source_cls: type, method_names:
         func = inspect.getattr_static(source_cls, name, None)
         if not inspect.isfunction(func):
             continue
-        relied_upon[name] = (func, func.__code__, _function_defaults_snapshot(func))
+        relied_upon_methods[name] = (func, func.__code__, _function_defaults_snapshot(func))
         for referenced_name in func.__code__.co_names:
-            if referenced_name in seen:
-                continue
-            candidate = inspect.getattr_static(source_cls, referenced_name, None)
-            if inspect.isfunction(candidate):
-                stack.append(referenced_name)
+            if referenced_name not in seen:
+                candidate = inspect.getattr_static(source_cls, referenced_name, None)
+                if inspect.isfunction(candidate):
+                    stack.append(referenced_name)
+            if referenced_name in func.__globals__:
+                global_roots[(id(func.__globals__), referenced_name)] = (func.__globals__, referenced_name)
     for name in method_names:
-        relied_upon.pop(name, None)
-    return relied_upon
+        relied_upon_methods.pop(name, None)
+    relied_upon_globals = _capture_transitive_authority_globals(tuple(global_roots.values()))
+    return relied_upon_methods, relied_upon_globals
 
 
 class _SealedCollaboratorProxy:
@@ -1563,8 +1633,31 @@ class _SealedCollaboratorProxy:
     own docstring), and revalidating the CURRENT class-level binding's
     identity/code/defaults on every access -- exactly mirroring how
     the top-level captured names are already protected via
-    `captured_code`, one level further out. Both the instance-shadow
-    check (round 48) and this class-level revalidation (round 49) are
+    `captured_code`, one level further out.
+
+    FIFTH-LAYER FIX (review finding, PR #86, round 50, P1, Codex,
+    reproduced by the reviewer -- "Pin collaborator methods' module
+    dependencies"; see `_capture_collaborator_relied_upon_attributes`'s
+    own ROUND 50 WIDENING docstring section for the full account):
+    rounds 48/49 together protect a relied-upon method against being
+    shadowed on the instance or rebound on the class, but a method's
+    OWN body can also reference an ordinary MODULE-level global
+    (`RepositoryStateStore._connect` calls `sqlite3.connect(...)`,
+    where `sqlite3` is resolved via `_connect.__globals__` -- a
+    completely different namespace than either the instance or the
+    class). The reviewer reproduced rebinding
+    `tenfold.repository_facility.sqlite3` itself: `_connect` remains
+    byte-for-byte untouched, so rounds 48/49's own checks find nothing
+    wrong, while `_connect`'s own body resolves the tampered name the
+    moment it runs. Fixed by ALSO capturing the transitive closure of
+    every module-global name a relied-upon method's code references --
+    reusing `_capture_transitive_authority_globals` itself (the exact
+    module-globals mechanism the `RepositoryFacility` authority-
+    validation chain already uses) rather than a third, independently
+    maintained walk -- and revalidating it on every access with the
+    SAME shared `_transitive_global_entry_matches` helper
+    `_reject_altered_authority_validation_globals` uses. All three
+    checks (instance shadow, class rebind, module-global rebind) are
     checked fresh on every access, the same "repeat the check every
     time" discipline as the top-level code-object pin."""
 
@@ -1583,11 +1676,11 @@ class _SealedCollaboratorProxy:
             func = getattr(bound, "__func__", None)
             if func is not None:
                 captured_code[name] = func.__code__
-        relied_upon = _capture_collaborator_relied_upon_attributes(type(source), method_names)
-        _SEALED_PROXY_CAPTURED_STATE[self] = (captured, captured_code, source, relied_upon)
+        relied_upon_methods, relied_upon_globals = _capture_collaborator_relied_upon_attributes(type(source), method_names)
+        _SEALED_PROXY_CAPTURED_STATE[self] = (captured, captured_code, source, relied_upon_methods, relied_upon_globals)
 
     def __getattr__(self, name):
-        captured, captured_code, source, relied_upon = _SEALED_PROXY_CAPTURED_STATE[self]
+        captured, captured_code, source, relied_upon_methods, relied_upon_globals = _SEALED_PROXY_CAPTURED_STATE[self]
         try:
             bound = captured[name]
         except KeyError:
@@ -1604,7 +1697,7 @@ class _SealedCollaboratorProxy:
                 )
         source_vars = vars(source)
         source_cls = type(source)
-        for relied_name, (trusted_value, trusted_code, trusted_defaults) in relied_upon.items():
+        for relied_name, (trusted_value, trusted_code, trusted_defaults) in relied_upon_methods.items():
             if relied_name in source_vars:
                 raise RepositoryConstructionQualificationError(
                     f"_SealedCollaboratorProxy: the collaborator's own instance now defines "
@@ -1622,6 +1715,15 @@ class _SealedCollaboratorProxy:
                     f"_SealedCollaboratorProxy: the collaborator's own class no longer defines "
                     f"{relied_name!r} as what was captured at admission time -- a method one of "
                     f"its captured methods relies on internally via self.<name>() was mutated"
+                )
+        for entry in relied_upon_globals.values():
+            if not _transitive_global_entry_matches(entry):
+                globals_dict, global_name = entry[0], entry[1]
+                label = globals_dict.get("__name__", "<unknown module>")
+                raise RepositoryConstructionQualificationError(
+                    f"_SealedCollaboratorProxy: {label}'s own {global_name} binding no longer "
+                    f"matches what was captured at admission time -- a module dependency one of "
+                    f"its captured methods relies on internally was rebound"
                 )
         return bound
 
@@ -1669,7 +1771,7 @@ class _SealedCollaboratorProxy:
             raise RepositoryConstructionQualificationError(
                 f"_SealedCollaboratorProxy._inject_fault_for_qualification_harness: replacement for {name!r} is not callable"
             )
-        captured, captured_code, _source, _relied_upon_names = _SEALED_PROXY_CAPTURED_STATE[self]
+        captured, captured_code, _source, _relied_upon_methods, _relied_upon_globals = _SEALED_PROXY_CAPTURED_STATE[self]
         if name not in captured:
             raise AttributeError(
                 f"_SealedCollaboratorProxy._inject_fault_for_qualification_harness: {name!r} was not captured at admission"

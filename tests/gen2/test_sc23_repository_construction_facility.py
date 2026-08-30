@@ -1841,6 +1841,76 @@ def test_sc23_wrapper_seals_state_store_against_a_class_level_transitive_rebind(
     assert triggered["called"] is False
 
 
+def test_sc23_wrapper_seals_state_store_against_a_module_global_transitive_rebind(tmp_path) -> None:
+    """Review finding (PR #86, round 50, P1, Codex, reproduced by the
+    reviewer -- "Pin collaborator methods' module dependencies"):
+    rounds 48/49 together protect a relied-upon method against being
+    shadowed on the instance or rebound on the class, but say nothing
+    about a name that method references at MODULE scope.
+    `RepositoryStateStore._connect` calls `sqlite3.connect(...)`,
+    where `sqlite3` is an ordinary module-level global in
+    `tenfold.repository_facility` (`import sqlite3`), resolved via
+    `_connect.__globals__` -- a completely different namespace than
+    either the instance or the class. The reviewer reproduced
+    rebinding `tenfold.repository_facility.sqlite3` to a module-like
+    object whose `connect` plants an external symlink: `_connect`
+    itself (identity, code, defaults) is untouched, so rounds 48/49's
+    own checks find nothing wrong, while `_connect`'s own body
+    resolves the tampered `sqlite3` name the moment it runs, with an
+    authorized `create_branch` still returning a successful receipt.
+    Fixed by reusing `_capture_transitive_authority_globals` itself
+    (the same module-globals mechanism `RepositoryFacility`'s own
+    authority-validation chain already uses) to also cover every
+    module-global name a relied-upon method's code references. This
+    performs a REAL, fully-authorized `create_branch` dispatch to
+    prove the malicious replacement genuinely never runs -- and, since
+    `tenfold.repository_facility` is a real, shared, process-global
+    module (not a disposable per-test object), the rebind is genuinely
+    reverted in a `finally` block regardless of outcome."""
+    import tenfold.repository_facility as repository_facility_module
+    from tenfold.gen2.repository_construction_facility import (
+        DisposableRepositoryConstructionRig,
+        RepositoryStateStore,
+        _MutableAuthorityStore,
+        _dispatch,
+        _empty_snapshot,
+    )
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+    from tenfold.repository_facility import repository_ref_resource, repository_request_binding
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    state_store = RepositoryStateStore(str(tmp_path / "state.db"))
+    authority_store = _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1))
+    facility = gen1_wrap_repository_construction_facility(transport, state_store, authority_store)
+    rig = DisposableRepositoryConstructionRig(facility, transport, authority_store, "existing", initial_sha, repo_root, tmp_path / "state.db")
+
+    triggered = {"called": False}
+
+    class _MaliciousSqlite3:
+        @staticmethod
+        def connect(*args, **kwargs):
+            triggered["called"] = True
+            raise RuntimeError("malicious sqlite3.connect should never actually be called through the sealed proxy")
+
+    request = {"operation_id": "op-module-rebound-state-store-sqlite3", "repository": "existing", "branch": "sc23/module-rebound-state-store-sqlite3", "owner": "assign-post", "base_ref": "main", "expected_base_sha": initial_sha}
+    binding = repository_request_binding("create_branch", **request)
+    resource = repository_ref_resource("existing", request["branch"])
+    task = _dispatch(rig, assignment_id="assign-post", attempt=1, campaign_generation=1, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=resource, request_binding=binding)
+
+    original_sqlite3 = repository_facility_module.sqlite3
+    repository_facility_module.sqlite3 = _MaliciousSqlite3  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack: a MODULE-level rebind, not an instance or class one
+    try:
+        with pytest.raises(RepositoryConstructionQualificationError):
+            rig.facility.create_branch(task, repository=request["repository"], branch=request["branch"], owner=request["owner"], base_ref=request["base_ref"], expected_base_sha=request["expected_base_sha"], operation_id=request["operation_id"], foreman_epoch=1)
+    finally:
+        repository_facility_module.sqlite3 = original_sqlite3
+
+    assert triggered["called"] is False
+
+
 def test_sc23_wrapper_ignores_a_wholesale_replaced_inner_facility(rig) -> None:
     """Review finding (PR #86, round 24, P1, Codex, reproduced by the
     reviewer -- "Verify the inner facility identity before
