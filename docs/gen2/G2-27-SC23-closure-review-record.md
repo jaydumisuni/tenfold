@@ -2436,6 +2436,60 @@ verdict (see below) rather than a hardcoded stale expectation.
     suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
     repository sweep (1386 passed, 2 skipped, only the 9 known
     pre-existing Windows-only failures, zero regressions).
+40. Codex's review quota recovered for this round -- a fresh, genuine
+    pass against the round-39 commit (`494ca34`/`3fec336`) found 1
+    further genuine P1 finding:
+    - **P1 ("Snapshot collaborator code objects before delegation"),
+      Codex**: round 36's own reasoning for why sealing
+      `authority_store`/`state_store` (via `_SealedCollaboratorProxy`)
+      closes a caller-retained-reference attack -- "a bound method
+      captures its underlying function at the moment it is read off
+      an instance, so a later reassignment on the caller's own
+      retained reference has zero effect on the already-captured
+      bound method" -- is TRUE for INSTANCE-level reassignment
+      (`source.method = malicious_fn`, which only shadows the
+      descriptor for FUTURE lookups on that instance), but was never
+      checked against the underlying FUNCTION OBJECT itself being
+      mutable state: `state_store.claim_writer.__func__` IS
+      `type(state_store).claim_writer`, the CLASS-level function
+      object SHARED by every bound method obtained from every
+      instance of that class -- including the one already captured
+      inside the sealed proxy. The reviewer reproduced
+      `state_store.claim_writer.__func__.__code__ = malicious.__code__`
+      on the caller's own retained reference: since that mutates the
+      SAME shared function object the sealed proxy's captured bound
+      method also delegates through, a fully-authorized `create_branch`
+      would invoke the altered `claim_writer` mid-dispatch -- the
+      round-14/29/36/38 deterministic-TOCTOU pattern replaying inside
+      the very mechanism (round 36's sealing) built to close it.
+
+      This is structurally the SAME exposure round 37 already found
+      and fixed for `LocalGitRepositoryTransport`/`RepositoryFacility`'s
+      OWN class methods -- just not yet extended to
+      `_SealedCollaboratorProxy`'s captured collaborator methods.
+      Fixed identically: each captured bound method's
+      `__func__.__code__` is now separately pinned, at the proxy's
+      own construction time, into `_captured_code` -- a later
+      `func.__code__ = other` reassignment cannot retroactively
+      change what that separately-held reference points to.
+      `__getattr__` re-verifies the CURRENT `__func__.__code__`
+      against the pinned reference on EVERY access, not merely once
+      at construction, since Gen1's own dispatch always reaches this
+      proxy via a fresh attribute lookup each call. The harness's own
+      `_inject_fault_for_qualification_harness` seam (round 38) was
+      updated to also clear the code-pin for whatever name it
+      replaces, since a harness-supplied replacement is a
+      deliberately different implementation, not a tampered original.
+
+    Fixed with a real mechanism, with 1 new permanent regression test
+    that reproduces the reviewer's exact `__func__.__code__` mutation
+    and confirms the sealed proxy rejects it, that access still works
+    normally once restored, and that the fault-injection seam remains
+    functional. Fixed in commit `<pending>`. Full local
+    re-verification: full test file (91/91), full mutation suite
+    (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (pending, only the 9 known pre-existing
+    Windows-only failures expected).
 
 ## Real, honest end-to-end result
 

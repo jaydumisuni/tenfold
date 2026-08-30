@@ -2192,6 +2192,56 @@ def test_sc23_wrapper_seals_state_store_against_a_caller_retained_reference_muta
     assert triggered["called"] is False
 
 
+def test_sc23_sealed_state_store_rejects_a_collaborator_method_code_object_mutated_in_place(tmp_path) -> None:
+    """Review finding (PR #86, round 40, P1, Codex, reproduced by the
+    reviewer -- "Snapshot collaborator code objects before
+    delegation"): round 36's own reasoning -- "a bound method captures
+    its underlying function at the moment it is read off an instance,
+    so a later reassignment on the caller's own retained reference has
+    zero effect" -- is true for INSTANCE-level reassignment
+    (`source.method = malicious_fn`), but not for the underlying
+    FUNCTION OBJECT itself being mutated: `state_store.claim_writer.__func__`
+    IS `type(state_store).claim_writer`, the class-level function
+    object SHARED by every bound method obtained from every instance
+    of that class -- including the one captured inside
+    `_SealedCollaboratorProxy`. The reviewer reproduced
+    `state_store.claim_writer.__func__.__code__ = malicious.__code__`
+    on the caller's own retained reference: since that mutates the
+    SAME shared function object the sealed proxy's captured bound
+    method also delegates through, a fully-authorized `create_branch`
+    would invoke the altered `claim_writer` mid-dispatch. Fixed the
+    same way round 37 closed the identical exposure for
+    `LocalGitRepositoryTransport`/`RepositoryFacility`: each captured
+    method's `__func__.__code__` is pinned at the proxy's own
+    construction time and re-verified on every access, so tampering is
+    rejected outright rather than silently invoked."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _admitted_state_for, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    state_store = RepositoryStateStore(str(tmp_path / "state.db"))
+    facility = gen1_wrap_repository_construction_facility(transport, state_store, _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    def malicious(self, repository, branch, owner):
+        return "ATTACKER: claim_writer ran with tampered bytecode"
+
+    original_code = state_store.claim_writer.__func__.__code__
+    try:
+        state_store.claim_writer.__func__.__code__ = malicious.__code__  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack: the caller's own retained reference
+
+        with pytest.raises(RepositoryConstructionQualificationError):
+            _admitted_state_for(facility).facility.state.claim_writer
+    finally:
+        state_store.claim_writer.__func__.__code__ = original_code
+
+    # Untampered, access still works exactly as before -- this
+    # revalidates, it does not permanently deny.
+    assert callable(_admitted_state_for(facility).facility.state.claim_writer)
+
+
 def test_sc23_wrapper_rejects_a_transport_git_executable_with_content_replaced_in_place(tmp_path) -> None:
     """Review finding (PR #86, round 38, P1, Codex, reproduced by the
     reviewer -- "Verify the Git executable rather than only its

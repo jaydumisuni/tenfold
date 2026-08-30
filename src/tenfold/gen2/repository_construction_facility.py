@@ -834,13 +834,49 @@ class _SealedCollaboratorProxy:
     construction time, and exposes ONLY those -- never `source`
     itself, never any other attribute. Immutable after construction
     (`__setattr__` always raises); `__slots__` carries no writable
-    surface beyond the one collection of captured callables set once,
-    via `object.__setattr__`, inside `__init__` itself."""
+    surface beyond the collections of captured callables/code objects
+    set once, via `object.__setattr__`, inside `__init__` itself.
 
-    __slots__ = ("_captured",)
+    SECOND-LAYER FIX (review finding, PR #86, round 40, P1, Codex,
+    reproduced by the reviewer -- "Snapshot collaborator code objects
+    before delegation"): capturing a BOUND METHOD (`bound =
+    getattr(source, name)`) is immune to the caller's retained
+    reference being REASSIGNED (`source.method = malicious_fn` only
+    shadows the descriptor for FUTURE lookups on that instance,
+    leaving an already-captured bound method's `__func__` pointing at
+    the original class function -- round 36's own reasoning). It is
+    NOT immune to that SAME underlying function object having its OWN
+    `__code__` mutated in place: `bound.__func__` -- the unbound
+    function actually stored on the collaborator's CLASS, not a
+    per-instance copy -- is SHARED by every bound method obtained from
+    every instance of that class, including this proxy's own captured
+    one. The reviewer reproduced
+    `state_store.claim_writer.__func__.__code__ = malicious.__code__`
+    on the caller's retained reference: since `state_store.claim_writer.__func__`
+    IS `type(state_store).claim_writer`, the SAME object this proxy's
+    captured bound method also delegates through, the mutation reached
+    a fully-authorized `create_branch` mid-dispatch, exactly the
+    round-14/29/36/38 deterministic-TOCTOU pattern, this time inside
+    the very mechanism (round 36's sealing) built to close it.
+
+    Fixed the SAME way round 37 closed the identical exposure for
+    `LocalGitRepositoryTransport`/`RepositoryFacility`: each captured
+    bound method's `__func__.__code__` is separately pinned, at THIS
+    proxy's own construction time, into `_captured_code` -- a later
+    `func.__code__ = other` reassignment cannot retroactively change
+    what that separately-held reference points to. `__getattr__`
+    re-verifies the CURRENT `__func__.__code__` against the pinned
+    reference on EVERY access (not merely once at construction), since
+    Gen1's own dispatch always reaches this proxy via a fresh
+    `self.state.claim_writer(...)`-style attribute lookup each call --
+    matching round 38's "a content check must be repeated every time"
+    lesson, now for code-object identity rather than file content."""
+
+    __slots__ = ("_captured", "_captured_code")
 
     def __init__(self, source: object, method_names: tuple[str, ...], label: str) -> None:
         captured = {}
+        captured_code = {}
         for name in method_names:
             bound = getattr(source, name)
             if not callable(bound):
@@ -848,16 +884,29 @@ class _SealedCollaboratorProxy:
                     f"_SealedCollaboratorProxy: {label}.{name} is not callable -- refusing to admit"
                 )
             captured[name] = bound
+            func = getattr(bound, "__func__", None)
+            if func is not None:
+                captured_code[name] = func.__code__
         object.__setattr__(self, "_captured", captured)
+        object.__setattr__(self, "_captured_code", captured_code)
 
     def __getattr__(self, name):
         try:
-            return object.__getattribute__(self, "_captured")[name]
+            bound = object.__getattribute__(self, "_captured")[name]
         except KeyError:
             raise AttributeError(
                 f"_SealedCollaboratorProxy: {name} was not captured at admission -- only the exact "
                 f"methods RepositoryFacility genuinely calls on this collaborator are exposed"
             ) from None
+        captured_code = object.__getattribute__(self, "_captured_code")
+        if name in captured_code:
+            func = getattr(bound, "__func__", None)
+            if func is None or func.__code__ is not captured_code[name]:
+                raise RepositoryConstructionQualificationError(
+                    f"_SealedCollaboratorProxy: {name}'s underlying implementation no longer matches "
+                    f"what was captured at admission time -- the collaborator's method was mutated in place"
+                )
+        return bound
 
     def __setattr__(self, name: str, value: object) -> None:
         raise AttributeError("_SealedCollaboratorProxy instances are immutable after construction")
@@ -892,6 +941,12 @@ class _SealedCollaboratorProxy:
                 f"_SealedCollaboratorProxy._inject_fault_for_qualification_harness: {name!r} was not captured at admission"
             )
         captured[name] = replacement
+        # The harness's replacement is a deliberately, knowingly
+        # different implementation -- not a tampered original -- so
+        # the round-40 code-object pin for THIS name no longer
+        # applies; `__getattr__` skips the check for any name absent
+        # from `_captured_code`.
+        object.__getattribute__(self, "_captured_code").pop(name, None)
 
 
 def gen1_wrap_repository_construction_facility(transport, state_store, authority_store) -> "_ContainmentReCheckedRepositoryFacility":
