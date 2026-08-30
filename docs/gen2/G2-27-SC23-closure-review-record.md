@@ -3613,10 +3613,11 @@ Windows-only failures, zero regressions).
     asserting protection this file cannot actually provide), both
     trust dicts restored to their original objects in a `finally`
     block since they are real, shared, process-global module
-    attributes. Fixed in commit `<pending>`. Full local
+    attributes. Fixed in commit `28e3a75`. Full local
     re-verification: full test file (117/117), full mutation suite
-    (37/37), `test_g2_27_self_construction.py` (pending), and full
-    repository sweep (pending).
+    (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1413 passed, 2 skipped, only the 9 known
+    pre-existing Windows-only failures, zero regressions).
 
 ## Real, honest end-to-end result
 
