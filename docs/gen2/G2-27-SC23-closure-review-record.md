@@ -2777,11 +2777,11 @@ verdict (see below) rather than a hardcoded stale expectation.
     several times (round 36->38's state-sealing reversal, round 40->41's
     proxy-code-pinning extension, round 42->43's deep-immutability
     follow-up). 2 new permanent regression tests reproduce each
-    reviewer finding exactly. Fixed in commit `<pending>`. Full local
+    reviewer finding exactly. Fixed in commit `e376651`. Full local
     re-verification: full test file (98/98), full mutation suite
     (37/37), `test_g2_27_self_construction.py` (33/33), and full
-    repository sweep (pending, only the 9 known pre-existing
-    Windows-only failures expected).
+    repository sweep (1394 passed, 2 skipped, only the 9 known
+    pre-existing Windows-only failures, zero regressions).
 
 ## Real, honest end-to-end result
 
