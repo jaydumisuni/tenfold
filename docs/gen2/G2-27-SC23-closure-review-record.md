@@ -2704,11 +2704,11 @@ verdict (see below) rather than a hardcoded stale expectation.
     Fixed with a real mechanism, with 1 new permanent regression test
     that reproduces the exact nested-dict-mutation attack against an
     unrelated admission and confirms it is now rejected. Fixed in
-    commit `<pending>`. Full local re-verification: full test file
+    commit `0f1efb5`. Full local re-verification: full test file
     (96/96), full mutation suite (37/37),
     `test_g2_27_self_construction.py` (33/33), and full repository
-    sweep (pending, only the 9 known pre-existing Windows-only
-    failures expected).
+    sweep (1392 passed, 2 skipped, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
 
 ## Real, honest end-to-end result
 
