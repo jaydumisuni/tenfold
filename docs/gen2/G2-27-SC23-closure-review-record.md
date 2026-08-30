@@ -2709,6 +2709,79 @@ verdict (see below) rather than a hardcoded stale expectation.
     `test_g2_27_self_construction.py` (33/33), and full repository
     sweep (1392 passed, 2 skipped, only the 9 known pre-existing
     Windows-only failures, zero regressions).
+44. A fresh Codex pass against the round-43 commit (`0f1efb5`/`9cf8410`)
+    found 2 further genuine P1 findings:
+    - **P1 ("Pin function keyword defaults during class checks"),
+      Codex**: round 37's `__code__` pin closes bytecode mutation, but
+      a function's `__kwdefaults__` (the dict backing keyword-only
+      parameter DEFAULT VALUES) is its OWN separate, genuinely mutable
+      dict attribute -- identical in kind to `__code__` being
+      ordinary, mutable state, just one level further out, and
+      NEITHER existing check (function identity, `__code__` identity)
+      touches it at all. The reviewer reproduced
+      `LocalGitRepositoryTransport._run.__kwdefaults__["extra_env"] =
+      {malicious GIT_CONFIG_* overrides}`: neither the function
+      object's identity nor its `__code__` ever changed, so both
+      existing checks kept passing, while every FUTURE call to `_run`
+      omitting an explicit `extra_env=` argument (the overwhelming
+      majority of real call sites) silently picked up the poisoned
+      default, injecting a malicious `core.hooksPath` override via
+      Git's own `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/
+      `GIT_CONFIG_VALUE_n` environment-variable config mechanism
+      during a fully-authorized `create_branch`.
+
+      **Fixed the SAME way round 37 fixed `__code__`**: each trusted
+      function's `__defaults__`/`__kwdefaults__` are now captured as
+      an immutable snapshot at this module's own import time (a
+      copied tuple for `__defaults__`; `__kwdefaults__`'s dict
+      converted to a sorted tuple of items), immune to later in-place
+      dict mutation for the same reason a captured code-object
+      reference is immune to later `__code__` reassignment. New
+      `_function_defaults_snapshot`/`_function_defaults_match` helpers
+      apply the same round-28 exact-type-check discipline before
+      trusting any comparison. Applied symmetrically to both
+      `LocalGitRepositoryTransport` and `RepositoryFacility`, wired
+      into the existing `_reject_altered_class_implementation` check
+      alongside the round-37 code-object pin.
+    - **P1 ("Freeze the hook-neutralization snapshot"), Codex**: round
+      43 wrapped `instance_state` in `types.MappingProxyType` but left
+      this SIBLING `_AdmittedTransportState` field -- `no_hooks_dirs`
+      -- as a plain, mutable dict. Each individual
+      `_EstablishedHooksNeutralization` record is already
+      `frozen=True`, so its own fields can't be reassigned via
+      ordinary syntax -- but the OUTER dict entry could still be
+      REPLACED WHOLESALE (`no_hooks_dirs[name] =
+      _EstablishedHooksNeutralization(unrelated_dir, malicious_config_text)`),
+      a dict-item assignment, never an attribute assignment on the
+      frozen record, so nothing about ITS OWN freeze applied. The
+      reviewer reproduced this against an enumerated, unrelated
+      admission (the same already-disclosed round-34/42
+      reachability), poisoning `_hooks_neutralization_still_intact`'s
+      own baseline so it accepted an attacker's `core.hooksPath` as
+      unchanged, letting an external `reference-transaction` hook fire
+      during a fully-authorized `create_branch`.
+
+      **Fixed identically to round 43's own fix**: `no_hooks_dirs` is
+      now wrapped in `types.MappingProxyType` at the ONE place it is
+      ever constructed
+      (`_neutralize_hooks_for_every_registered_repository`'s own
+      return value), so every caller -- both the admission-time call
+      site and the per-mutation re-neutralization call site inside
+      `_revalidate_transport_integrity` -- gets the same genuinely
+      read-only view automatically, without needing to remember to
+      wrap it at each individual call site.
+
+    Both fixed with real mechanisms, matching the same "a fix closes
+    one instance of a pattern but misses a structurally identical
+    sibling elsewhere" class this campaign has now demonstrated
+    several times (round 36->38's state-sealing reversal, round 40->41's
+    proxy-code-pinning extension, round 42->43's deep-immutability
+    follow-up). 2 new permanent regression tests reproduce each
+    reviewer finding exactly. Fixed in commit `<pending>`. Full local
+    re-verification: full test file (98/98), full mutation suite
+    (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (pending, only the 9 known pre-existing
+    Windows-only failures expected).
 
 ## Real, honest end-to-end result
 

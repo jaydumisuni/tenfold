@@ -1273,6 +1273,44 @@ def test_sc23_wrapper_rejects_a_transport_method_code_object_mutated_in_place(tm
         LocalGitRepositoryTransport._run.__code__ = original_code
 
 
+def test_sc23_wrapper_rejects_a_transport_method_kwdefaults_mutated_in_place(tmp_path) -> None:
+    """Review finding (PR #86, round 44, P1, Codex, reproduced by the
+    reviewer -- "Pin function keyword defaults during class checks"):
+    round 37's `__code__` pin closes bytecode mutation, but
+    `__kwdefaults__` (the dict backing keyword-only parameter DEFAULT
+    VALUES) is its own separate, genuinely mutable dict attribute --
+    neither the function object's identity NOR its `__code__` ever
+    changes when this is mutated. The reviewer reproduced
+    `LocalGitRepositoryTransport._run.__kwdefaults__["extra_env"] =
+    {malicious GIT_CONFIG_* overrides}`: every FUTURE call to `_run`
+    omitting an explicit `extra_env=` argument (the overwhelming
+    majority of real call sites, including every dispatch this wrapper
+    makes) would silently pick up the poisoned default.
+    `_TRUSTED_TRANSPORT_CLASS_DEFAULTS` now separately pins each
+    trusted function's `__defaults__`/`__kwdefaults__` at this
+    module's own import time, immune to a later in-place dict
+    mutation for the same reason `_TRUSTED_TRANSPORT_CLASS_CODE_OBJECTS`
+    is immune to a later `__code__` reassignment."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    original_kwdefaults = dict(LocalGitRepositoryTransport._run.__kwdefaults__)
+    try:
+        LocalGitRepositoryTransport._run.__kwdefaults__["extra_env"] = {"MALICIOUS": "1"}  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+        with pytest.raises(RepositoryConstructionQualificationError):
+            facility.create_branch(None, repository="existing", branch="sc23/transport-run-kwdefaults-mutated", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-transport-run-kwdefaults-mutated", foreman_epoch=1)
+    finally:
+        LocalGitRepositoryTransport._run.__kwdefaults__.clear()
+        LocalGitRepositoryTransport._run.__kwdefaults__.update(original_kwdefaults)
+
+
 def test_sc23_wrapper_rejects_a_facility_method_code_object_mutated_in_place(tmp_path) -> None:
     """Round 37 defense-in-depth (see `_TRUSTED_FACILITY_CLASS_CODE_OBJECTS`'s
     own docstring): applies the round-37 `_run.__code__` lesson,
@@ -2435,6 +2473,47 @@ def test_sc23_admitted_transport_state_rejects_cross_admission_nested_dict_mutat
 
     with pytest.raises(TypeError):
         victim_admitted.instance_state["_git"] = "not-a-real-git-executable"
+
+    assert facility2 is not None  # both admissions genuinely coexisted for the reproduction above
+
+
+def test_sc23_admitted_transport_state_rejects_cross_admission_no_hooks_dirs_mutation(tmp_path) -> None:
+    """Review finding (PR #86, round 44, P1, Codex, reproduced by the
+    reviewer -- "Freeze the hook-neutralization snapshot"): round 43
+    wrapped `instance_state` in `types.MappingProxyType` but left this
+    SIBLING `_AdmittedTransportState` field -- `no_hooks_dirs` -- as a
+    plain, mutable dict. Each individual `_EstablishedHooksNeutralization`
+    record is already `frozen=True`, so its own fields can't be
+    reassigned via ordinary syntax -- but the OUTER dict entry could
+    still be REPLACED WHOLESALE, a dict-item assignment, never an
+    attribute assignment on the frozen record, so nothing about its
+    own freeze applied. The reviewer reproduced this against an
+    enumerated, unrelated admission (the same already-disclosed
+    round-34/42 reachability), poisoning
+    `_hooks_neutralization_still_intact`'s own baseline so it accepted
+    an attacker's `core.hooksPath` as unchanged. `no_hooks_dirs` is
+    now wrapped in `types.MappingProxyType` at the one place it is
+    ever constructed, so this exact mutation now raises `TypeError`."""
+    import sys
+
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _EstablishedHooksNeutralization, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    def admit(name: str):
+        repo_root = tmp_path / name
+        _real_existing_repo(repo_root, tmp_path)
+        transport = LocalGitRepositoryTransport({"existing": repo_root})
+        return gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / f"{name}-state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    facility1 = admit("one")
+    facility2 = admit("two")  # victim -- the attacker below never holds a reference to this
+
+    module = sys.modules[type(facility1).__module__]
+    other_entries = [key for key in module._ADMITTED_TRANSPORT_STATE if key is not facility1]  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack: enumeration via the already-disclosed round-34 boundary
+    victim_admitted = module._ADMITTED_TRANSPORT_STATE[other_entries[0]]
+
+    with pytest.raises(TypeError):
+        victim_admitted.no_hooks_dirs["existing"] = _EstablishedHooksNeutralization(tmp_path, "malicious config text")  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
 
     assert facility2 is not None  # both admissions genuinely coexisted for the reproduction above
 

@@ -86,6 +86,54 @@ CAMPAIGN_ID = "gen2-sc23-repository-construction-qualification"
 NODE_ID = "gen2-sc23-scratch-node"
 REPOSITORY_NAME = "scratch"
 
+
+def _function_defaults_snapshot(func) -> tuple:
+    """See `_TRUSTED_TRANSPORT_CLASS_DEFAULTS`'s own module-level
+    comment for the round-44 finding this closes. Captures a function's
+    `__defaults__` (already an immutable tuple, but copied here so a
+    later WHOLESALE reassignment of the tuple itself can't retroactively
+    change what THIS reference points to -- the same "capture a
+    reference before any tampering is possible" technique used
+    throughout this file) and `__kwdefaults__` (a genuinely MUTABLE
+    dict) as a sorted tuple of `(name, value)` pairs -- immune to later
+    in-place mutation of the dict itself, since a tuple of items is an
+    independent snapshot, not a view into the original dict."""
+    defaults = func.__defaults__ or ()
+    kwdefaults = func.__kwdefaults__ or {}
+    return (tuple(defaults), tuple(sorted(kwdefaults.items(), key=lambda pair: pair[0])))
+
+
+def _function_defaults_match(func, captured_snapshot: tuple) -> bool:
+    """See `_function_defaults_snapshot`'s own docstring. Round 28's
+    exact-type lesson, replayed here: an attacker-controlled value
+    (reachable the moment a default is reassigned) could otherwise
+    claim equality with the captured value via an overloaded `__eq__`
+    while holding genuinely different content, so every comparison
+    checks the CURRENT value's exact type before trusting `==` on it
+    at all."""
+    captured_defaults, captured_kwdefaults_items = captured_snapshot
+    current_defaults = func.__defaults__ or ()
+    if type(current_defaults) is not tuple or len(current_defaults) != len(captured_defaults):
+        return False
+    for current_value, captured_value in zip(current_defaults, captured_defaults):
+        if type(current_value) is not type(captured_value) or current_value != captured_value:
+            return False
+    current_kwdefaults = func.__kwdefaults__ or {}
+    if type(current_kwdefaults) is not dict:
+        return False
+    current_items = tuple(sorted(current_kwdefaults.items(), key=lambda pair: pair[0]))
+    if len(current_items) != len(captured_kwdefaults_items):
+        return False
+    for (current_name, current_value), (captured_name, captured_value) in zip(current_items, captured_kwdefaults_items):
+        if (
+            type(current_name) is not type(captured_name)
+            or current_name != captured_name
+            or type(current_value) is not type(captured_value)
+            or current_value != captured_value
+        ):
+            return False
+    return True
+
 #: Review finding (PR #86, round 21, P1, Codex, reproduced by the
 #: reviewer -- "Bind the transport class implementation before
 #: mutation"): every instance-level check so far (rounds 14, 18, 19,
@@ -132,6 +180,29 @@ _TRUSTED_TRANSPORT_CLASS_ATTRIBUTES = dict(vars(LocalGitRepositoryTransport))
 #: original code object, which a later `func.__code__ = other` cannot
 #: retroactively change.
 _TRUSTED_TRANSPORT_CLASS_CODE_OBJECTS = {name: value.__code__ for name, value in _TRUSTED_TRANSPORT_CLASS_ATTRIBUTES.items() if inspect.isfunction(value)}
+#: Review finding (PR #86, round 44, P1, Codex, reproduced by the
+#: reviewer -- "Pin function keyword defaults during class checks"):
+#: round 37's `__code__` pin closes bytecode mutation, but a
+#: function's `__kwdefaults__` (the dict backing keyword-only
+#: parameter DEFAULT VALUES) is ITS OWN separate, genuinely mutable
+#: dict attribute -- identical in kind to `__code__` being ordinary,
+#: mutable, plain-attribute state, just one level further out. The
+#: reviewer reproduced `LocalGitRepositoryTransport._run.__kwdefaults__["extra_env"]
+#: = {malicious GIT_CONFIG_* overrides}`: neither the function
+#: object's identity NOR its `__code__` ever changed, so BOTH existing
+#: checks kept passing, while every FUTURE call to `_run` omitting an
+#: explicit `extra_env=` argument (the overwhelming majority of real
+#: call sites) silently picked up the poisoned default, injecting a
+#: malicious `core.hooksPath` override via Git's own
+#: `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`
+#: environment-variable config mechanism during a fully-authorized
+#: `create_branch`. Captured here, at THIS module's own import time,
+#: as an immutable snapshot (`__defaults__`'s own tuple copied by
+#: value; `__kwdefaults__`'s dict converted to a sorted tuple of
+#: items) -- immune to later in-place dict mutation for the same
+#: reason `_TRUSTED_TRANSPORT_CLASS_CODE_OBJECTS` is immune to a later
+#: `func.__code__` reassignment.
+_TRUSTED_TRANSPORT_CLASS_DEFAULTS = {name: _function_defaults_snapshot(value) for name, value in _TRUSTED_TRANSPORT_CLASS_ATTRIBUTES.items() if inspect.isfunction(value)}
 
 #: Review finding (PR #86, round 23, P1, Codex, reproduced by the
 #: reviewer -- "Seal the delegated RepositoryFacility operations"): the
@@ -170,24 +241,36 @@ _TRUSTED_FACILITY_CLASS_ATTRIBUTES = dict(vars(RepositoryFacility))
 #: `_ContainmentReCheckedRepositoryFacility`'s own class, never
 #: `RepositoryFacility`'s).
 _TRUSTED_FACILITY_CLASS_CODE_OBJECTS = {name: value.__code__ for name, value in _TRUSTED_FACILITY_CLASS_ATTRIBUTES.items() if inspect.isfunction(value)}
+#: See `_TRUSTED_TRANSPORT_CLASS_DEFAULTS`'s own module-level comment
+#: -- the identical round-44 fix, applied symmetrically to
+#: `RepositoryFacility` for the same reason
+#: `_TRUSTED_FACILITY_CLASS_CODE_OBJECTS` mirrors
+#: `_TRUSTED_TRANSPORT_CLASS_CODE_OBJECTS`.
+_TRUSTED_FACILITY_CLASS_DEFAULTS = {name: _function_defaults_snapshot(value) for name, value in _TRUSTED_FACILITY_CLASS_ATTRIBUTES.items() if inspect.isfunction(value)}
 _EXPECTED_FACILITY_INSTANCE_ATTRIBUTES = frozenset({"transport", "state", "authority_store"})
 
 
-def _reject_altered_class_implementation(cls: type, trusted_snapshot: dict, trusted_code_objects: dict, label: str) -> None:
+def _reject_altered_class_implementation(cls: type, trusted_snapshot: dict, trusted_code_objects: dict, trusted_defaults: dict, label: str) -> None:
     """See `_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES`'s own docstring for
     the round-21 finding this closes, `_TRUSTED_FACILITY_CLASS_ATTRIBUTES`'s
-    for the round-23 extension to a second class, and
+    for the round-23 extension to a second class,
     `_TRUSTED_TRANSPORT_CLASS_CODE_OBJECTS`'s for the round-37
     extension covering in-place `__code__` mutation of an otherwise
-    unreplaced function object. Compares `cls`'s OWN `__dict__`
+    unreplaced function object, and `_TRUSTED_TRANSPORT_CLASS_DEFAULTS`'s
+    for the round-44 extension covering in-place `__kwdefaults__`/
+    `__defaults__` mutation of an otherwise unreplaced, byte-code-
+    unchanged function object. Compares `cls`'s OWN `__dict__`
     (methods, not instance state -- functions compare by identity, so
     any rebinding to a different object is caught) against the
     snapshot taken when this module was first imported; any method
     added, removed, or reassigned is rejected outright. For every
     trusted attribute that is itself a function, ALSO compares its
     CURRENT `__code__` against the code object captured at import
-    time -- catching a function object whose identity never changed
-    but whose underlying bytecode did."""
+    time (catching a function object whose identity never changed but
+    whose underlying bytecode did) AND its current keyword/positional
+    DEFAULT VALUES against the snapshot captured at import time
+    (catching a function object whose identity AND bytecode never
+    changed, but whose default-argument dict did)."""
     current = dict(vars(cls))
     changed = sorted(set(current) ^ set(trusted_snapshot))
     changed += sorted(
@@ -199,6 +282,11 @@ def _reject_altered_class_implementation(cls: type, trusted_snapshot: dict, trus
         name
         for name in trusted_code_objects
         if name in current and inspect.isfunction(current[name]) and current[name].__code__ is not trusted_code_objects[name]
+    )
+    changed += sorted(
+        name
+        for name in trusted_defaults
+        if name in current and inspect.isfunction(current[name]) and not _function_defaults_match(current[name], trusted_defaults[name])
     )
     if changed:
         raise RepositoryConstructionQualificationError(
@@ -226,14 +314,14 @@ def _reject_altered_transport_class_implementation() -> None:
     moments later. Every call site in this file now runs this check
     first, before touching the transport in any way that could invoke
     a class dunder method on it."""
-    _reject_altered_class_implementation(LocalGitRepositoryTransport, _TRUSTED_TRANSPORT_CLASS_ATTRIBUTES, _TRUSTED_TRANSPORT_CLASS_CODE_OBJECTS, "LocalGitRepositoryTransport")
+    _reject_altered_class_implementation(LocalGitRepositoryTransport, _TRUSTED_TRANSPORT_CLASS_ATTRIBUTES, _TRUSTED_TRANSPORT_CLASS_CODE_OBJECTS, _TRUSTED_TRANSPORT_CLASS_DEFAULTS, "LocalGitRepositoryTransport")
 
 
 def _reject_altered_facility_class_implementation() -> None:
     """See `_TRUSTED_FACILITY_CLASS_ATTRIBUTES`'s own docstring for the
     finding this closes. Called alongside `_reject_altered_transport_class_implementation`
     everywhere `self._facility`'s own methods are about to be invoked."""
-    _reject_altered_class_implementation(RepositoryFacility, _TRUSTED_FACILITY_CLASS_ATTRIBUTES, _TRUSTED_FACILITY_CLASS_CODE_OBJECTS, "RepositoryFacility")
+    _reject_altered_class_implementation(RepositoryFacility, _TRUSTED_FACILITY_CLASS_ATTRIBUTES, _TRUSTED_FACILITY_CLASS_CODE_OBJECTS, _TRUSTED_FACILITY_CLASS_DEFAULTS, "RepositoryFacility")
 
 
 @dataclass(frozen=True)
@@ -316,7 +404,27 @@ def _neutralize_hooks_for_every_registered_repository(transport: LocalGitReposit
         transport._run(name, "config", "--replace-all", "core.hooksPath", str(no_hooks_dir))  # noqa: SLF001 -- see docstring
         config_path = git_dir / "config"
         established[name] = _EstablishedHooksNeutralization(no_hooks_dir, config_path.read_text(encoding="utf-8", errors="strict"))
-    return established
+    # Review finding (PR #86, round 44, P1, Codex, reproduced by the
+    # reviewer -- "Freeze the hook-neutralization snapshot"): round
+    # 43 wrapped `instance_state` in `types.MappingProxyType` but left
+    # this SIBLING `_AdmittedTransportState` field -- `no_hooks_dirs`
+    # -- as a plain, mutable dict. Each individual
+    # `_EstablishedHooksNeutralization` record is already
+    # `frozen=True`, so its OWN fields can't be reassigned via
+    # ordinary syntax -- but the OUTER dict entry can still be
+    # REPLACED WHOLESALE (`no_hooks_dirs[name] =
+    # _EstablishedHooksNeutralization(unrelated_dir, malicious_config_text)`),
+    # a dict-item assignment, never an attribute assignment on the
+    # frozen record, so nothing about ITS freeze applies. The reviewer
+    # reproduced exactly this against an enumerated, unrelated
+    # admission (the same already-disclosed round-34/42 reachability),
+    # poisoning `_hooks_neutralization_still_intact`'s own baseline so
+    # it accepted an attacker's `core.hooksPath` as unchanged. Wrapped
+    # here, at the one place this mapping is ever constructed (used by
+    # BOTH the admission-time call site and the per-mutation
+    # re-neutralization call site in `_revalidate_transport_integrity`),
+    # so every caller gets the same genuinely read-only view.
+    return types.MappingProxyType(established)
 
 
 @dataclass(frozen=True)
