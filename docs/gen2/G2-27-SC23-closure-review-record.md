@@ -3456,10 +3456,11 @@ self-audit of every other hardcoded symlink target name in this test
 file found no other instance of this same class (every other target
 is a fixed, well-known git path -- `objects`, `refs/heads`,
 `logs/refs/heads`, `config` -- never a variable, hash-shaped one).
-Fixed in commit `<pending>`. Full local re-verification: full test
+Fixed in commit `c29f130`. Full local re-verification: full test
 file (114/114), full mutation suite (37/37),
-`test_g2_27_self_construction.py` (pending), and full repository
-sweep (pending).
+`test_g2_27_self_construction.py` (33/33), and full repository
+sweep (1410 passed, 2 skipped, only the 9 known pre-existing
+Windows-only failures, zero regressions).
 
 ## Real, honest end-to-end result
 
