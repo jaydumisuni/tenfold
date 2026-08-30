@@ -3244,10 +3244,11 @@ verdict (see below) rather than a hardcoded stale expectation.
     (restored in a `finally` block, since the module is real, shared,
     and process-global); rounds 36/38/48/49's own regression tests for
     the instance- and class-level cases remain valid and pass
-    unmodified. Fixed in commit `<pending>`. Full local
+    unmodified. Fixed in commit `db4b1e6`. Full local
     re-verification: full test file (110/110), full mutation suite
-    (37/37), `test_g2_27_self_construction.py` (pending), and full
-    repository sweep (pending).
+    (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1406 passed, 2 skipped, only the 9 known
+    pre-existing Windows-only failures, zero regressions).
 
 ## Real, honest end-to-end result
 
