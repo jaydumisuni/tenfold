@@ -2872,6 +2872,82 @@ verdict (see below) rather than a hardcoded stale expectation.
     `test_g2_27_self_construction.py` (33/33), and full repository
     sweep (1397 passed, 2 skipped, only the 9 known pre-existing
     Windows-only failures, zero regressions).
+46. A fresh Codex pass against the round-45 commit (`b9a204f`/`7e33457`)
+    found 1 further genuine P1 finding, which self-auditing widened
+    into 5 more of the identical class before considering the round
+    closed:
+    - **P1 ("Pin the repository scope predicate before delegation"),
+      Codex**: round 45's own scoping pass only ever scanned
+      `repository_facility.py`'s IMPORTED names for candidates
+      meeting its OWN stated criterion ("functions whose replacement
+      directly grants unauthorized capability") -- never its
+      LOCALLY-DEFINED module-level helper functions. `_path_in_scope`
+      -- defined IN `repository_facility.py` itself, called by BOTH
+      `read` and `commit` to enforce the EFFECT-REACH boundary --
+      meets that same criterion exactly, just as directly as
+      `validate_live_task` does. The reviewer reproduced rebinding it
+      to `lambda path, scope: True`, then using a legitimately sealed
+      task scoped to `allowed/` to commit `not-allowed/escape.txt` --
+      every existing check (round 45's `validate_live_task`/
+      `validate_task` pins included) passed, and the out-of-scope
+      file landed in Git. A genuine oversight in round 45's own
+      scoping pass, not a newly-discovered category.
+
+      **Self-audited widening (not requested by any reviewer,
+      completed before considering this round closed)**: rather than
+      fix only the ONE instance demonstrated, the REST of
+      `repository_facility.py`'s locally-defined helpers were audited
+      for the SAME class of oversight. Found FOUR more genuine gaps
+      in the IDENTICAL causal chain, each individually confirmed
+      exploitable via a standalone repro before fixing:
+      `repository_ref_resource`/`repository_pr_resource` (compute the
+      `resource=` argument `validate_live_task`'s own lease-fencing
+      check uses -- a rebind could let a lease held for one resource
+      authorize a write to an entirely different one),
+      `repository_request_binding` (recomputes the EXPECTED request
+      binding from the actual request fields, compared against the
+      task's SEALED binding -- a rebind ignoring its arguments would
+      let ANY request "match" any sealed task, defeating
+      request-binding fencing entirely), and `_file_digests` (feeds
+      `commit`'s file contents into that same request-binding
+      computation -- a rebind returning constant digests regardless
+      of actual content would let substituted file contents still
+      "match" a binding sealed for different ones). Also pinned
+      `_path_in_scope`'s OWN internal helper, `_path_parts`, since
+      pinning `_path_in_scope` alone does not protect what it calls
+      internally -- the same "one level deeper" concern round 45
+      already handled for `validate_live_task`/`validate_task`.
+
+      **Fixed the SAME way rounds 21/23/37/44/45 pin `RepositoryFacility`'s
+      OWN methods, generalized into a single, DATA-DRIVEN check**
+      rather than one hand-written comparison per name -- exactly the
+      shape that let round 45's own pass stay incomplete. Every
+      trusted global's reference, `__code__`, and `__defaults__`/
+      `__kwdefaults__` are captured once, at THIS module's own import
+      time, into `_TRUSTED_AUTHORITY_VALIDATION_GLOBALS`/
+      `_TRUSTED_AUTHORITY_VALIDATION_FACILITY_MODULE_GLOBALS` (keyed
+      by which REAL module namespace each name resolves from, since
+      `validate_task` lives in a different module than the rest), and
+      `_reject_altered_authority_validation_globals` loops over both
+      -- adding a new name to either dict is now the entire cost of
+      covering it. All eight names (the original two plus the six
+      found this round) individually verified caught when rebound.
+
+      Required a new adjudicated residual-Gen1-dependency exception
+      update (the refactored `_reject_altered_authority_validation_globals`
+      keeps the SAME function name round 45's adjudication entry
+      already covers, so no NEW entry was needed -- confirmed via a
+      clean residual-dependency scan after the refactor).
+
+    Fixed with a real mechanism. 2 new permanent regression tests
+    reproduce the reviewer's exact `_path_in_scope` finding and
+    confirm all seven pinned globals (the original plus the six found
+    via self-audit) are individually, correctly caught when rebound.
+    Fixed in commit `<pending>`. Full local re-verification: full test
+    file (103/103), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (pending, only the 9 known pre-existing Windows-only
+    failures expected).
 
 ## Real, honest end-to-end result
 

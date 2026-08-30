@@ -1468,6 +1468,93 @@ def test_sc23_wrapper_rejects_a_rebound_validate_task_global(tmp_path) -> None:
         facility_module.validate_task = original_validate_task
 
 
+def test_sc23_wrapper_rejects_a_rebound_path_in_scope_global(tmp_path) -> None:
+    """Review finding (PR #86, round 46, P1, Codex, reproduced by the
+    reviewer -- "Pin the repository scope predicate before
+    delegation"): round 45's own scoping pass only ever scanned
+    `repository_facility.py`'s IMPORTED names for candidates meeting
+    its OWN stated criterion, never its LOCALLY-DEFINED module-level
+    helper functions. `_path_in_scope` -- defined IN
+    `repository_facility.py` itself, enforcing the EFFECT-REACH
+    boundary for `read`/`commit` -- meets that same criterion exactly.
+    The reviewer reproduced rebinding it to `lambda path, scope:
+    True`, then using a legitimately sealed task scoped to `allowed/`
+    to commit `not-allowed/escape.txt` -- every existing check (round
+    45's `validate_live_task`/`validate_task` pins included) passed,
+    and the out-of-scope file landed in Git. `_path_in_scope`'s
+    reference/`__code__`/defaults are now ALSO pinned via the same
+    `_reject_altered_authority_validation_globals` check."""
+    import tenfold.repository_facility as repository_facility_module
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    original_path_in_scope = repository_facility_module._path_in_scope
+    try:
+        repository_facility_module._path_in_scope = lambda path, scope: True  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+        with pytest.raises(RepositoryConstructionQualificationError):
+            facility.create_branch(None, repository="existing", branch="sc23/rebound-path-in-scope", owner="assign-post", base_ref="main", expected_base_sha="0" * 40, operation_id="op-rebound-path-in-scope", foreman_epoch=1)
+    finally:
+        repository_facility_module._path_in_scope = original_path_in_scope
+
+
+def test_sc23_wrapper_rejects_a_rebound_authority_causal_chain_global(tmp_path) -> None:
+    """Round 46 self-audit (see `_TRUSTED_AUTHORITY_VALIDATION_GLOBALS`'s
+    own module-level comment): rather than fix only the ONE instance
+    the reviewer demonstrated (`_path_in_scope`), the rest of
+    `repository_facility.py`'s locally-defined helpers were audited
+    for the SAME class of oversight before considering round 46
+    closed. `repository_ref_resource`/`repository_pr_resource`
+    compute the `resource=` argument `validate_live_task`'s own
+    lease-fencing check uses; `repository_request_binding` recomputes
+    the expected request binding from the actual request fields,
+    compared against the task's SEALED binding; `_file_digests` feeds
+    `commit`'s file contents into that same request-binding
+    computation; `_path_parts` is `_path_in_scope`'s OWN internal
+    helper -- pinning `_path_in_scope` alone does not protect what it
+    calls internally. Each meets the SAME "replacement grants
+    unauthorized capability" criterion, confirmed individually
+    exploitable via a standalone repro before this fix, all now closed
+    by the SAME `_reject_altered_authority_validation_globals` check.
+    This test confirms each one, individually, still raises when
+    rebound -- checking `_reject_altered_authority_validation_globals`
+    directly (rather than driving a full `create_branch` dispatch per
+    name) since the mechanism is identical for all of them and this
+    is the function every real call site actually invokes."""
+    import tenfold.repository_facility as repository_facility_module
+    from tenfold.gen2.repository_construction_facility import (
+        RepositoryConstructionQualificationError,
+        _reject_altered_authority_validation_globals,
+    )
+
+    for name in (
+        "validate_live_task",
+        "_path_in_scope",
+        "_path_parts",
+        "repository_ref_resource",
+        "repository_pr_resource",
+        "repository_request_binding",
+        "_file_digests",
+    ):
+        original = getattr(repository_facility_module, name)
+        try:
+            setattr(repository_facility_module, name, lambda *args, **kwargs: "ATTACKER-CONTROLLED")  # noqa: SLF001 -- test-only, reproducing the reviewer's own auditing methodology one name at a time
+
+            with pytest.raises(RepositoryConstructionQualificationError):
+                _reject_altered_authority_validation_globals()
+        finally:
+            setattr(repository_facility_module, name, original)
+
+    # Untampered, the check still passes exactly as before.
+    _reject_altered_authority_validation_globals()
+
+
 def test_sc23_wrapper_ignores_a_wholesale_replaced_inner_facility(rig) -> None:
     """Review finding (PR #86, round 24, P1, Codex, reproduced by the
     reviewer -- "Verify the inner facility identity before

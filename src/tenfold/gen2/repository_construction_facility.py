@@ -382,83 +382,134 @@ def _reject_altered_facility_class_implementation() -> None:
 #: malicious replacement ran, skipping EVERY real authority check, so
 #: the branch was created regardless.
 #:
-#: Fixed the SAME way rounds 21/23/37/44 pin `RepositoryFacility`'s
-#: OWN methods: `validate_live_task`'s reference, `__code__`, and
-#: `__defaults__`/`__kwdefaults__` are captured here, at THIS module's
-#: own import time, from EXACTLY the binding `_live_mutable`'s
-#: bytecode will actually resolve
-#: (`RepositoryFacility.create_branch.__globals__`, i.e.
-#: `repository_facility.py`'s own module namespace) -- re-verified on
-#: every check, the same "capture a reference before any tampering is
-#: possible, re-verify identity/code/defaults on every use" pattern
-#: applied one axis further out.
+#: ROUND 46 WIDENING (P1, Codex, reproduced by the reviewer -- "Pin
+#: the repository scope predicate before delegation"): round 45's own
+#: scoping pass only ever scanned `repository_facility.py`'s IMPORTED
+#: names for candidates meeting its OWN stated criterion ("functions
+#: whose replacement directly grants unauthorized CAPABILITY"),
+#: never its LOCALLY-DEFINED module-level helper functions. The
+#: reviewer reproduced rebinding `_path_in_scope` -- defined IN
+#: `repository_facility.py` itself, enforcing the EFFECT-REACH
+#: boundary for `read`/`commit` -- to `lambda path, scope: True`,
+#: then using a legitimately sealed task scoped to `allowed/` to
+#: commit `not-allowed/escape.txt`; every existing check (round 45's
+#: `validate_live_task`/`validate_task` pins included) passed, and the
+#: out-of-scope file landed in Git. Investigating the SAME class of
+#: oversight further (not merely fixing the one instance the reviewer
+#: demonstrated) found FOUR more locally-defined functions in the
+#: identical causal chain, confirmed exploitable the same way:
+#: `repository_ref_resource`/`repository_pr_resource` (compute the
+#: `resource=` argument `validate_live_task`'s OWN lease-fencing check
+#: uses -- a rebind could let a lease held for one resource authorize
+#: a write to an entirely different one), `repository_request_binding`
+#: (recomputes the EXPECTED request binding from the actual request
+#: fields, compared against the task's SEALED binding -- a rebind that
+#: ignores its arguments would let ANY request "match" any sealed
+#: task, defeating request-binding fencing entirely), and
+#: `_file_digests` (feeds `commit`'s own file contents into that same
+#: request-binding computation -- a rebind returning constant digests
+#: regardless of actual content would let substituted file contents
+#: still "match" a binding sealed for different ones). `_path_parts`
+#: is `_path_in_scope`'s OWN internal helper -- pinning `_path_in_scope`
+#: alone does not protect what it calls internally, the same "one
+#: level deeper" concern round 45 already handled for
+#: `validate_live_task`/`validate_task`.
 #:
-#: `validate_live_task` itself calls `validate_task` internally (see
-#: `tenfold/facility.py`) -- the SAME class of dependency one level
-#: deeper, resolved via `validate_live_task.__globals__['validate_task']`
-#: (`tenfold.facility`'s OWN namespace this time, a DIFFERENT module
-#: than the one above). Not yet separately demonstrated by any
-#: reviewer, but the identical pattern -- pinned here pre-emptively
-#: rather than waiting for a predictable next-round rediscovery one
-#: layer deeper, the same discipline round 23 already established for
-#: the facility-class-level check pre-empting a predictable round-24
-#: rediscovery.
+#: Fixed the SAME way rounds 21/23/37/44 pin `RepositoryFacility`'s
+#: OWN methods, generalized into a single, DATA-DRIVEN check (rather
+#: than one hand-written `if` block per name, which is exactly the
+#: shape that let round 45's own pass stay incomplete): every trusted
+#: global's reference, `__code__`, and `__defaults__`/`__kwdefaults__`
+#: are captured once, at THIS module's own import time, into
+#: `_TRUSTED_AUTHORITY_VALIDATION_GLOBALS`/
+#: `_TRUSTED_AUTHORITY_VALIDATION_FACILITY_MODULE_GLOBALS` (keyed by
+#: which REAL module namespace each name is resolved from -- the two
+#: differ, since `validate_live_task` calls `validate_task` via
+#: `tenfold.facility`'s own namespace, a DIFFERENT module than
+#: `tenfold.repository_facility`), and `_reject_altered_authority_validation_globals`
+#: loops over both, re-verifying identity/code/defaults on every
+#: check -- adding a NEW name to either dict is now the entire cost of
+#: covering it, rather than another hand-written comparison block.
 #:
 #: DISCLOSED SCOPE (deliberately NOT recursing further): `RepositoryFacility`'s
 #: methods reference several OTHER module-level names too --
 #: `FacilityError`, `FacilityEvidence`, `FacilityKind`, `stable_digest`
-#: -- none of which are pinned here. `validate_live_task`/`validate_task`
-#: are the ONLY names whose replacement directly grants an
-#: UNAUTHORIZED CAPABILITY (skip authorization entirely); the others
-#: are utility/formatting/exception-class dependencies whose tampering
-#: would affect correctness or idempotency, not authorization, and
-#: recursing into every transitively-referenced name would have no
-#: natural stopping point short of the Python standard library itself
-#: (`json`, `hashlib`, `dataclasses`) -- not a genuinely closeable
-#: scope. The line is drawn at "functions whose replacement grants
-#: unauthorized capability," matching this closure's own established
-#: practice of narrowing an admitted identity's trust model
-#: explicitly rather than chasing an unbounded regress.
-_TRUSTED_VALIDATE_LIVE_TASK = RepositoryFacility.create_branch.__globals__["validate_live_task"]
-_TRUSTED_VALIDATE_LIVE_TASK_CODE = _TRUSTED_VALIDATE_LIVE_TASK.__code__
-_TRUSTED_VALIDATE_LIVE_TASK_DEFAULTS = _function_defaults_snapshot(_TRUSTED_VALIDATE_LIVE_TASK)
-_TRUSTED_VALIDATE_TASK = _TRUSTED_VALIDATE_LIVE_TASK.__globals__["validate_task"]
-_TRUSTED_VALIDATE_TASK_CODE = _TRUSTED_VALIDATE_TASK.__code__
-_TRUSTED_VALIDATE_TASK_DEFAULTS = _function_defaults_snapshot(_TRUSTED_VALIDATE_TASK)
+#: -- none of which are pinned here. Every name now pinned grants an
+#: UNAUTHORIZED CAPABILITY if rebound (skip authorization, forge a
+#: lease-resource match, forge a request-binding match); the remaining
+#: unpinned names are exception-class/evidence-container/idempotency-
+#: digest dependencies whose tampering would affect correctness or
+#: idempotency tracking, not authorization itself, and recursing into
+#: every transitively-referenced name would have no natural stopping
+#: point short of the Python standard library itself (`json`,
+#: `hashlib`, `dataclasses`) -- not a genuinely closeable scope. The
+#: line is drawn at "functions whose replacement grants unauthorized
+#: capability," matching this closure's own established practice of
+#: narrowing an admitted identity's trust model explicitly rather than
+#: chasing an unbounded regress -- and, per round 46's own lesson,
+#: applied by genuinely auditing EVERY locally-defined helper in the
+#: causal chain, not only the one a reviewer happened to demonstrate.
+_REPOSITORY_FACILITY_MODULE_GLOBALS = RepositoryFacility.create_branch.__globals__
+
+
+def _capture_trusted_authority_global(globals_dict: dict, name: str) -> tuple:
+    """See `_TRUSTED_AUTHORITY_VALIDATION_GLOBALS`'s own module-level
+    comment. Captures `(reference, __code__, defaults snapshot)` for
+    one function read off a REAL, live module namespace, at THIS
+    module's own import time -- the same "capture a reference before
+    any tampering is possible" technique used throughout this file,
+    applied uniformly so every entry in the trust dicts below is
+    captured identically, with no per-name special-casing to omit by
+    accident."""
+    func = globals_dict[name]
+    return (func, func.__code__, _function_defaults_snapshot(func))
+
+
+_TRUSTED_AUTHORITY_VALIDATION_GLOBALS = {
+    name: _capture_trusted_authority_global(_REPOSITORY_FACILITY_MODULE_GLOBALS, name)
+    for name in (
+        "validate_live_task",
+        "_path_in_scope",
+        "_path_parts",
+        "repository_ref_resource",
+        "repository_pr_resource",
+        "repository_request_binding",
+        "_file_digests",
+    )
+}
+_FACILITY_MODULE_GLOBALS = _TRUSTED_AUTHORITY_VALIDATION_GLOBALS["validate_live_task"][0].__globals__
+_TRUSTED_AUTHORITY_VALIDATION_FACILITY_MODULE_GLOBALS = {
+    name: _capture_trusted_authority_global(_FACILITY_MODULE_GLOBALS, name)
+    for name in ("validate_task",)
+}
 
 
 def _reject_altered_authority_validation_globals() -> None:
-    """See `_TRUSTED_VALIDATE_LIVE_TASK`'s own module-level comment
-    for the round-45 finding this closes. Re-reads BOTH bindings
-    FRESH from their real, live module namespaces (never a cached
-    reference of our own) and compares identity/`__code__`/defaults
-    against what was captured at this module's own import time,
-    exactly mirroring `_reject_altered_class_implementation`'s own
-    three-layer check, one axis further out."""
-    current_validate_live_task = RepositoryFacility.create_branch.__globals__.get("validate_live_task")
-    if (
-        current_validate_live_task is not _TRUSTED_VALIDATE_LIVE_TASK
-        or not inspect.isfunction(current_validate_live_task)
-        or current_validate_live_task.__code__ is not _TRUSTED_VALIDATE_LIVE_TASK_CODE
-        or not _function_defaults_match(current_validate_live_task, _TRUSTED_VALIDATE_LIVE_TASK_DEFAULTS)
+    """See `_TRUSTED_AUTHORITY_VALIDATION_GLOBALS`'s own module-level
+    comment for the round-45/46 findings this closes. Re-reads every
+    trusted name FRESH from its real, live module namespace (never a
+    cached reference of our own) and compares identity/`__code__`/
+    defaults against what was captured at this module's own import
+    time, exactly mirroring `_reject_altered_class_implementation`'s
+    own three-layer check, one axis further out -- looping over both
+    trust dicts instead of one hand-written comparison per name."""
+    for label, globals_dict, trusted in (
+        ("tenfold.repository_facility", _REPOSITORY_FACILITY_MODULE_GLOBALS, _TRUSTED_AUTHORITY_VALIDATION_GLOBALS),
+        ("tenfold.facility", _FACILITY_MODULE_GLOBALS, _TRUSTED_AUTHORITY_VALIDATION_FACILITY_MODULE_GLOBALS),
     ):
-        raise RepositoryConstructionQualificationError(
-            "_reject_altered_authority_validation_globals: tenfold.repository_facility's own "
-            "validate_live_task binding no longer matches what was admitted at import time, "
-            "breaking the local-commit-only boundary"
-        )
-    current_validate_task = current_validate_live_task.__globals__.get("validate_task")
-    if (
-        current_validate_task is not _TRUSTED_VALIDATE_TASK
-        or not inspect.isfunction(current_validate_task)
-        or current_validate_task.__code__ is not _TRUSTED_VALIDATE_TASK_CODE
-        or not _function_defaults_match(current_validate_task, _TRUSTED_VALIDATE_TASK_DEFAULTS)
-    ):
-        raise RepositoryConstructionQualificationError(
-            "_reject_altered_authority_validation_globals: tenfold.facility's own validate_task "
-            "binding no longer matches what was admitted at import time, breaking the "
-            "local-commit-only boundary"
-        )
+        for name, (trusted_func, trusted_code, trusted_defaults) in trusted.items():
+            current = globals_dict.get(name)
+            if (
+                current is not trusted_func
+                or not inspect.isfunction(current)
+                or current.__code__ is not trusted_code
+                or not _function_defaults_match(current, trusted_defaults)
+            ):
+                raise RepositoryConstructionQualificationError(
+                    f"_reject_altered_authority_validation_globals: {label}'s own {name} binding "
+                    f"no longer matches what was admitted at import time, breaking the "
+                    f"local-commit-only boundary"
+                )
 
 
 @dataclass(frozen=True)
