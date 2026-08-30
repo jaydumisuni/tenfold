@@ -2490,6 +2490,92 @@ verdict (see below) rather than a hardcoded stale expectation.
     (37/37), `test_g2_27_self_construction.py` (33/33), and full
     repository sweep (1387 passed, 2 skipped, only the 9 known
     pre-existing Windows-only failures, zero regressions).
+41. Codex's review quota was exhausted again for this round
+    (requested against `5cde00e`/`4aa23b0`), and CodeRabbit's
+    incremental review had nothing new since its last automatic pass.
+    Per this closure's own standing discipline, the round was filled
+    by another independent, genuinely adversarial review Agent,
+    matching round 39's approach -- deliberately pointed at
+    `_SealedCollaboratorProxy` (round 36/40's collaborator-sealing
+    mechanism) and the round-39 instance `__class__` freeze, the two
+    most recently hardened surfaces. It found 2 genuine findings:
+    - **"`object.__setattr__` bypasses the round-39 instance
+      `__class__` freeze"**: round 39's own text originally claimed
+      this fix was "genuinely fixable, unlike rounds 27/34/37's
+      disclosed bypasses" -- that claim was WRONG, and this round
+      corrects it.
+      `object.__setattr__(facility, "__class__", _MaliciousFacility)`
+      sidesteps the round-39 instance-level `__setattr__` override
+      entirely by invoking `object`'s ROOT implementation directly,
+      bypassing virtual dispatch through the instance's own class's
+      MRO -- the IDENTICAL structural bypass round 27 already
+      disclosed for `_FrozenClassMeta` one level up (the class-level
+      freeze), now confirmed to apply equally to this instance-level
+      one. Reproduced: `type(facility)` becomes the attacker's class
+      and `create_branch` is fully replaced, with none of
+      `_revalidate_transport_integrity`'s checks ever running.
+      `object.__setattr__` is the root implementation every class
+      ultimately inherits, always publicly reachable as a builtin,
+      and no override anywhere in the MRO can prevent a caller from
+      invoking a LESS-derived implementation of the same dunder by
+      name -- round 27's own reasoning, unchanged one level down.
+
+      **Disclosed, not fixed**: the round-39 docstring's overclaim
+      was corrected, and a "SECURITY NOTE -- DISCLOSED LIMITATION"
+      section was added matching round 27's own precedent exactly,
+      further narrowing the admitted identity's attacker model to a
+      caller using Python's NORMAL attribute-access surface, not one
+      deliberately invoking a base dunder implementation by name. A
+      new permanent regression test documents the bypass succeeding
+      rather than asserting false protection.
+    - **"`_SealedCollaboratorProxy`'s captured state was reachable via
+      ordinary attribute access, bypassing the round-40 code-pinning
+      check entirely"**: `_captured`/`_captured_code` (round 36/40)
+      were declared `__slots__` members -- ordinary, directly-named
+      instance attributes. `getattr(proxy, "_captured")` resolves via
+      the slot descriptor and NEVER reaches `__getattr__` at all
+      (`__getattr__` only fires when normal lookup FAILS), so the
+      round-40 code-pinning check, which lives inside `__getattr__`,
+      never ran for direct access to the backing dict. Once reached,
+      the dict was directly mutable in place
+      (`proxy._captured["read"] = other_bound_method`, taken from a
+      SECOND, attacker-constructed instance of the same collaborator
+      class -- trivially satisfying round 40's `func.__code__ is
+      captured_code[name]` pin, since both instances share the
+      identical class-level function object) without ever calling the
+      proxy's own `__setattr__` -- a complete defeat of this class's
+      own "Immutable after construction" guarantee, via a mechanism
+      none of rounds 36/38/40 tested. This is the same lesson round 31
+      already learned for the OUTER wrapper: a `__getattr__`-based
+      allowlist is only as sealed as the set of REAL instance
+      attributes is empty.
+
+      **Fixed with a real mechanism**, identically to round 31's own
+      fix: `_SealedCollaboratorProxy` now carries NO instance
+      attribute beyond `__weakref__` -- the captured
+      callables/code-objects live only in a module-private,
+      proxy-keyed `_SEALED_PROXY_CAPTURED_STATE` registry (mirroring
+      `_ADMITTED_TRANSPORT_STATE`'s own established pattern), so
+      `proxy._captured` now correctly raises `AttributeError` via
+      `__getattr__`'s own allowlist -- the ONLY path to any state this
+      proxy exposes. Reaching this registry at all still requires the
+      SAME already-disclosed round-34 `sys.modules`-introspection
+      boundary every other module-private name in this file already
+      accepts -- this fix closes the TRIVIAL, one-line
+      `proxy._captured` access, not that underlying, structurally
+      unfixable reachability fact. A new permanent regression test
+      reproduces the exact attack and confirms it is now rejected.
+
+    1 of 2 findings fixed with a real mechanism; 1 disclosed (matching
+    round 27's precedent exactly, one level down). Because these
+    findings did not arrive through the GitHub PR review API (no
+    review thread exists for them), they are recorded here and via a
+    plain PR comment on #86 with the commit SHA. Fixed in commit
+    `<pending>`, with 2 new permanent regression tests. Full local
+    re-verification: full test file (93/93), full mutation suite
+    (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (pending, only the 9 known pre-existing
+    Windows-only failures expected).
 
 ## Real, honest end-to-end result
 

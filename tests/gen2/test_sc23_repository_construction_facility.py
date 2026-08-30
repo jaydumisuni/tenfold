@@ -1560,6 +1560,54 @@ def test_sc23_wrapper_rejects_an_instance_class_reassignment(tmp_path) -> None:
         del facility.__class__
 
 
+def test_sc23_wrapper_instance_freeze_cannot_defend_against_a_direct_object_setattr_bypass(tmp_path) -> None:
+    """SECURITY NOTE -- DISCLOSED LIMITATION (review finding, PR #86,
+    round 41 -- another independently-launched adversarial re-review,
+    filling the same role while Codex's review quota was exhausted a
+    second time). See the round-39 `__setattr__`/`__delattr__`
+    docstring for the full account: round 39's own text originally
+    claimed the `__class__`-reassignment fix was "genuinely fixable,"
+    unlike rounds 27/34/37's disclosed bypasses -- that claim was
+    WRONG. `object.__setattr__(facility, "__class__", _MaliciousFacility)`
+    sidesteps the round-39 instance-level `__setattr__` override
+    entirely by invoking `object`'s ROOT implementation directly,
+    bypassing virtual dispatch through the instance's own class's MRO
+    -- the IDENTICAL structural bypass round 27 already disclosed for
+    `_FrozenClassMeta` one level up, now confirmed to apply equally
+    here. This test does NOT assert protection -- it documents,
+    honestly and permanently, that the bypass succeeds, matching round
+    27's own precedent for the identical technique. Ordinary syntax
+    (the round-39 test immediately above) remains genuinely blocked;
+    only this explicit, low-level base-implementation invocation
+    defeats the freeze."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    class _MaliciousFacility:
+        __slots__ = ("__weakref__",)
+
+        def create_branch(self, *args, **kwargs):
+            return "0" * 40
+
+    original_class = type(facility)
+    try:
+        object.__setattr__(facility, "__class__", _MaliciousFacility)  # noqa: SLF001 -- test-only, reproducing the reviewer's exact bypass
+
+        # The replacement genuinely runs -- no containment,
+        # transport-integrity, authority, or lease check fires,
+        # confirming this is a real, not merely theoretical, disclosed
+        # limitation.
+        assert facility.create_branch() == "0" * 40
+    finally:
+        object.__setattr__(facility, "__class__", original_class)
+
+
 def test_sc23_wrapper_class_freeze_cannot_defend_against_a_direct_type_setattr_bypass(tmp_path) -> None:
     """SECURITY NOTE -- DISCLOSED LIMITATION (review finding, PR #86,
     round 27, P1/Major, Codex and CodeRabbit, both independently
@@ -2240,6 +2288,55 @@ def test_sc23_sealed_state_store_rejects_a_collaborator_method_code_object_mutat
     # Untampered, access still works exactly as before -- this
     # revalidates, it does not permanently deny.
     assert callable(_admitted_state_for(facility).facility.state.claim_writer)
+
+
+def test_sc23_sealed_collaborator_proxy_denies_direct_access_to_its_own_captured_state(tmp_path) -> None:
+    """Review finding (PR #86, round 41 -- an independently-launched
+    adversarial re-review, run because Codex's review quota was
+    exhausted a second time): `_SealedCollaboratorProxy` (rounds
+    36/40) previously stored its captured callables/code objects as
+    ordinary `__slots__` members (`_captured`/`_captured_code`).
+    `getattr(proxy, "_captured")` resolves via the slot descriptor and
+    NEVER reaches `__getattr__` at all (`__getattr__` only fires when
+    normal attribute lookup FAILS), so the round-40 code-pinning check
+    -- which lives inside `__getattr__` -- never ran for direct access
+    to the backing dict. The reviewer reproduced `proxy._captured`
+    returning the real dict, then mutating an entry in place
+    (`proxy._captured["read"] = other_bound_method`) with a bound
+    method from a SECOND, attacker-constructed collaborator instance:
+    since both instances share the identical class-level function
+    object, this trivially satisfies round 40's `func.__code__ is
+    captured_code[name]` pin while silently redirecting the sealed
+    proxy's own decisions to attacker-supplied data -- a complete
+    defeat of this class's own "Immutable after construction"
+    guarantee, reached through a mechanism (slot access, not
+    source-object reassignment) none of rounds 36/38/40 tested. Fixed
+    the SAME way round 31 fixed the identical exposure for the OUTER
+    wrapper: `_SealedCollaboratorProxy` now carries NO instance
+    attribute beyond `__weakref__` -- the captured state lives only in
+    the module-private, proxy-keyed `_SEALED_PROXY_CAPTURED_STATE`
+    registry, so `proxy._captured` now correctly raises
+    `AttributeError` via `__getattr__`'s own allowlist, the ONLY path
+    to any state this proxy exposes."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _admitted_state_for, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    sealed = _admitted_state_for(facility).facility.authority_store
+
+    with pytest.raises(AttributeError):
+        sealed._captured  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+    with pytest.raises(AttributeError):
+        sealed._captured_code  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+    # Untampered, legitimate delegation still works exactly as before.
+    assert callable(sealed.read)
 
 
 def test_sc23_wrapper_rejects_a_transport_git_executable_with_content_replaced_in_place(tmp_path) -> None:

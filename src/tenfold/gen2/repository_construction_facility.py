@@ -827,6 +827,44 @@ _AUTHORITY_STORE_CAPTURED_METHODS = ("read",)
 _STATE_STORE_CAPTURED_METHODS = ("receipt", "put_receipt", "acquire_writer", "release_writer", "claim_writer", "writer")
 
 
+#: Review finding (PR #86, round 41 -- an independently-launched
+#: adversarial re-review, run because Codex's review quota was
+#: exhausted again for this round, filling the same role with the
+#: same "real repro or it doesn't count" discipline): `_captured`/
+#: `_captured_code` (round 36/40) were declared `__slots__` members --
+#: ordinary, directly-named instance attributes. `getattr(proxy,
+#: "_captured")` resolves via the slot descriptor and NEVER reaches
+#: `__getattr__` at all (`__getattr__` only fires when normal
+#: attribute lookup FAILS), so the round-40 code-pinning check --
+#: which lives inside `__getattr__` -- never ran for direct access to
+#: the backing dict itself. The reviewer reproduced `proxy._captured`
+#: returning the real dict, then mutating an entry in place
+#: (`proxy._captured["read"] = other_bound_method`) -- since this is a
+#: `dict.__setitem__` call, not an attribute-set on the PROXY, the
+#: proxy's own `__setattr__` override (which only intercepts
+#: assignment on `self`) never fires either. This is the SAME lesson
+#: round 31 already learned for the OUTER wrapper
+#: (`_ContainmentReCheckedRepositoryFacility`): a `__getattr__`-based
+#: allowlist is only as sealed as the set of REAL instance attributes
+#: is empty -- any genuinely-declared attribute, however named, is
+#: reachable by ordinary `getattr`/`.` access regardless of what
+#: `__getattr__` does, since `__getattr__` is a fallback, never an
+#: interception point for existing attributes. Round 31's fix for the
+#: wrapper was moving ALL state into the module-private,
+#: wrapper-keyed `_ADMITTED_TRANSPORT_STATE` registry so the wrapper
+#: itself carries NO instance attribute beyond `__weakref__`. Applied
+#: here identically: `_SealedCollaboratorProxy` now carries NO
+#: instance attribute beyond `__weakref__` either -- the captured
+#: callables/code objects live only in this module-private,
+#: proxy-keyed registry, populated by `__init__` AFTER `self` exists.
+#: Reaching this registry at all still requires the SAME already-
+#: disclosed round-34 `sys.modules`-introspection boundary every other
+#: module-private name in this file already accepts -- this fix closes
+#: the TRIVIAL, one-line `proxy._captured` access, not that
+#: underlying, structurally unfixable reachability fact.
+_SEALED_PROXY_CAPTURED_STATE: "weakref.WeakKeyDictionary[_SealedCollaboratorProxy, tuple[dict, dict]]" = weakref.WeakKeyDictionary()
+
+
 class _SealedCollaboratorProxy:
     """See `_AUTHORITY_STORE_CAPTURED_METHODS`'s own module-level
     comment for the round-36 finding this closes. Captures the exact
@@ -834,8 +872,10 @@ class _SealedCollaboratorProxy:
     construction time, and exposes ONLY those -- never `source`
     itself, never any other attribute. Immutable after construction
     (`__setattr__` always raises); `__slots__` carries no writable
-    surface beyond the collections of captured callables/code objects
-    set once, via `object.__setattr__`, inside `__init__` itself.
+    surface at all beyond `__weakref__` -- see
+    `_SEALED_PROXY_CAPTURED_STATE`'s own module-level comment for why
+    the captured collections themselves live in a module-private
+    registry rather than as named instance attributes.
 
     SECOND-LAYER FIX (review finding, PR #86, round 40, P1, Codex,
     reproduced by the reviewer -- "Snapshot collaborator code objects
@@ -862,17 +902,18 @@ class _SealedCollaboratorProxy:
     Fixed the SAME way round 37 closed the identical exposure for
     `LocalGitRepositoryTransport`/`RepositoryFacility`: each captured
     bound method's `__func__.__code__` is separately pinned, at THIS
-    proxy's own construction time, into `_captured_code` -- a later
-    `func.__code__ = other` reassignment cannot retroactively change
-    what that separately-held reference points to. `__getattr__`
-    re-verifies the CURRENT `__func__.__code__` against the pinned
-    reference on EVERY access (not merely once at construction), since
-    Gen1's own dispatch always reaches this proxy via a fresh
-    `self.state.claim_writer(...)`-style attribute lookup each call --
-    matching round 38's "a content check must be repeated every time"
-    lesson, now for code-object identity rather than file content."""
+    proxy's own construction time, into a second captured-code mapping
+    -- a later `func.__code__ = other` reassignment cannot
+    retroactively change what that separately-held reference points
+    to. `__getattr__` re-verifies the CURRENT `__func__.__code__`
+    against the pinned reference on EVERY access (not merely once at
+    construction), since Gen1's own dispatch always reaches this proxy
+    via a fresh `self.state.claim_writer(...)`-style attribute lookup
+    each call -- matching round 38's "a content check must be repeated
+    every time" lesson, now for code-object identity rather than file
+    content."""
 
-    __slots__ = ("_captured", "_captured_code")
+    __slots__ = ("__weakref__",)
 
     def __init__(self, source: object, method_names: tuple[str, ...], label: str) -> None:
         captured = {}
@@ -887,18 +928,17 @@ class _SealedCollaboratorProxy:
             func = getattr(bound, "__func__", None)
             if func is not None:
                 captured_code[name] = func.__code__
-        object.__setattr__(self, "_captured", captured)
-        object.__setattr__(self, "_captured_code", captured_code)
+        _SEALED_PROXY_CAPTURED_STATE[self] = (captured, captured_code)
 
     def __getattr__(self, name):
+        captured, captured_code = _SEALED_PROXY_CAPTURED_STATE[self]
         try:
-            bound = object.__getattribute__(self, "_captured")[name]
+            bound = captured[name]
         except KeyError:
             raise AttributeError(
                 f"_SealedCollaboratorProxy: {name} was not captured at admission -- only the exact "
                 f"methods RepositoryFacility genuinely calls on this collaborator are exposed"
             ) from None
-        captured_code = object.__getattribute__(self, "_captured_code")
         if name in captured_code:
             func = getattr(bound, "__func__", None)
             if func is None or func.__code__ is not captured_code[name]:
@@ -909,6 +949,9 @@ class _SealedCollaboratorProxy:
         return bound
 
     def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError("_SealedCollaboratorProxy instances are immutable after construction")
+
+    def __delattr__(self, name: str) -> None:
         raise AttributeError("_SealedCollaboratorProxy instances are immutable after construction")
 
     def _inject_fault_for_qualification_harness(self, name: str, replacement) -> None:
@@ -935,7 +978,7 @@ class _SealedCollaboratorProxy:
             raise RepositoryConstructionQualificationError(
                 f"_SealedCollaboratorProxy._inject_fault_for_qualification_harness: replacement for {name!r} is not callable"
             )
-        captured = object.__getattribute__(self, "_captured")
+        captured, captured_code = _SEALED_PROXY_CAPTURED_STATE[self]
         if name not in captured:
             raise AttributeError(
                 f"_SealedCollaboratorProxy._inject_fault_for_qualification_harness: {name!r} was not captured at admission"
@@ -945,8 +988,8 @@ class _SealedCollaboratorProxy:
         # different implementation -- not a tampered original -- so
         # the round-40 code-object pin for THIS name no longer
         # applies; `__getattr__` skips the check for any name absent
-        # from `_captured_code`.
-        object.__getattribute__(self, "_captured_code").pop(name, None)
+        # from the captured-code mapping.
+        captured_code.pop(name, None)
 
 
 def gen1_wrap_repository_construction_facility(transport, state_store, authority_store) -> "_ContainmentReCheckedRepositoryFacility":
@@ -1995,16 +2038,46 @@ class _ContainmentReCheckedRepositoryFacility(metaclass=_FrozenClassMeta):
     Reproduced: after `facility.__class__ = _MaliciousFacility`, the
     wrapper's own `create_branch` genuinely became the attacker's
     replacement, with the real `create_branch`'s implementation and
-    the original class object entirely untouched. Unlike rounds
-    27/34/37's disclosed bypasses, THIS one is genuinely fixable: a
-    plain instance-level `__setattr__`/`__delattr__` override
-    (below) intercepts `__class__` reassignment exactly like any
-    other instance attribute set, since it dispatches through
-    `type(obj).__setattr__` the same way -- confirmed empirically
-    that adding it blocks the exact reproduction above. This is the
-    SAME "always raise" pattern `_FrozenClassMeta` already uses one
-    level up for the class object; now also applied one level down,
-    for the instance."""
+    the original class object entirely untouched. A plain
+    instance-level `__setattr__`/`__delattr__` override (below)
+    intercepts `__class__` reassignment via NORMAL syntax exactly like
+    any other instance attribute set, since it dispatches through
+    `type(obj).__setattr__` the same way -- confirmed empirically that
+    adding it blocks the exact reproduction above. This is the SAME
+    "always raise" pattern `_FrozenClassMeta` already uses one level
+    up for the class object; now also applied one level down, for the
+    instance.
+
+    SECURITY NOTE -- DISCLOSED LIMITATION (review finding, PR #86,
+    round 41 -- another independently-launched adversarial re-review,
+    filling the same role while Codex's quota was exhausted a second
+    time): round 39's own text above originally claimed this fix was
+    "genuinely fixable," unlike rounds 27/34/37's disclosed bypasses --
+    that claim was WRONG, and this note corrects it. The round-39
+    `__setattr__` override is reached only through VIRTUAL DISPATCH,
+    exactly like `_FrozenClassMeta.__setattr__` one level up -- calling
+    the ROOT implementation directly, `object.__setattr__(facility,
+    "__class__", _MaliciousFacility)`, sidesteps it entirely, the
+    IDENTICAL structural bypass round 27 already disclosed for the
+    class-level freeze, now confirmed to apply equally to the
+    instance-level one. Reproduced: `type(facility)` becomes the
+    attacker's class and `create_branch` is fully replaced, with none
+    of `_revalidate_transport_integrity`'s checks ever running --
+    `object.__setattr__` is the root implementation every class
+    ultimately inherits, always publicly reachable as a builtin, and
+    no override anywhere in the MRO can prevent a caller from invoking
+    a LESS-derived implementation of the same dunder by name (round
+    27's own reasoning, unchanged one level down). There is
+    consequently no further code-level fix available inside this
+    single Python process; the admitted identity's trust model is
+    narrowed the same way round 27's already is, to a caller using
+    Python's NORMAL attribute-access surface, not one deliberately
+    invoking a base dunder implementation by name to route around
+    virtual dispatch. See
+    `test_sc23_wrapper_instance_freeze_cannot_defend_against_a_direct_object_setattr_bypass`
+    for the permanent, executable record of this disclosed limitation,
+    matching round 27's own precedent for the identical bypass one
+    level up."""
 
     __slots__ = ("__weakref__",)
 
