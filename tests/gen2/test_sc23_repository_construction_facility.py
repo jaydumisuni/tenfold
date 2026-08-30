@@ -2027,6 +2027,47 @@ def test_sc23_sealed_state_store_rejects_a_reassigned_storage_path(tmp_path) -> 
         proxy.acquire_writer("existing", "sc23/path-redirect-probe", "owner2")
 
 
+def test_sc23_wrapper_rejects_a_mutated_path_class_attribute(rig) -> None:
+    """Review finding (PR #86, round 52, P1, Codex, reproduced by the
+    reviewer -- "Pin mutable attributes on captured classes"): the
+    round-51 module-attribute walk only ever checked
+    `inspect.ismodule(candidate)` -- a CLASS captured as an identity-
+    only leaf (`pathlib.Path`) has the identical exposure a module
+    does, and was skipped by that branch entirely. The reviewer
+    reproduced `Path.is_symlink = lambda self: False` after admission:
+    `Path` itself was never rebound, so an identity check on `Path`
+    alone would keep passing regardless, while every
+    `git_dir.is_symlink()` containment check in this module's own
+    symlink-escape scanning (`_find_unsafe_git_storage_entry`/
+    `_neutralize_hooks_for_every_registered_repository`) resolves the
+    tampered method the moment it runs, letting a symlinked
+    `.git/refs/heads` escape detection during a fully authorized
+    `create_branch`. Fixed by widening `_leaf_attribute_roots`
+    (renamed from `_module_attribute_roots`) to also recognize class
+    leaves, and by a new `_TRUSTED_CONTAINMENT_SCAN_MODULE_GLOBALS`
+    seeded from this module's own two containment-scanning functions
+    that reference `Path` and a containment-check method together,
+    verified at both admission and every per-mutation revalidation.
+    `Path.is_symlink` is restored in a `finally` block, since
+    `pathlib.Path` is a real, shared, process-global class."""
+    from pathlib import Path
+
+    original_is_symlink = Path.is_symlink
+
+    def malicious_is_symlink(self):
+        return False
+
+    Path.is_symlink = malicious_is_symlink  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack: a CLASS-level mutation of a stdlib method
+    try:
+        with pytest.raises(RepositoryConstructionQualificationError):
+            _real_create_branch_on_rig(rig, branch="sc23/mutated-path-is-symlink", operation_id="op-mutated-path-is-symlink")
+    finally:
+        Path.is_symlink = original_is_symlink
+
+    receipt = _real_create_branch_on_rig(rig, branch="sc23/mutated-path-is-symlink-sanity", operation_id="op-mutated-path-is-symlink-sanity")
+    assert receipt is not None
+
+
 def test_sc23_wrapper_ignores_a_wholesale_replaced_inner_facility(rig) -> None:
     """Review finding (PR #86, round 24, P1, Codex, reproduced by the
     reviewer -- "Verify the inner facility identity before

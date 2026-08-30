@@ -601,7 +601,7 @@ def _tenfold_owned_function(value: object) -> bool:
 #: reachable name is still genuinely local, first-party code; see
 #: `_tenfold_owned_function`'s own docstring for where that boundary
 #: is deliberately drawn and why.
-def _module_attribute_roots(func) -> list:
+def _leaf_attribute_roots(func) -> list:
     """SELF-CAUGHT FINDING (review finding, PR #86, round 51, P1,
     Codex, reproduced by the reviewer -- "Snapshot mutable attributes
     of captured modules"): a module captured as an identity-only leaf
@@ -628,12 +628,33 @@ def _module_attribute_roots(func) -> list:
     Bounded the same way the rest of this file's transitive walks are:
     only attributes THIS SAME function's own bytecode actually
     references are ever pinned, never a module's full, unbounded
-    attribute surface."""
+    attribute surface.
+
+    ROUND 52 WIDENING (originally `_module_attribute_roots`, renamed
+    here -- review finding, PR #86, round 52, P1, Codex, reproduced by
+    the reviewer -- "Pin mutable attributes on captured classes"): the
+    round-51 version only ever checked `inspect.ismodule(candidate)`
+    -- a CLASS captured as an identity-only leaf (`pathlib.Path`) has
+    the IDENTICAL exposure a module does, and was skipped by this
+    branch entirely. The reviewer reproduced `Path.is_symlink = lambda
+    self: False` after admission: `Path` itself was never rebound, so
+    an identity check on `Path` alone would keep passing regardless,
+    while every `git_dir.is_symlink()` containment check anywhere in
+    this file resolves the tampered method the moment it runs, letting
+    a symlinked `.git/refs/heads` escape detection during a fully
+    authorized `create_branch`. A class's own `__dict__` is written to
+    directly by ordinary class-attribute assignment (`Class.attr = x`)
+    the SAME way a module's is, and reading it back
+    (`cls.__dict__.get(name)`, a read-only `mappingproxy` but fully
+    supporting `.get`) works identically too -- so the fix widens the
+    SAME check from `inspect.ismodule(candidate)` to `inspect.ismodule(candidate)
+    or isinstance(candidate, type)`, with no other change to the
+    mechanism at all."""
     referenced = func.__code__.co_names
     pairs = []
     for name in referenced:
         candidate = func.__globals__.get(name)
-        if inspect.ismodule(candidate):
+        if inspect.ismodule(candidate) or isinstance(candidate, type):
             for attr_name in referenced:
                 if attr_name != name and hasattr(candidate, attr_name):
                     pairs.append((candidate.__dict__, attr_name))
@@ -654,9 +675,9 @@ def _capture_transitive_authority_globals(roots: tuple) -> dict:
     code/defaults check `_reject_altered_class_implementation` uses
     elsewhere in this file); every other captured value (a stdlib
     function, a builtin, a module, a class, ...) is verified by
-    IDENTITY alone -- see `_module_attribute_roots`'s own docstring
-    for the round-51 finding that identity-alone is not enough for a
-    MODULE specifically, and how this walk also captures its
+    IDENTITY alone -- see `_leaf_attribute_roots`'s own docstring
+    for the round-51/52 findings that identity-alone is not enough for
+    a MODULE or CLASS specifically, and how this walk also captures its
     OWN referenced attributes for exactly that reason. Memoized by
     `(id(globals_dict), name)` so a name reachable via more than one
     path in the walk is captured exactly once, and so mutually- or
@@ -674,7 +695,7 @@ def _capture_transitive_authority_globals(roots: tuple) -> dict:
             for referenced_name in value.__code__.co_names:
                 if referenced_name in value.__globals__:
                     stack.append((value.__globals__, referenced_name))
-            stack.extend(_module_attribute_roots(value))
+            stack.extend(_leaf_attribute_roots(value))
         else:
             captured[key] = (globals_dict, name, value, None, None)
     return captured
@@ -778,7 +799,7 @@ _TRUSTED_TRANSPORT_CLASS_MODULE_GLOBALS = _capture_transitive_authority_globals(
     (module_dict, attr_name)
     for value in _TRUSTED_TRANSPORT_CLASS_ATTRIBUTES.values()
     if inspect.isfunction(value)
-    for module_dict, attr_name in _module_attribute_roots(value)
+    for module_dict, attr_name in _leaf_attribute_roots(value)
 ))
 
 
@@ -1282,6 +1303,45 @@ _TRUSTED_GIT_EXECUTABLE = (lambda resolved: str(Path(resolved).resolve()) if res
 #: establishes.
 _TRUSTED_GIT_EXECUTABLE_DIGEST = sha256(Path(_TRUSTED_GIT_EXECUTABLE).read_bytes()).hexdigest() if _TRUSTED_GIT_EXECUTABLE else None
 
+#: Review finding (PR #86, round 52, P1, Codex, reproduced by the
+#: reviewer -- "Pin mutable attributes on captured classes"): the
+#: round-51 module-attribute walk only ever checked
+#: `inspect.ismodule(candidate)` -- a CLASS captured as an identity-
+#: only leaf has the identical exposure, and was skipped entirely
+#: (see `_leaf_attribute_roots`'s own ROUND 52 WIDENING docstring
+#: section for the mechanism fix itself). The reviewer reproduced
+#: `Path.is_symlink = lambda self: False` after admission: `Path`
+#: itself was never rebound, so an identity check on `Path` alone
+#: would keep passing regardless, while every `git_dir.is_symlink()`
+#: containment check in this file's own symlink-escape scanning
+#: (`_find_unsafe_git_storage_entry`/
+#: `_neutralize_hooks_for_every_registered_repository`, confirmed by
+#: self-audit to be the only two of this module's OWN functions that
+#: reference `Path` and a containment-check method -- `is_symlink`/
+#: `is_dir`/`is_file`/`exists`/`stat` -- together; `_hooks_neutralization_still_intact`/
+#: `_reject_alternate_git_config_sources`/
+#: `_reject_symlinked_git_storage_for_every_registered_repository`
+#: also call these same methods on `Path` INSTANCES, but never
+#: reference the `Path` CLASS directly themselves -- pinning `Path`'s
+#: own attributes via the two functions that DO is sufficient, since
+#: `Path.is_symlink` is a single, shared, class-level attribute
+#: regardless of which call site resolves it) resolves the tampered
+#: method the moment it runs, letting a symlinked `.git/refs/heads`
+#: escape detection during a fully authorized `create_branch`.
+#: Fixed the SAME way `_TRUSTED_TRANSPORT_CLASS_MODULE_GLOBALS`
+#: covers the transport's own methods: seeded from these two
+#: Gen2-owned containment functions' own module-level references
+#: (their names are genuine globals in THIS module's own namespace,
+#: exactly like any other root used elsewhere in this file), reusing
+#: `_capture_transitive_authority_globals` directly -- which, since
+#: these two functions are themselves `_tenfold_owned_function`-owned,
+#: ALSO pins their own identity/code/defaults, the same protection
+#: every other root in this file's trust dicts already receives.
+_TRUSTED_CONTAINMENT_SCAN_MODULE_GLOBALS = _capture_transitive_authority_globals(tuple(
+    (globals(), name)
+    for name in ("_find_unsafe_git_storage_entry", "_neutralize_hooks_for_every_registered_repository")
+))
+
 
 def _reject_untrusted_transport_git_executable(transport: LocalGitRepositoryTransport) -> None:
     """See `_TRUSTED_GIT_EXECUTABLE`/`_TRUSTED_GIT_EXECUTABLE_DIGEST`'s
@@ -1664,7 +1724,7 @@ def _capture_collaborator_relied_upon_attributes(source_cls: type, method_names:
     says nothing about whether one of THAT module's OWN attributes
     (`sqlite3.connect`) was mutated in place afterward, with the
     module reference itself untouched. Fixed by ALSO collecting
-    `_module_attribute_roots(func)` for each relied-upon method, the
+    `_leaf_attribute_roots(func)` for each relied-upon method, the
     exact same helper `_capture_transitive_authority_globals`'s own
     internal walk now uses for the identical reason.
 
@@ -1701,7 +1761,7 @@ def _capture_collaborator_relied_upon_attributes(source_cls: type, method_names:
                     stack.append(referenced_name)
             if referenced_name in func.__globals__:
                 global_roots[(id(func.__globals__), referenced_name)] = (func.__globals__, referenced_name)
-        for module_dict, attr_name in _module_attribute_roots(func):
+        for module_dict, attr_name in _leaf_attribute_roots(func):
             global_roots[(id(module_dict), attr_name)] = (module_dict, attr_name)
     for name in method_names:
         relied_upon_methods.pop(name, None)
@@ -2088,6 +2148,15 @@ def gen1_wrap_repository_construction_facility(transport, state_store, authority
     # checks already guard against, just reached through a function's
     # `__globals__` rather than a class's own `__dict__`.
     _reject_altered_authority_validation_globals()
+    # Round 52 (see `_TRUSTED_CONTAINMENT_SCAN_MODULE_GLOBALS`'s own
+    # module-level comment): checked alongside the checks above, at
+    # BOTH admission and every per-mutation revalidation -- a rebound
+    # `Path.is_symlink` (or any other module/class dependency this
+    # module's own symlink-escape scanning relies on) is exactly the
+    # same class of pre-admission or post-admission tampering those
+    # checks already guard against, just reached through THIS module's
+    # own containment-scan functions rather than Gen1's.
+    _reject_altered_transitive_globals(_TRUSTED_CONTAINMENT_SCAN_MODULE_GLOBALS)
     _reject_instance_overridden_transport_methods(transport)
     # Round 36 (see `_reject_untrusted_transport_git_executable`'s own
     # docstring): must run BEFORE `established_instance_state` is ever
@@ -2873,6 +2942,12 @@ def _current_transport(wrapper: "_ContainmentReCheckedRepositoryFacility") -> Lo
     # that happens AFTER admission is exactly what the reviewer's own
     # reproduction targeted.
     _reject_altered_authority_validation_globals()
+    # Round 52 (see `_TRUSTED_CONTAINMENT_SCAN_MODULE_GLOBALS`'s own
+    # module-level comment): re-checked on EVERY revalidation, not
+    # merely once at admission -- a `Path.is_symlink` rebinding that
+    # happens AFTER admission is exactly what the reviewer's own
+    # reproduction targeted.
+    _reject_altered_transitive_globals(_TRUSTED_CONTAINMENT_SCAN_MODULE_GLOBALS)
     current = admitted.facility.transport
     _reject_altered_transport_class_implementation()
     if type(current) is not LocalGitRepositoryTransport:

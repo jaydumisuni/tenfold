@@ -3359,6 +3359,79 @@ verdict (see below) rather than a hardcoded stale expectation.
     repository sweep (1409 passed, 2 skipped, only the 9 known
     pre-existing Windows-only failures, zero regressions).
 
+52. A fresh Codex pass against the round-51 commit (`7fe79c6`/`41f7d07`)
+    found 1 further genuine P1 finding -- round 51's own mutable-
+    attribute fix, widened to a second leaf type:
+    - **P1 ("Pin mutable attributes on captured classes"), Codex**:
+      the round-51 module-attribute walk (`_module_attribute_roots`)
+      only ever checked `inspect.ismodule(candidate)` -- a CLASS
+      captured as an identity-only leaf (`pathlib.Path`) has the
+      IDENTICAL exposure a module does, and was skipped by that
+      branch entirely. The reviewer reproduced `Path.is_symlink =
+      lambda self: False` after admission: `Path` itself was never
+      rebound, so an identity check on `Path` alone would keep
+      passing regardless, while every `git_dir.is_symlink()`
+      containment check in this module's own symlink-escape scanning
+      resolves the tampered method the moment it runs, letting a
+      symlinked `.git/refs/heads` escape detection during a fully
+      authorized `create_branch`.
+
+      Fixed in two parts. First, `_module_attribute_roots` (renamed
+      `_leaf_attribute_roots`, since it now covers more than modules)
+      widened from `inspect.ismodule(candidate)` to
+      `inspect.ismodule(candidate) or isinstance(candidate, type)` --
+      a class's own `__dict__` is written to directly by ordinary
+      class-attribute assignment the SAME way a module's is, so no
+      other change to the mechanism was needed. Second -- and this is
+      the part that actually closes the reviewer's own reproduction --
+      a genuinely NEW gap was found by self-audit: `Path`/`is_symlink`
+      only ever co-occur in THIS module's own two containment-scanning
+      functions (`_find_unsafe_git_storage_entry`/
+      `_neutralize_hooks_for_every_registered_repository`), neither of
+      which was previously a root in ANY of the three existing
+      transitive-closure mechanisms (all three cover Gen1's
+      `RepositoryFacility`/`LocalGitRepositoryTransport` or
+      caller-retained collaborators -- none cover this module's OWN
+      containment-scan helpers). Fixed via a new
+      `_TRUSTED_CONTAINMENT_SCAN_MODULE_GLOBALS`, seeded from these
+      two Gen2-owned functions' own module-level references (their
+      names are genuine globals in this module's own namespace, the
+      same as any other root elsewhere in this file), reusing
+      `_capture_transitive_authority_globals` directly -- which, since
+      both seed functions are themselves `_tenfold_owned_function`-
+      owned, also pins their own identity/code/defaults, the same
+      protection every other root in this file's trust dicts already
+      receives. Verified at both admission and every per-mutation
+      revalidation, mirroring every other mechanism in this file.
+
+      Self-audit also confirmed three OTHER functions
+      (`_hooks_neutralization_still_intact`,
+      `_reject_alternate_git_config_sources`,
+      `_reject_symlinked_git_storage_for_every_registered_repository`)
+      call the SAME containment-check methods on `Path` instances but
+      never reference the `Path` CLASS directly themselves -- pinning
+      `Path`'s own attributes via the two functions that DO is
+      sufficient to protect all five, since `Path.is_symlink` is a
+      single, shared, class-level attribute regardless of which call
+      site resolves it; no separate root was needed for those three.
+
+      No new adjudicated residual-Gen1-dependency exceptions needed --
+      the two newly-pinned functions are Gen2-owned, not Gen1
+      dependencies, and every existing mechanism name is unchanged;
+      confirmed via a clean residual-dependency scan after the fix.
+
+    Fixed with a real mechanism, widening one existing helper and
+    adding one new, narrowly-scoped root set. 1 new permanent
+    regression test reproduces the reviewer's exact `Path.is_symlink`
+    class-attribute mutation via a real, fully-authorized
+    `create_branch` dispatch (restored in a `finally` block, since
+    `pathlib.Path` is a real, shared, process-global class), followed
+    by a sanity dispatch confirming the mechanism doesn't
+    over-reject genuine, untampered use. Fixed in commit `<pending>`.
+    Full local re-verification: full test file (114/114), full
+    mutation suite (37/37), `test_g2_27_self_construction.py`
+    (pending), and full repository sweep (pending).
+
 ## Real, honest end-to-end result
 
 Running `execute_self_construction_gate()` for real against the live
