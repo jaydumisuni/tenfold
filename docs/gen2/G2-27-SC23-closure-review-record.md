@@ -3180,10 +3180,11 @@ verdict (see below) rather than a hardcoded stale expectation.
     `RepositoryStateStore` is a real, shared, process-global class,
     not a disposable per-test object); rounds 36/38/48's own
     regression tests for the instance-level cases remain valid and
-    pass unmodified. Fixed in commit `<pending>`. Full local
+    pass unmodified. Fixed in commit `75ed991`. Full local
     re-verification: full test file (109/109), full mutation suite
-    (37/37), `test_g2_27_self_construction.py` (pending), and full
-    repository sweep (pending).
+    (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1405 passed, 2 skipped, only the 9 known
+    pre-existing Windows-only failures, zero regressions).
 
 ## Real, honest end-to-end result
 
