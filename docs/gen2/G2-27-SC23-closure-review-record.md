@@ -3118,10 +3118,12 @@ verdict (see below) rather than a hardcoded stale expectation.
     new permanent regression tests reproduce the reviewer's exact
     `tenfold.facility.sha256` and state-store `_connect`-shadow
     findings (the sha256 test also covers the self-audited
-    `tenfold.contracts.sha256` sibling). Fixed in commit `<pending>`.
+    `tenfold.contracts.sha256` sibling). Fixed in commit `42b3d0e`.
     Full local re-verification: full test file (108/108), full
     mutation suite (37/37), `test_g2_27_self_construction.py`
-    (pending), and full repository sweep (pending).
+    (33/33), and full repository sweep (1404 passed, 2 skipped, only
+    the 9 known pre-existing Windows-only failures, zero
+    regressions).
 
 ## Real, honest end-to-end result
 
