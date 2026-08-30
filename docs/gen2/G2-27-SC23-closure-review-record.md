@@ -2660,11 +2660,11 @@ verdict (see below) rather than a hardcoded stale expectation.
     #86 with the commit SHA. 2 new permanent regression tests
     reproduce the fix (frozen-dataclass rejection) and document the
     disclosed residual (`_inject_fault_for_qualification_harness`
-    cross-admission reach) respectively. Fixed in commit `<pending>`.
+    cross-admission reach) respectively. Fixed in commit `582c918`.
     Full local re-verification: full test file (95/95), full mutation
     suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
-    repository sweep (pending, only the 9 known pre-existing
-    Windows-only failures expected).
+    repository sweep (1391 passed, 2 skipped, only the 9 known
+    pre-existing Windows-only failures, zero regressions).
 
 ## Real, honest end-to-end result
 
