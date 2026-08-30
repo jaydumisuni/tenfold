@@ -3031,10 +3031,11 @@ verdict (see below) rather than a hardcoded stale expectation.
     reproduce the reviewer's exact `stable_digest`, `canonical_digest`,
     and `__kwdefaults__`-truthiness findings; the existing causal-chain
     test was also widened to cover `stable_digest` directly. Fixed in
-    commit `<pending>`. Full local re-verification: full test file
+    commit `bb0f6e5`. Full local re-verification: full test file
     (106/106), full mutation suite (37/37),
-    `test_g2_27_self_construction.py` (pending), and full repository
-    sweep (pending).
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (1402 passed, 2 skipped, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
 
 ## Real, honest end-to-end result
 
