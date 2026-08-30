@@ -2392,6 +2392,53 @@ def test_sc23_admitted_transport_state_rejects_cross_admission_field_reassignmen
     assert facility2 is not None  # both admissions genuinely coexisted for the reproduction above
 
 
+def test_sc23_admitted_transport_state_rejects_cross_admission_nested_dict_mutation(tmp_path) -> None:
+    """Review finding (PR #86, round 43, P1, Codex, reproduced by the
+    reviewer -- "Make admission snapshots deeply immutable"): round
+    42's `frozen=True` fix on `_AdmittedTransportState` blocks
+    `admitted.instance_state = new_dict` -- but freezing a dataclass
+    only seals its OWN field REFERENCES, never the CONTENTS of a
+    plain, mutable `dict` a field happens to point at. The reviewer
+    reproduced enumerating the registry (the same already-disclosed
+    round-34/42 reachability) to reach an unrelated VICTIM admission,
+    then mutating `victim_admitted.instance_state["_repositories"]`
+    IN PLACE -- a dict-item assignment, not an attribute assignment on
+    the dataclass, so the outer freeze never fired -- to redirect
+    BOTH the victim's live transport registration AND this
+    "established" snapshot to the same external clone, consistently
+    poisoning both sides of `_reject_altered_transport_instance_state`'s
+    comparison at once. Both the nested `_repositories` dict and the
+    outer `established_instance_state` dict are now wrapped in
+    `types.MappingProxyType` -- a genuinely read-only view with no
+    other reference to the underlying mutable dict ever retained --
+    so this exact mutation now raises `TypeError` outright."""
+    import sys
+
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    def admit(name: str):
+        repo_root = tmp_path / name
+        _real_existing_repo(repo_root, tmp_path)
+        transport = LocalGitRepositoryTransport({"existing": repo_root})
+        return gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / f"{name}-state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    facility1 = admit("one")
+    facility2 = admit("two")  # victim -- the attacker below never holds a reference to this
+
+    module = sys.modules[type(facility1).__module__]
+    other_entries = [key for key in module._ADMITTED_TRANSPORT_STATE if key is not facility1]  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack: enumeration via the already-disclosed round-34 boundary
+    victim_admitted = module._ADMITTED_TRANSPORT_STATE[other_entries[0]]
+
+    with pytest.raises(TypeError):
+        victim_admitted.instance_state["_repositories"]["existing"] = "ATTACKER-CONTROLLED"  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+    with pytest.raises(TypeError):
+        victim_admitted.instance_state["_git"] = "not-a-real-git-executable"
+
+    assert facility2 is not None  # both admissions genuinely coexisted for the reproduction above
+
+
 def test_sc23_sealed_proxy_registry_enumeration_reaches_an_unrelated_admissions_fault_injection_seam(tmp_path) -> None:
     """SECURITY NOTE -- DISCLOSED LIMITATION (review finding, PR #86,
     round 42 -- an independently-launched adversarial re-review, run

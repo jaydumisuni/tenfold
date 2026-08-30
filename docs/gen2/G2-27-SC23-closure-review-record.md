@@ -2665,6 +2665,50 @@ verdict (see below) rather than a hardcoded stale expectation.
     suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
     repository sweep (1391 passed, 2 skipped, only the 9 known
     pre-existing Windows-only failures, zero regressions).
+43. Codex's review quota recovered for this round -- a fresh, genuine
+    pass against the round-42 commit (`582c918`/`c2a80f0`) found 1
+    further genuine P1 finding, a direct follow-up to round 42's own
+    fix:
+    - **P1 ("Make admission snapshots deeply immutable"), Codex**:
+      round 42's `frozen=True` fix on `_AdmittedTransportState` blocks
+      `admitted.instance_state = new_dict` -- but freezing a
+      dataclass only seals its OWN field REFERENCES, never the
+      CONTENTS of a plain, mutable `dict` a field happens to point
+      at. The reviewer reproduced enumerating the registry (the same
+      already-disclosed round-34/42 reachability) to reach an
+      unrelated VICTIM admission, then mutating
+      `victim_admitted.instance_state["_repositories"]` IN PLACE -- a
+      dict-item assignment, not an attribute assignment on the
+      dataclass, so the outer freeze never fired -- to redirect BOTH
+      the victim's live transport registration AND this "established"
+      snapshot to the SAME external clone, consistently poisoning
+      both sides of `_reject_altered_transport_instance_state`'s
+      comparison at once. A fully authorized `create_branch` then
+      passed every revalidation, created the branch in the attacker's
+      clone, and left the genuinely admitted repository unchanged.
+
+      **Fixed with a real mechanism**: both the nested `_repositories`
+      dict and the outer `established_instance_state` dict are now
+      wrapped in `types.MappingProxyType` -- a genuinely read-only
+      VIEW, not a copy that could itself be discarded; since no other
+      reference to the underlying mutable dicts is ever retained past
+      construction, this is the only handle anyone (attacker or
+      legitimate code) ever has to this state again, and every write
+      through it now raises `TypeError` outright. Verified this
+      doesn't break any legitimate usage: every existing read site
+      (`_reject_altered_transport_instance_state`,
+      `_registered_repositories_match`) only ever iterates/reads/
+      indexes into this state, never writes to it, and
+      `MappingProxyType` supports all of those transparently.
+
+    Fixed with a real mechanism, with 1 new permanent regression test
+    that reproduces the exact nested-dict-mutation attack against an
+    unrelated admission and confirms it is now rejected. Fixed in
+    commit `<pending>`. Full local re-verification: full test file
+    (96/96), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (pending, only the 9 known pre-existing Windows-only
+    failures expected).
 
 ## Real, honest end-to-end result
 

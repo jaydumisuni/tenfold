@@ -46,6 +46,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import types
 import weakref
 from dataclasses import dataclass
 from hashlib import sha256
@@ -1164,10 +1165,36 @@ def gen1_wrap_repository_construction_facility(transport, state_store, authority
     # holding copies of the primitive field values (`Path`/`int`/`int`,
     # all themselves immutable) -- genuinely independent objects a
     # live-record mutation cannot reach.
-    established_instance_state["_repositories"] = {
+    # DEEP-IMMUTABILITY FINDING (review finding, PR #86, round 43, P1,
+    # Codex, reproduced by the reviewer -- "Make admission snapshots
+    # deeply immutable"): round 42 made `_AdmittedTransportState`
+    # `frozen=True`, which blocks `admitted.instance_state = new_dict`
+    # -- but freezing a dataclass only seals its OWN field REFERENCES,
+    # never the CONTENTS of a plain, mutable `dict` one of those
+    # fields happens to point at. The reviewer reproduced enumerating
+    # the registry (the same already-disclosed round-34/42
+    # reachability) to reach an unrelated VICTIM admission, then
+    # mutating `victim_admitted.instance_state["_repositories"]`
+    # in place to redirect BOTH the victim's live transport
+    # registration AND this "established" snapshot to the SAME
+    # external clone -- since both sides of
+    # `_reject_altered_transport_instance_state`'s comparison were
+    # poisoned consistently, the check still "passed," and a fully
+    # authorized `create_branch` landed in the attacker's clone while
+    # the genuinely admitted repository stayed untouched. Fixed by
+    # wrapping BOTH the nested `_repositories` dict and the outer
+    # `established_instance_state` dict itself in
+    # `types.MappingProxyType` -- a genuinely read-only VIEW, not a
+    # copy that could itself be discarded; since no other reference to
+    # the underlying mutable dicts is ever retained past this point,
+    # this is the only handle anyone (attacker or legitimate code)
+    # ever has to this state again, and every write through it raises
+    # `TypeError` outright.
+    established_instance_state["_repositories"] = types.MappingProxyType({
         name: _RegisteredRepository(registered.root, registered.device, registered.inode)
         for name, registered in established_instance_state["_repositories"].items()
-    }
+    })
+    established_instance_state = types.MappingProxyType(established_instance_state)
     _reject_symlinked_git_storage_for_every_registered_repository(transport)
     established_no_hooks_dirs = _neutralize_hooks_for_every_registered_repository(transport)
     # Round 36/38 (see `_AUTHORITY_STORE_CAPTURED_METHODS`'s own
