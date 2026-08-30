@@ -1660,6 +1660,122 @@ def test_sc23_function_defaults_match_never_invokes_truthiness_on_kwdefaults() -
         _function_defaults_snapshot(dummy)
 
 
+def test_sc23_wrapper_rejects_a_rebound_sha256_global(tmp_path) -> None:
+    """Review finding (PR #86, round 48, P1, Codex, reproduced by the
+    reviewer -- "Pin the digest functions' transitive globals"): round
+    47 pinned `stable_digest`/`canonical_digest` THEMSELVES, but not
+    what THEY call internally -- both call `sha256` (via a plain
+    `from hashlib import sha256`) in their own respective modules to
+    actually compute the digest. The reviewer reproduced rebinding
+    `tenfold.facility.sha256` to a constructor that always returns a
+    task's EXISTING request binding, leaving `stable_digest` itself
+    untouched (so round 47's own pin kept passing) while
+    `stable_digest`'s own call to `sha256` resolved the replacement --
+    a fully-authorized `commit` then landed attacker-substituted file
+    contents and message under a sealed task, the recomputed binding
+    still "matching." Fixed via a genuine transitive-closure walk (see
+    `_capture_transitive_authority_globals`'s own module-level
+    comment) rather than another one-name addition -- this test
+    reproduces `tenfold.facility.sha256`, the reviewer's exact target,
+    and `tenfold.contracts.sha256` (`canonical_digest`'s own sibling
+    dependency, found via this closure's established self-auditing
+    discipline, not separately demonstrated by the reviewer)."""
+    from types import SimpleNamespace
+
+    import tenfold.contracts as contracts_module
+    import tenfold.facility as facility_module
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    original_facility_sha256 = facility_module.sha256
+    try:
+        facility_module.sha256 = lambda *args, **kwargs: SimpleNamespace(hexdigest=lambda: "CONSTANT-DIGEST")  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+        with pytest.raises(RepositoryConstructionQualificationError):
+            facility.create_branch(None, repository="existing", branch="sc23/rebound-facility-sha256", owner="assign-post", base_ref="main", expected_base_sha="0" * 40, operation_id="op-rebound-facility-sha256", foreman_epoch=1)
+    finally:
+        facility_module.sha256 = original_facility_sha256
+
+    original_contracts_sha256 = contracts_module.sha256
+    try:
+        contracts_module.sha256 = lambda *args, **kwargs: SimpleNamespace(hexdigest=lambda: "CONSTANT-DIGEST")  # noqa: SLF001 -- test-only, self-audited sibling of the reviewer's finding
+        with pytest.raises(RepositoryConstructionQualificationError):
+            facility.create_branch(None, repository="existing", branch="sc23/rebound-contracts-sha256", owner="assign-post", base_ref="main", expected_base_sha="0" * 40, operation_id="op-rebound-contracts-sha256", foreman_epoch=1)
+    finally:
+        contracts_module.sha256 = original_contracts_sha256
+
+
+def test_sc23_wrapper_seals_state_store_against_a_transitive_self_call_shadow(tmp_path) -> None:
+    """Review finding (PR #86, round 48, P1, Codex, reproduced by the
+    reviewer -- "Seal transitive state-store method lookups"): rounds
+    36/40 capture `state_store`'s bound methods and pin their
+    `__func__.__code__`, but every one of `RepositoryStateStore`'s
+    captured methods internally calls `self._connect()` -- an ordinary
+    instance-attribute lookup resolved FRESH, on the live, caller-
+    retained `state_store` object, every time a captured method
+    actually runs. The reviewer reproduced assigning a malicious
+    `_connect` directly onto the retained `state_store` instance after
+    admission -- since this shadows the class method in the instance's
+    OWN `__dict__` (checked before the class in ordinary attribute
+    resolution), the next real dispatch through the sealed proxy's
+    already-captured, code-pinned `claim_writer` still executed the
+    malicious `_connect`, planting an external symlink before the real
+    git mutation, with an authorized `create_branch` still returning a
+    successful receipt. Fixed via
+    `_collaborator_relied_upon_attribute_names`'s own transitive walk:
+    `_SealedCollaboratorProxy` now also rejects any access once the
+    retained source's own instance `__dict__` has gained an entry for
+    a name a captured method relies on internally. This performs a
+    REAL, fully-authorized `create_branch` dispatch to prove the
+    malicious replacement genuinely never runs (mirroring rounds
+    36/38's own regression tests for the top-level-name case, which
+    remain valid and unaffected by this fix -- see
+    `_collaborator_relied_upon_attribute_names`'s own docstring for
+    why those two cases are deliberately handled differently)."""
+    from tenfold.gen2.repository_construction_facility import (
+        DisposableRepositoryConstructionRig,
+        RepositoryStateStore,
+        _MutableAuthorityStore,
+        _dispatch,
+        _empty_snapshot,
+    )
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+    from tenfold.repository_facility import repository_ref_resource, repository_request_binding
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    state_store = RepositoryStateStore(str(tmp_path / "state.db"))
+    authority_store = _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1))
+    facility = gen1_wrap_repository_construction_facility(transport, state_store, authority_store)
+    rig = DisposableRepositoryConstructionRig(facility, transport, authority_store, "existing", initial_sha, repo_root, tmp_path / "state.db")
+
+    triggered = {"called": False}
+    original_connect = state_store._connect
+
+    def malicious_connect():
+        triggered["called"] = True
+        return original_connect()
+
+    state_store._connect = malicious_connect  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack: a NEW instance attribute shadowing the class method
+
+    request = {"operation_id": "op-shadowed-state-store-connect", "repository": "existing", "branch": "sc23/shadowed-state-store-connect", "owner": "assign-post", "base_ref": "main", "expected_base_sha": initial_sha}
+    binding = repository_request_binding("create_branch", **request)
+    resource = repository_ref_resource("existing", request["branch"])
+    task = _dispatch(rig, assignment_id="assign-post", attempt=1, campaign_generation=1, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=resource, request_binding=binding)
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        rig.facility.create_branch(task, repository=request["repository"], branch=request["branch"], owner=request["owner"], base_ref=request["base_ref"], expected_base_sha=request["expected_base_sha"], operation_id=request["operation_id"], foreman_epoch=1)
+
+    assert triggered["called"] is False
+
+
 def test_sc23_wrapper_ignores_a_wholesale_replaced_inner_facility(rig) -> None:
     """Review finding (PR #86, round 24, P1, Codex, reproduced by the
     reviewer -- "Verify the inner facility identity before

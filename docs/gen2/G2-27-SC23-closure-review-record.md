@@ -3037,6 +3037,92 @@ verdict (see below) rather than a hardcoded stale expectation.
     sweep (1402 passed, 2 skipped, only the 9 known pre-existing
     Windows-only failures, zero regressions).
 
+48. A fresh Codex pass against the round-47 commit (`bb0f6e5`/`4ae5f94`)
+    found 2 further genuine P1 findings -- the FIFTH recurrence of the
+    "one level deeper" pattern, and its first appearance outside the
+    module-globals-pinning mechanism:
+    - **P1 ("Pin the digest functions' transitive globals"), Codex**:
+      round 47 pinned `stable_digest`/`canonical_digest` THEMSELVES,
+      but not what THEY call internally -- both call `sha256` (a
+      plain `from hashlib import sha256` in their own respective
+      modules) to actually compute the digest. The reviewer reproduced
+      rebinding `tenfold.facility.sha256` to a constructor that always
+      returns a task's EXISTING request binding, leaving
+      `stable_digest` itself untouched (so round 47's own pin kept
+      passing) while `stable_digest`'s own call to `sha256` resolved
+      the replacement -- a fully-authorized `commit` then landed
+      attacker-substituted file contents and message under a sealed
+      task, the recomputed binding still "matching."
+    - **P1 ("Seal transitive state-store method lookups"), Codex**:
+      rounds 36/40 capture `state_store`'s bound methods and pin their
+      `__func__.__code__`, but every one of `RepositoryStateStore`'s
+      captured methods internally calls `self._connect()` -- an
+      ordinary instance-attribute lookup resolved FRESH, on the live,
+      caller-retained `state_store` object, every time a captured
+      method actually runs. The reviewer reproduced assigning a
+      malicious `_connect` directly onto the retained `state_store`
+      instance after admission; since this shadows the class method in
+      the instance's OWN `__dict__` (checked before the class in
+      ordinary attribute resolution), the next real dispatch through
+      the sealed proxy's already-captured, code-pinned `claim_writer`
+      still executed the malicious `_connect`, planting an external
+      symlink before the real git mutation, with an authorized
+      `create_branch` still returning a successful receipt.
+
+      Given this is the FIFTH time a reviewer (or self-audit) found
+      "we pinned function X, but not what X calls internally" --
+      rounds 45 (`validate_live_task`->`validate_task`), 46
+      (`_path_in_scope`->`_path_parts`), 47 (twice:
+      `repository_request_binding`/`_file_digests`->`stable_digest`,
+      `validate_task`->`canonical_digest`), and now round 48 (twice
+      more) -- this round's fix is a change in KIND, not another name
+      added to a tuple. `_capture_transitive_authority_globals`
+      (module-globals mechanism) and
+      `_collaborator_relied_upon_attribute_names` (collaborator-
+      instance-method mechanism) both now genuinely WALK a trusted
+      function's own referenced names -- `__code__.co_names` filtered
+      to what actually resolves in its `__globals__`, or a class's own
+      attribute namespace for instance methods -- recursing further
+      only while the referenced value is still first-party, local code
+      (`_tenfold_owned_function`; the class equivalent), and capturing
+      everything else by identity alone. Bounded the same way this
+      closure's own DISCLOSED SCOPE sections have always drawn the
+      line: the standard library itself has no natural recursion
+      stopping point, so recursion never crosses into it, but every
+      name actually REFERENCED by trusted code, at any depth of
+      first-party code, is now covered automatically -- not merely the
+      one instance a reviewer happens to demonstrate.
+
+      This automatically closed the reviewer's exact `stable_digest`
+      finding AND its self-audited sibling, `canonical_digest`'s own
+      `tenfold.contracts.sha256` (not separately demonstrated by the
+      reviewer, found before considering this round closed, per this
+      closure's own established self-auditing discipline). For the
+      collaborator-instance mechanism, `_SealedCollaboratorProxy` now
+      also rejects any access once the retained source's own instance
+      `__dict__` has gained an entry for a name a captured method
+      relies on internally -- deliberately NOT flagging an instance
+      shadow of one of the TOP-LEVEL captured names themselves (e.g.
+      `claim_writer`), since those remain fully protected by the
+      existing bound-method-capture/code-pin mechanism (rounds 36/40)
+      and rounds 36/38's own regression tests deliberately reproduce
+      exactly that case as the now-safe one those fixes already close.
+
+      No new adjudicated residual-Gen1-dependency exception needed --
+      both mechanisms are reached via the SAME already-adjudicated
+      function names (`_reject_altered_authority_validation_globals`,
+      `_SealedCollaboratorProxy`); confirmed via a clean residual-
+      dependency scan after the fix.
+
+    Fixed with a real mechanism, generalized rather than patched. 2
+    new permanent regression tests reproduce the reviewer's exact
+    `tenfold.facility.sha256` and state-store `_connect`-shadow
+    findings (the sha256 test also covers the self-audited
+    `tenfold.contracts.sha256` sibling). Fixed in commit `<pending>`.
+    Full local re-verification: full test file (108/108), full
+    mutation suite (37/37), `test_g2_27_self_construction.py`
+    (pending), and full repository sweep (pending).
+
 ## Real, honest end-to-end result
 
 Running `execute_self_construction_gate()` for real against the live

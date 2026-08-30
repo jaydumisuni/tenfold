@@ -528,49 +528,110 @@ def _reject_altered_facility_class_implementation() -> None:
 _REPOSITORY_FACILITY_MODULE_GLOBALS = RepositoryFacility.create_branch.__globals__
 
 
-def _capture_trusted_authority_global(globals_dict: dict, name: str) -> tuple:
-    """See `_TRUSTED_AUTHORITY_VALIDATION_GLOBALS`'s own module-level
-    comment. Captures `(reference, __code__, defaults snapshot)` for
-    one function read off a REAL, live module namespace, at THIS
-    module's own import time -- the same "capture a reference before
-    any tampering is possible" technique used throughout this file,
-    applied uniformly so every entry in the trust dicts below is
-    captured identically, with no per-name special-casing to omit by
-    accident."""
-    func = globals_dict[name]
-    return (func, func.__code__, _function_defaults_snapshot(func))
+def _tenfold_owned_function(value: object) -> bool:
+    """See `_capture_transitive_authority_globals`'s own docstring for
+    the round-48 finding this closes. True only for a plain Python
+    function genuinely defined somewhere under this codebase's own
+    `tenfold` package -- the principled boundary for how far that
+    function's transitive-closure walk recurses. A standard-library
+    function (`dataclasses.is_dataclass`), a builtin
+    (`hashlib.sha256`), a module object (`json`), or a class
+    (`FacilityError`) all return `False` here -- each is still pinned
+    by IDENTITY at the one level a trusted function directly
+    references it, just never recursed INTO, matching this closure's
+    own long-standing DISCLOSED SCOPE reasoning that the standard
+    library has no natural recursion stopping point short of the
+    library itself."""
+    if not inspect.isfunction(value):
+        return False
+    module_name = getattr(value, "__module__", None) or ""
+    return module_name == "tenfold" or module_name.startswith("tenfold.")
 
 
 #: Review finding (PR #86, round 47, P1, Codex, reproduced by the
 #: reviewer -- "Pin stable_digest behind request binding" and "Pin
-#: canonical_digest behind task validation"): round 46's own fix
-#: pinned `repository_request_binding`/`_file_digests`/`validate_task`
-#: THEMSELVES, but not what THOSE functions call internally, ONE more
-#: level deeper -- the SAME "pinning a function's own identity/code
-#: does not protect what it calls" lesson round 45 already applied to
-#: `validate_live_task`->`validate_task`, missed here for a THIRD and
-#: FOURTH name in the SAME causal chain. `repository_request_binding`
+#: canonical_digest behind task validation") and round 48, P1, Codex,
+#: reproduced by the reviewer -- "Pin the digest functions'
+#: transitive globals": round 46's own fix pinned
+#: `repository_request_binding`/`_file_digests`/`validate_task`
+#: THEMSELVES, but not what THOSE functions call internally; round
+#: 47's own fix then pinned `stable_digest`/`canonical_digest`
+#: THEMSELVES, but not what THEY call internally either -- the SAME
+#: "pinning a function's own identity/code does not protect what it
+#: calls" lesson, recurring for a FIFTH time. `repository_request_binding`
 #: (and `_file_digests`) call `stable_digest` internally to compute
-#: the digest baked into the request binding; the reviewer reproduced
-#: rebinding `stable_digest` to return a task's EXISTING, already-
-#: known binding regardless of its actual argument, then using that
-#: legitimately sealed task to commit DIFFERENT file contents and a
-#: DIFFERENT message -- the recomputed binding still "matched" the
-#: sealed one, and Git stored the substituted bytes.
-#: `validate_task`'s own seal check (`canonical_digest(raw) != claimed`)
-#: is EVEN MORE foundational -- it is the cryptographic verification
-#: that a task genuinely IS what it claims to be at all; the reviewer
-#: reproduced rebinding `canonical_digest` to a function that always
-#: matches, then cloning a legitimately narrow-scope task with an
-#: EXPANDED scope and a NEW request binding while keeping its
-#: ORIGINAL `dispatch_digest` -- the seal check still "passed," and an
-#: out-of-scope file was committed. Fixed identically to every other
-#: name in these two dicts: `stable_digest`/`canonical_digest` are
-#: now ALSO pinned -- with the data-driven design round 46 introduced
-#: specifically to make exactly this kind of addition trivial, this
-#: is a two-line change, not a new mechanism.
-_TRUSTED_AUTHORITY_VALIDATION_GLOBALS = {
-    name: _capture_trusted_authority_global(_REPOSITORY_FACILITY_MODULE_GLOBALS, name)
+#: the digest baked into the request binding; `validate_task`'s own
+#: seal check (`canonical_digest(raw) != claimed`) is the
+#: cryptographic verification that a task genuinely IS what it claims
+#: to be at all; both `stable_digest` and `canonical_digest`
+#: themselves call `sha256` (via a plain `from hashlib import sha256`
+#: in their own respective modules) to actually compute that digest.
+#: Round 47 reproduced rebinding the digest functions THEMSELVES;
+#: round 48 reproduced rebinding `tenfold.facility.sha256` instead,
+#: leaving `stable_digest` itself untouched (so round 47's own pin
+#: kept passing) while `stable_digest`'s OWN call to `sha256` resolved
+#: the replacement -- a constructor returning a task's existing
+#: request binding regardless of the actual content hashed -- letting
+#: a sealed task commit substituted bytes and message, the recomputed
+#: binding still "matching."
+#:
+#: Given this is the FIFTH recurrence of manually adding one more
+#: name after a reviewer demonstrates it, the fix this round is a
+#: change in KIND, not another name added to a tuple:
+#: `_capture_transitive_authority_globals` (below) genuinely WALKS
+#: each root function's own `__code__.co_names` for every name that
+#: resolves in ITS `__globals__`, capturing it, and -- if that
+#: referenced value is itself a locally-owned function
+#: (`_tenfold_owned_function`) -- recursing into it the SAME way,
+#: transitively, memoized so a name reachable via more than one path
+#: is captured exactly once. This closes the `sha256` gap
+#: automatically (and its exact sibling in `canonical_digest`'s own
+#: `tenfold.contracts` module, not separately demonstrated by the
+#: reviewer but found and closed via the SAME established
+#: self-auditing discipline before considering this round closed) and
+#: closes any FUTURE one-level-deeper rediscovery of this same shape
+#: without another round being needed at all -- provided the newly
+#: reachable name is still genuinely local, first-party code; see
+#: `_tenfold_owned_function`'s own docstring for where that boundary
+#: is deliberately drawn and why.
+def _capture_transitive_authority_globals(roots: tuple) -> dict:
+    """Walks outward from each `(globals_dict, name)` root pin,
+    following every name a trusted function's own `__code__.co_names`
+    references that actually resolves in that function's `__globals__`
+    -- recursing further only while the referenced value is itself
+    `_tenfold_owned_function`-owned (see that function's own docstring
+    for why recursion stops there). Returns a dict keyed by
+    `(id(globals_dict), name)` -> `(globals_dict, name, value,
+    code_or_None, defaults_or_None)` -- `code_or_None`/
+    `defaults_or_None` are populated only for entries that are
+    themselves locally-owned functions (subject to the SAME identity/
+    code/defaults check `_reject_altered_class_implementation` uses
+    elsewhere in this file); every other captured value (a stdlib
+    function, a builtin, a module, a class, ...) is verified by
+    IDENTITY alone. Memoized by `(id(globals_dict), name)` so a name
+    reachable via more than one path in the walk is captured exactly
+    once, and so mutually- or self-referential functions cannot cause
+    unbounded recursion."""
+    captured: dict = {}
+    stack = list(roots)
+    while stack:
+        globals_dict, name = stack.pop()
+        key = (id(globals_dict), name)
+        if key in captured:
+            continue
+        value = globals_dict.get(name)
+        if _tenfold_owned_function(value):
+            captured[key] = (globals_dict, name, value, value.__code__, _function_defaults_snapshot(value))
+            for referenced_name in value.__code__.co_names:
+                if referenced_name in value.__globals__:
+                    stack.append((value.__globals__, referenced_name))
+        else:
+            captured[key] = (globals_dict, name, value, None, None)
+    return captured
+
+
+_TRUSTED_AUTHORITY_VALIDATION_GLOBALS = _capture_transitive_authority_globals(tuple(
+    (_REPOSITORY_FACILITY_MODULE_GLOBALS, name)
     for name in (
         "validate_live_task",
         "_path_in_scope",
@@ -581,35 +642,47 @@ _TRUSTED_AUTHORITY_VALIDATION_GLOBALS = {
         "_file_digests",
         "stable_digest",
     )
-}
-_FACILITY_MODULE_GLOBALS = _TRUSTED_AUTHORITY_VALIDATION_GLOBALS["validate_live_task"][0].__globals__
-_TRUSTED_AUTHORITY_VALIDATION_FACILITY_MODULE_GLOBALS = {
-    name: _capture_trusted_authority_global(_FACILITY_MODULE_GLOBALS, name)
+))
+_FACILITY_MODULE_GLOBALS = _REPOSITORY_FACILITY_MODULE_GLOBALS["validate_live_task"].__globals__
+_TRUSTED_AUTHORITY_VALIDATION_FACILITY_MODULE_GLOBALS = _capture_transitive_authority_globals(tuple(
+    (_FACILITY_MODULE_GLOBALS, name)
     for name in ("validate_task", "canonical_digest")
-}
+))
 
 
 def _reject_altered_authority_validation_globals() -> None:
-    """See `_TRUSTED_AUTHORITY_VALIDATION_GLOBALS`'s own module-level
-    comment for the round-45/46 findings this closes. Re-reads every
-    trusted name FRESH from its real, live module namespace (never a
-    cached reference of our own) and compares identity/`__code__`/
-    defaults against what was captured at this module's own import
+    """See `_capture_transitive_authority_globals`'s own module-level
+    comment for the round-45/46/47/48 findings this closes. Re-reads
+    every trusted name FRESH from its real, live module namespace
+    (never a cached reference of our own) and compares identity (plus
+    `__code__`/defaults, for entries that are themselves locally-owned
+    functions) against what was captured at this module's own import
     time, exactly mirroring `_reject_altered_class_implementation`'s
-    own three-layer check, one axis further out -- looping over both
-    trust dicts instead of one hand-written comparison per name."""
-    for label, globals_dict, trusted in (
-        ("tenfold.repository_facility", _REPOSITORY_FACILITY_MODULE_GLOBALS, _TRUSTED_AUTHORITY_VALIDATION_GLOBALS),
-        ("tenfold.facility", _FACILITY_MODULE_GLOBALS, _TRUSTED_AUTHORITY_VALIDATION_FACILITY_MODULE_GLOBALS),
-    ):
-        for name, (trusted_func, trusted_code, trusted_defaults) in trusted.items():
+    own layered check, one axis further out -- looping over the
+    transitive closure of both root trust dicts instead of one
+    hand-written comparison per name. Each entry's own originating
+    module name (`globals_dict["__name__"]`) is used in the error
+    message directly, rather than a single label per root dict, since
+    the transitive walk now reaches more than one real module from
+    each root (`tenfold.facility` AND `tenfold.contracts`, in
+    particular)."""
+    for trusted in (_TRUSTED_AUTHORITY_VALIDATION_GLOBALS, _TRUSTED_AUTHORITY_VALIDATION_FACILITY_MODULE_GLOBALS):
+        for globals_dict, name, trusted_value, trusted_code, trusted_defaults in trusted.values():
             current = globals_dict.get(name)
-            if (
-                current is not trusted_func
-                or not inspect.isfunction(current)
-                or current.__code__ is not trusted_code
-                or not _function_defaults_match(current, trusted_defaults)
-            ):
+            label = globals_dict.get("__name__", "<unknown module>")
+            if trusted_code is not None:
+                if (
+                    current is not trusted_value
+                    or not inspect.isfunction(current)
+                    or current.__code__ is not trusted_code
+                    or not _function_defaults_match(current, trusted_defaults)
+                ):
+                    raise RepositoryConstructionQualificationError(
+                        f"_reject_altered_authority_validation_globals: {label}'s own {name} binding "
+                        f"no longer matches what was admitted at import time, breaking the "
+                        f"local-commit-only boundary"
+                    )
+            elif current is not trusted_value:
                 raise RepositoryConstructionQualificationError(
                     f"_reject_altered_authority_validation_globals: {label}'s own {name} binding "
                     f"no longer matches what was admitted at import time, breaking the "
@@ -1226,6 +1299,39 @@ _AUTHORITY_STORE_CAPTURED_METHODS = ("read",)
 #: access every other module-internal read in this file already uses,
 #: to independently confirm real, durable writer-lock state (not to
 #: dispatch through Gen1's own authority checks).
+#:
+#: ROUND 48 WIDENING (P1, Codex, reproduced by the reviewer -- "Seal
+#: transitive state-store method lookups"): capturing `claim_writer`
+#: (and the rest) pins THAT method's own identity/code -- but every
+#: one of `RepositoryStateStore`'s captured methods internally calls
+#: `self._connect()`, an ORDINARY instance-attribute lookup on the
+#: SAME caller-retained `state_store` object our captured bound
+#: methods' `__self__` still points at. Round 36/38's own fix only
+#: ever protected against the CALLER reassigning one of the CAPTURED
+#: names on that object (`state_store.claim_writer = ...`) -- it says
+#: nothing about the caller instead giving that object a NEW instance
+#: attribute for a name a captured method relies on internally
+#: (`state_store._connect = ...`), which Python's ordinary attribute
+#: resolution (instance `__dict__` checked before the class) will
+#: happily let shadow the real class method the next time OUR
+#: captured `claim_writer` executes `self._connect()` -- the SAME
+#: "pinning a function's own identity does not protect what it calls"
+#: lesson already applied to module globals (rounds 45-47), now
+#: applied to a caller-retained COLLABORATOR INSTANCE's own attribute
+#: namespace instead of a module's. The reviewer reproduced exactly
+#: this: assign a malicious `_connect` on the retained `state_store`
+#: after admission, then watch an authorized `create_branch` pass
+#: every existing revalidation, invoke the callback post-containment-
+#: scan, and write the branch ref externally.
+#:
+#: Fixed generally (see `_collaborator_relied_upon_attribute_names`'s
+#: own docstring): every captured method's OWN code is walked for
+#: further `self.<name>()`-shaped calls, transitively, and
+#: `_SealedCollaboratorProxy.__getattr__` now also rejects any access
+#: once the retained source object's OWN instance `__dict__` has
+#: gained an entry for any name a captured method relies on
+#: internally -- not merely re-verifying the captured names
+#: themselves, the same widening in kind as the globals-closure fix.
 _STATE_STORE_CAPTURED_METHODS = ("receipt", "put_receipt", "acquire_writer", "release_writer", "claim_writer", "writer")
 
 
@@ -1273,7 +1379,64 @@ _STATE_STORE_CAPTURED_METHODS = ("receipt", "put_receipt", "acquire_writer", "re
 #: own docstring documents this consequence for this specific
 #: registry; not a new reachability fact, but a stronger, previously
 #: undemonstrated one.
-_SEALED_PROXY_CAPTURED_STATE: "weakref.WeakKeyDictionary[_SealedCollaboratorProxy, tuple[dict, dict]]" = weakref.WeakKeyDictionary()
+_SEALED_PROXY_CAPTURED_STATE: "weakref.WeakKeyDictionary[_SealedCollaboratorProxy, tuple[dict, dict, object, frozenset]]" = weakref.WeakKeyDictionary()
+
+
+def _collaborator_relied_upon_attribute_names(source_cls: type, method_names: tuple[str, ...]) -> frozenset:
+    """See `_STATE_STORE_CAPTURED_METHODS`'s own module-level ROUND 48
+    WIDENING comment for the finding this closes. Starting from the
+    names `_SealedCollaboratorProxy` was asked to capture, walks each
+    one's OWN `__code__.co_names` for further names that resolve to a
+    plain function defined on `source_cls` -- a `self.<name>()`-shaped
+    call candidate -- and recurses into those transitively, exactly
+    the same transitive-closure technique
+    `_TRUSTED_AUTHORITY_VALIDATION_GLOBALS`'s own module-level globals
+    walk uses (see that name's own module-level comment), applied here
+    to a class's own attribute namespace instead of a module's
+    `__globals__`. `inspect.getattr_static` is used throughout so this
+    walk never triggers a descriptor, property, or `__getattr__` of
+    its own -- a purely structural read, invoking none of the
+    (potentially attacker-influenced) code it is inspecting, the same
+    discipline this file applies everywhere it inspects untrusted
+    objects. Bounded the same way the globals walk is bounded: a
+    referenced name that is NOT itself a plain function defined on
+    this class (a stdlib collaborator method, a builtin, an instance
+    attribute set only in `__init__`, ...) is not a further recursion
+    candidate -- there is no natural stopping point short of the
+    standard library itself, the same line this file's own DISCLOSED
+    SCOPE sections already draw elsewhere.
+
+    Deliberately EXCLUDES `method_names` themselves from the returned
+    set (though they are still walked, to discover what THEY call):
+    those top-level names are already fully protected by
+    `_SealedCollaboratorProxy`'s own bound-method capture and
+    `__func__.__code__` pin (rounds 36/40) -- calling the already-
+    captured bound method never re-resolves `source.<name>` again, so
+    an instance-level shadow of one of THOSE specific names (exactly
+    what rounds 36/38's own regression tests deliberately reproduce,
+    as the now-safe case those fixes close) is not itself tampering.
+    Only a name discovered ONE STEP OR MORE beyond the roots is a
+    genuine instance of the round-48 gap, since those are resolved
+    fresh, on `self`, every time a captured method actually runs."""
+    relied_upon: set = set()
+    stack = list(method_names)
+    seen: set = set()
+    while stack:
+        name = stack.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        func = inspect.getattr_static(source_cls, name, None)
+        if not inspect.isfunction(func):
+            continue
+        relied_upon.add(name)
+        for referenced_name in func.__code__.co_names:
+            if referenced_name in seen:
+                continue
+            candidate = inspect.getattr_static(source_cls, referenced_name, None)
+            if inspect.isfunction(candidate):
+                stack.append(referenced_name)
+    return frozenset(relied_upon) - frozenset(method_names)
 
 
 class _SealedCollaboratorProxy:
@@ -1322,7 +1485,29 @@ class _SealedCollaboratorProxy:
     via a fresh `self.state.claim_writer(...)`-style attribute lookup
     each call -- matching round 38's "a content check must be repeated
     every time" lesson, now for code-object identity rather than file
-    content."""
+    content.
+
+    THIRD-LAYER FIX (review finding, PR #86, round 48, P1, Codex,
+    reproduced by the reviewer -- "Seal transitive state-store method
+    lookups"; see `_collaborator_relied_upon_attribute_names`'s own
+    docstring and `_STATE_STORE_CAPTURED_METHODS`'s own ROUND 48
+    WIDENING comment for the full account): rounds 36/40 protect the
+    CAPTURED names themselves against reassignment/in-place code
+    mutation, but every captured method still executes with `self`
+    bound to the ORIGINAL, caller-retained `source` object -- and any
+    OTHER name that method calls via ordinary `self.<name>()` is
+    resolved FRESH, on the live `source` instance, every time it
+    executes; nothing captured at construction protects that lookup.
+    The reviewer reproduced giving the retained `source` a NEW
+    instance attribute for a name `claim_writer` relies on internally
+    (`_connect`), shadowing the real class method the next time our
+    already-captured, code-pinned `claim_writer` ran. Fixed by also
+    computing, once at construction, the full transitive closure of
+    every `self.<name>()`-shaped call any captured method's own code
+    makes, and rejecting ANY proxy access once `source`'s own instance
+    `__dict__` has gained an entry for one of those names -- checked
+    fresh on every access, the same "repeat the check every time"
+    discipline as the code-object pin above."""
 
     __slots__ = ("__weakref__",)
 
@@ -1339,10 +1524,11 @@ class _SealedCollaboratorProxy:
             func = getattr(bound, "__func__", None)
             if func is not None:
                 captured_code[name] = func.__code__
-        _SEALED_PROXY_CAPTURED_STATE[self] = (captured, captured_code)
+        relied_upon_names = _collaborator_relied_upon_attribute_names(type(source), method_names)
+        _SEALED_PROXY_CAPTURED_STATE[self] = (captured, captured_code, source, relied_upon_names)
 
     def __getattr__(self, name):
-        captured, captured_code = _SEALED_PROXY_CAPTURED_STATE[self]
+        captured, captured_code, source, relied_upon_names = _SEALED_PROXY_CAPTURED_STATE[self]
         try:
             bound = captured[name]
         except KeyError:
@@ -1357,6 +1543,13 @@ class _SealedCollaboratorProxy:
                     f"_SealedCollaboratorProxy: {name}'s underlying implementation no longer matches "
                     f"what was captured at admission time -- the collaborator's method was mutated in place"
                 )
+        shadowed = relied_upon_names.intersection(vars(source))
+        if shadowed:
+            raise RepositoryConstructionQualificationError(
+                f"_SealedCollaboratorProxy: the collaborator's own instance now defines "
+                f"{sorted(shadowed)!r}, shadowing a class method one of its captured methods "
+                f"relies on internally via self.<name>() -- refusing to dispatch"
+            )
         return bound
 
     def __setattr__(self, name: str, value: object) -> None:
@@ -1403,7 +1596,7 @@ class _SealedCollaboratorProxy:
             raise RepositoryConstructionQualificationError(
                 f"_SealedCollaboratorProxy._inject_fault_for_qualification_harness: replacement for {name!r} is not callable"
             )
-        captured, captured_code = _SEALED_PROXY_CAPTURED_STATE[self]
+        captured, captured_code, _source, _relied_upon_names = _SEALED_PROXY_CAPTURED_STATE[self]
         if name not in captured:
             raise AttributeError(
                 f"_SealedCollaboratorProxy._inject_fault_for_qualification_harness: {name!r} was not captured at admission"
