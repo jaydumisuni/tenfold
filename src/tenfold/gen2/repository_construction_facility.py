@@ -1324,7 +1324,7 @@ _AUTHORITY_STORE_CAPTURED_METHODS = ("read",)
 #: every existing revalidation, invoke the callback post-containment-
 #: scan, and write the branch ref externally.
 #:
-#: Fixed generally (see `_collaborator_relied_upon_attribute_names`'s
+#: Fixed generally (see `_capture_collaborator_relied_upon_attributes`'s
 #: own docstring): every captured method's OWN code is walked for
 #: further `self.<name>()`-shaped calls, transitively, and
 #: `_SealedCollaboratorProxy.__getattr__` now also rejects any access
@@ -1332,6 +1332,28 @@ _AUTHORITY_STORE_CAPTURED_METHODS = ("read",)
 #: gained an entry for any name a captured method relies on
 #: internally -- not merely re-verifying the captured names
 #: themselves, the same widening in kind as the globals-closure fix.
+#:
+#: ROUND 49 WIDENING (P1, Codex, reproduced by the reviewer -- "Pin
+#: transitive collaborator class methods"): the round-48 fix above
+#: only ever checked the INSTANCE `__dict__` for a shadowing entry --
+#: it never revalidated the CLASS-level binding of a transitively-
+#: relied-upon name at all. The reviewer reproduced rebinding
+#: `RepositoryStateStore._connect` directly on the CLASS (not the
+#: instance): no instance shadow exists, so round 48's own check found
+#: nothing wrong, while the already-captured, code-pinned
+#: `claim_writer` still resolved `self._connect` fresh on every call
+#: -- straight to the tampered class attribute. Fixed by ALSO
+#: capturing each transitively-relied-upon name's own
+#: identity/`__code__`/defaults, read directly off the class at
+#: construction time, and revalidating the CURRENT class-level binding
+#: against that capture on every access -- exactly mirroring how the
+#: top-level captured names are already protected, one level further
+#: out. This is the SAME "one level deeper" lesson recurring for a
+#: SIXTH time, now within this closure's own OWN round-48 fix itself
+#: -- a standing reminder that a transitive-closure mechanism must
+#: cover every axis a captured entity can be tampered through (here:
+#: both the instance's own attributes AND the class's), not just the
+#: first one a reviewer happens to demonstrate.
 _STATE_STORE_CAPTURED_METHODS = ("receipt", "put_receipt", "acquire_writer", "release_writer", "claim_writer", "writer")
 
 
@@ -1382,7 +1404,7 @@ _STATE_STORE_CAPTURED_METHODS = ("receipt", "put_receipt", "acquire_writer", "re
 _SEALED_PROXY_CAPTURED_STATE: "weakref.WeakKeyDictionary[_SealedCollaboratorProxy, tuple[dict, dict, object, frozenset]]" = weakref.WeakKeyDictionary()
 
 
-def _collaborator_relied_upon_attribute_names(source_cls: type, method_names: tuple[str, ...]) -> frozenset:
+def _capture_collaborator_relied_upon_attributes(source_cls: type, method_names: tuple[str, ...]) -> dict:
     """See `_STATE_STORE_CAPTURED_METHODS`'s own module-level ROUND 48
     WIDENING comment for the finding this closes. Starting from the
     names `_SealedCollaboratorProxy` was asked to capture, walks each
@@ -1390,7 +1412,7 @@ def _collaborator_relied_upon_attribute_names(source_cls: type, method_names: tu
     plain function defined on `source_cls` -- a `self.<name>()`-shaped
     call candidate -- and recurses into those transitively, exactly
     the same transitive-closure technique
-    `_TRUSTED_AUTHORITY_VALIDATION_GLOBALS`'s own module-level globals
+    `_capture_transitive_authority_globals`'s own module-level globals
     walk uses (see that name's own module-level comment), applied here
     to a class's own attribute namespace instead of a module's
     `__globals__`. `inspect.getattr_static` is used throughout so this
@@ -1406,19 +1428,39 @@ def _collaborator_relied_upon_attribute_names(source_cls: type, method_names: tu
     standard library itself, the same line this file's own DISCLOSED
     SCOPE sections already draw elsewhere.
 
+    ROUND 49 WIDENING (P1, Codex, reproduced by the reviewer -- "Pin
+    transitive collaborator class methods"): the round-48 version of
+    this function returned only a set of NAMES, and
+    `_SealedCollaboratorProxy` used it solely to check whether
+    `source`'s own INSTANCE `__dict__` had gained a shadowing entry --
+    it never verified the CLASS-level binding itself. The reviewer
+    reproduced rebinding `RepositoryStateStore._connect` directly on
+    the CLASS (not the instance): `vars(source)` shows nothing
+    (there's no instance-level shadow at all), while the already-
+    captured, code-pinned `claim_writer` still resolves `self._connect`
+    fresh on every call -- straight to the tampered class attribute.
+    This function now ALSO captures each relied-upon name's
+    `(value, __code__, defaults snapshot)`, read off the class at THIS
+    proxy's own construction time -- returned as a dict, keyed by
+    name, so `_SealedCollaboratorProxy` can revalidate the CURRENT
+    class-level binding's identity/code/defaults on every access,
+    exactly mirroring how the top-level captured names are already
+    protected via `captured_code`, one level further out.
+
     Deliberately EXCLUDES `method_names` themselves from the returned
-    set (though they are still walked, to discover what THEY call):
+    dict (though they are still walked, to discover what THEY call):
     those top-level names are already fully protected by
     `_SealedCollaboratorProxy`'s own bound-method capture and
     `__func__.__code__` pin (rounds 36/40) -- calling the already-
     captured bound method never re-resolves `source.<name>` again, so
-    an instance-level shadow of one of THOSE specific names (exactly
-    what rounds 36/38's own regression tests deliberately reproduce,
-    as the now-safe case those fixes close) is not itself tampering.
-    Only a name discovered ONE STEP OR MORE beyond the roots is a
-    genuine instance of the round-48 gap, since those are resolved
-    fresh, on `self`, every time a captured method actually runs."""
-    relied_upon: set = set()
+    neither an instance-level shadow nor a class-level rebind of one of
+    THOSE specific names (exactly what rounds 36/38's own regression
+    tests deliberately reproduce, as the now-safe case those fixes
+    close) is itself tampering. Only a name discovered ONE STEP OR
+    MORE beyond the roots is a genuine instance of the round-48/49
+    gap, since those are resolved fresh, on `self`, every time a
+    captured method actually runs."""
+    relied_upon: dict = {}
     stack = list(method_names)
     seen: set = set()
     while stack:
@@ -1429,14 +1471,16 @@ def _collaborator_relied_upon_attribute_names(source_cls: type, method_names: tu
         func = inspect.getattr_static(source_cls, name, None)
         if not inspect.isfunction(func):
             continue
-        relied_upon.add(name)
+        relied_upon[name] = (func, func.__code__, _function_defaults_snapshot(func))
         for referenced_name in func.__code__.co_names:
             if referenced_name in seen:
                 continue
             candidate = inspect.getattr_static(source_cls, referenced_name, None)
             if inspect.isfunction(candidate):
                 stack.append(referenced_name)
-    return frozenset(relied_upon) - frozenset(method_names)
+    for name in method_names:
+        relied_upon.pop(name, None)
+    return relied_upon
 
 
 class _SealedCollaboratorProxy:
@@ -1489,7 +1533,7 @@ class _SealedCollaboratorProxy:
 
     THIRD-LAYER FIX (review finding, PR #86, round 48, P1, Codex,
     reproduced by the reviewer -- "Seal transitive state-store method
-    lookups"; see `_collaborator_relied_upon_attribute_names`'s own
+    lookups"; see `_capture_collaborator_relied_upon_attributes`'s own
     docstring and `_STATE_STORE_CAPTURED_METHODS`'s own ROUND 48
     WIDENING comment for the full account): rounds 36/40 protect the
     CAPTURED names themselves against reassignment/in-place code
@@ -1501,13 +1545,28 @@ class _SealedCollaboratorProxy:
     The reviewer reproduced giving the retained `source` a NEW
     instance attribute for a name `claim_writer` relies on internally
     (`_connect`), shadowing the real class method the next time our
-    already-captured, code-pinned `claim_writer` ran. Fixed by also
-    computing, once at construction, the full transitive closure of
-    every `self.<name>()`-shaped call any captured method's own code
-    makes, and rejecting ANY proxy access once `source`'s own instance
-    `__dict__` has gained an entry for one of those names -- checked
-    fresh on every access, the same "repeat the check every time"
-    discipline as the code-object pin above."""
+    already-captured, code-pinned `claim_writer` ran.
+
+    FOURTH-LAYER FIX (review finding, PR #86, round 49, P1, Codex,
+    reproduced by the reviewer -- "Pin transitive collaborator class
+    methods"): the round-48 fix above only ever checked `source`'s own
+    INSTANCE `__dict__` for a shadowing entry -- it never revalidated
+    the CLASS-level binding of a transitively-relied-upon name at all.
+    The reviewer reproduced rebinding `RepositoryStateStore._connect`
+    on the CLASS itself: no instance shadow exists, so the round-48
+    check found nothing wrong, while the already-captured, code-pinned
+    `claim_writer` still resolved `self._connect` fresh on every call
+    -- straight to the tampered class attribute. Fixed by ALSO
+    capturing, once at construction, each transitively-relied-upon
+    name's `(value, __code__, defaults snapshot)` read directly off
+    the class (see `_capture_collaborator_relied_upon_attributes`'s
+    own docstring), and revalidating the CURRENT class-level binding's
+    identity/code/defaults on every access -- exactly mirroring how
+    the top-level captured names are already protected via
+    `captured_code`, one level further out. Both the instance-shadow
+    check (round 48) and this class-level revalidation (round 49) are
+    checked fresh on every access, the same "repeat the check every
+    time" discipline as the top-level code-object pin."""
 
     __slots__ = ("__weakref__",)
 
@@ -1524,11 +1583,11 @@ class _SealedCollaboratorProxy:
             func = getattr(bound, "__func__", None)
             if func is not None:
                 captured_code[name] = func.__code__
-        relied_upon_names = _collaborator_relied_upon_attribute_names(type(source), method_names)
-        _SEALED_PROXY_CAPTURED_STATE[self] = (captured, captured_code, source, relied_upon_names)
+        relied_upon = _capture_collaborator_relied_upon_attributes(type(source), method_names)
+        _SEALED_PROXY_CAPTURED_STATE[self] = (captured, captured_code, source, relied_upon)
 
     def __getattr__(self, name):
-        captured, captured_code, source, relied_upon_names = _SEALED_PROXY_CAPTURED_STATE[self]
+        captured, captured_code, source, relied_upon = _SEALED_PROXY_CAPTURED_STATE[self]
         try:
             bound = captured[name]
         except KeyError:
@@ -1543,13 +1602,27 @@ class _SealedCollaboratorProxy:
                     f"_SealedCollaboratorProxy: {name}'s underlying implementation no longer matches "
                     f"what was captured at admission time -- the collaborator's method was mutated in place"
                 )
-        shadowed = relied_upon_names.intersection(vars(source))
-        if shadowed:
-            raise RepositoryConstructionQualificationError(
-                f"_SealedCollaboratorProxy: the collaborator's own instance now defines "
-                f"{sorted(shadowed)!r}, shadowing a class method one of its captured methods "
-                f"relies on internally via self.<name>() -- refusing to dispatch"
-            )
+        source_vars = vars(source)
+        source_cls = type(source)
+        for relied_name, (trusted_value, trusted_code, trusted_defaults) in relied_upon.items():
+            if relied_name in source_vars:
+                raise RepositoryConstructionQualificationError(
+                    f"_SealedCollaboratorProxy: the collaborator's own instance now defines "
+                    f"{relied_name!r}, shadowing a class method one of its captured methods "
+                    f"relies on internally via self.<name>() -- refusing to dispatch"
+                )
+            current = inspect.getattr_static(source_cls, relied_name, None)
+            if (
+                current is not trusted_value
+                or not inspect.isfunction(current)
+                or current.__code__ is not trusted_code
+                or not _function_defaults_match(current, trusted_defaults)
+            ):
+                raise RepositoryConstructionQualificationError(
+                    f"_SealedCollaboratorProxy: the collaborator's own class no longer defines "
+                    f"{relied_name!r} as what was captured at admission time -- a method one of "
+                    f"its captured methods relies on internally via self.<name>() was mutated"
+                )
         return bound
 
     def __setattr__(self, name: str, value: object) -> None:

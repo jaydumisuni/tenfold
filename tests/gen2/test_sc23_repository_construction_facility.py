@@ -1727,15 +1727,15 @@ def test_sc23_wrapper_seals_state_store_against_a_transitive_self_call_shadow(tm
     malicious `_connect`, planting an external symlink before the real
     git mutation, with an authorized `create_branch` still returning a
     successful receipt. Fixed via
-    `_collaborator_relied_upon_attribute_names`'s own transitive walk:
-    `_SealedCollaboratorProxy` now also rejects any access once the
-    retained source's own instance `__dict__` has gained an entry for
-    a name a captured method relies on internally. This performs a
+    `_capture_collaborator_relied_upon_attributes`'s own transitive
+    walk: `_SealedCollaboratorProxy` now also rejects any access once
+    the retained source's own instance `__dict__` has gained an entry
+    for a name a captured method relies on internally. This performs a
     REAL, fully-authorized `create_branch` dispatch to prove the
     malicious replacement genuinely never runs (mirroring rounds
     36/38's own regression tests for the top-level-name case, which
     remain valid and unaffected by this fix -- see
-    `_collaborator_relied_upon_attribute_names`'s own docstring for
+    `_capture_collaborator_relied_upon_attributes`'s own docstring for
     why those two cases are deliberately handled differently)."""
     from tenfold.gen2.repository_construction_facility import (
         DisposableRepositoryConstructionRig,
@@ -1772,6 +1772,71 @@ def test_sc23_wrapper_seals_state_store_against_a_transitive_self_call_shadow(tm
 
     with pytest.raises(RepositoryConstructionQualificationError):
         rig.facility.create_branch(task, repository=request["repository"], branch=request["branch"], owner=request["owner"], base_ref=request["base_ref"], expected_base_sha=request["expected_base_sha"], operation_id=request["operation_id"], foreman_epoch=1)
+
+    assert triggered["called"] is False
+
+
+def test_sc23_wrapper_seals_state_store_against_a_class_level_transitive_rebind(tmp_path) -> None:
+    """Review finding (PR #86, round 49, P1, Codex, reproduced by the
+    reviewer -- "Pin transitive collaborator class methods"): round
+    48's own fix only ever checked `state_store`'s INSTANCE `__dict__`
+    for a shadowing entry -- it never revalidated the CLASS-level
+    binding of a transitively-relied-upon name at all. The reviewer
+    reproduced rebinding `RepositoryStateStore._connect` directly on
+    the CLASS (not the instance): no instance shadow exists, so round
+    48's own check found nothing wrong, while the already-captured,
+    code-pinned `claim_writer` still resolved `self._connect` fresh on
+    every call -- straight to the tampered class attribute, planting
+    an external symlink before the real git mutation with an
+    authorized `create_branch` still returning a successful receipt.
+    Fixed by ALSO capturing each transitively-relied-upon name's own
+    identity/`__code__`/defaults, read directly off the class at
+    construction time, and revalidating the CURRENT class-level
+    binding against that capture on every access. This performs a
+    REAL, fully-authorized `create_branch` dispatch to prove the
+    malicious replacement genuinely never runs -- and, since
+    `RepositoryStateStore` is a real, shared, process-global class
+    (not a disposable per-test object), the rebind is genuinely
+    reverted in a `finally` block regardless of outcome, so this test
+    cannot leak a poisoned `_connect` into any other test in the same
+    session."""
+    from tenfold.gen2.repository_construction_facility import (
+        DisposableRepositoryConstructionRig,
+        RepositoryStateStore,
+        _MutableAuthorityStore,
+        _dispatch,
+        _empty_snapshot,
+    )
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+    from tenfold.repository_facility import repository_ref_resource, repository_request_binding
+
+    repo_root = tmp_path / "existing-repo"
+    initial_sha = _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    state_store = RepositoryStateStore(str(tmp_path / "state.db"))
+    authority_store = _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1))
+    facility = gen1_wrap_repository_construction_facility(transport, state_store, authority_store)
+    rig = DisposableRepositoryConstructionRig(facility, transport, authority_store, "existing", initial_sha, repo_root, tmp_path / "state.db")
+
+    triggered = {"called": False}
+    original_connect = RepositoryStateStore._connect
+
+    def malicious_connect(self):
+        triggered["called"] = True
+        return original_connect(self)
+
+    request = {"operation_id": "op-class-rebound-state-store-connect", "repository": "existing", "branch": "sc23/class-rebound-state-store-connect", "owner": "assign-post", "base_ref": "main", "expected_base_sha": initial_sha}
+    binding = repository_request_binding("create_branch", **request)
+    resource = repository_ref_resource("existing", request["branch"])
+    task = _dispatch(rig, assignment_id="assign-post", attempt=1, campaign_generation=1, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=resource, request_binding=binding)
+
+    RepositoryStateStore._connect = malicious_connect  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack: a CLASS-level rebind, not an instance shadow
+    try:
+        with pytest.raises(RepositoryConstructionQualificationError):
+            rig.facility.create_branch(task, repository=request["repository"], branch=request["branch"], owner=request["owner"], base_ref=request["base_ref"], expected_base_sha=request["expected_base_sha"], operation_id=request["operation_id"], foreman_epoch=1)
+    finally:
+        RepositoryStateStore._connect = original_connect
 
     assert triggered["called"] is False
 

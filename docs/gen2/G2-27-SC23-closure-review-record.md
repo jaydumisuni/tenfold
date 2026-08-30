@@ -3125,6 +3125,66 @@ verdict (see below) rather than a hardcoded stale expectation.
     the 9 known pre-existing Windows-only failures, zero
     regressions).
 
+49. A fresh Codex pass against the round-48 commit (`42b3d0e`/`7bece13`)
+    found 1 further genuine P1 finding -- the SIXTH recurrence of the
+    "one level deeper" pattern, this time within this closure's own
+    round-48 fix itself:
+    - **P1 ("Pin transitive collaborator class methods"), Codex**:
+      round 48's own fix only ever checked `state_store`'s INSTANCE
+      `__dict__` for a shadowing entry -- it never revalidated the
+      CLASS-level binding of a transitively-relied-upon name at all.
+      The reviewer reproduced rebinding `RepositoryStateStore._connect`
+      directly on the CLASS (not the instance): no instance shadow
+      exists, so round 48's own check found nothing wrong, while the
+      already-captured, code-pinned `claim_writer` still resolved
+      `self._connect` fresh on every call -- straight to the tampered
+      class attribute, planting an external symlink before the real
+      git mutation with an authorized `create_branch` still returning
+      a successful receipt.
+
+      This is a genuinely different lesson than the prior five
+      recurrences: those were all "we pinned function X, but not what
+      X calls" -- an INCOMPLETENESS of WHICH names get pinned. This
+      one is "we pinned the right name, but only checked ONE of the
+      two ways it can be tampered with" -- an incompleteness of HOW a
+      pinned name gets verified. Round 48's own transitive-closure
+      mechanism correctly identified `_connect` as relied-upon, but
+      then verified its safety only via an instance-`__dict__`
+      absence check, never via the identity/code/defaults check every
+      OTHER pinned name in this file already receives. Recorded here
+      explicitly as its own category, distinct from the module-globals
+      "one level deeper" recurrences, since a future transitive-
+      closure mechanism added to this file should apply BOTH axes from
+      the start rather than needing its own round-49-shaped correction
+      later.
+
+      Fixed by widening `_capture_collaborator_relied_upon_attributes`
+      (renamed from `_collaborator_relied_upon_attribute_names`, since
+      it now captures values, not just names) to ALSO capture each
+      transitively-relied-upon name's `(value, __code__, defaults
+      snapshot)` read directly off the class at construction time;
+      `_SealedCollaboratorProxy.__getattr__` now revalidates the
+      CURRENT class-level binding against that capture on every
+      access, exactly mirroring how the top-level captured names are
+      already protected via `captured_code` -- one level further out,
+      and on both axes (instance shadow AND class rebind) at once.
+
+      No new adjudicated residual-Gen1-dependency exception needed --
+      reached via the same already-adjudicated `_SealedCollaboratorProxy`
+      name; confirmed via a clean residual-dependency scan after the
+      fix.
+
+    Fixed with a real mechanism. 1 new permanent regression test
+    reproduces the reviewer's exact `RepositoryStateStore._connect`
+    class-level rebind (restored in a `finally` block, since
+    `RepositoryStateStore` is a real, shared, process-global class,
+    not a disposable per-test object); rounds 36/38/48's own
+    regression tests for the instance-level cases remain valid and
+    pass unmodified. Fixed in commit `<pending>`. Full local
+    re-verification: full test file (109/109), full mutation suite
+    (37/37), `test_g2_27_self_construction.py` (pending), and full
+    repository sweep (pending).
+
 ## Real, honest end-to-end result
 
 Running `execute_self_construction_gate()` for real against the live
