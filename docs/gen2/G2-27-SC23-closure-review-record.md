@@ -3353,10 +3353,11 @@ verdict (see below) rather than a hardcoded stale expectation.
     `subprocess.run` attribute-mutation sibling, and the
     `state_store.path` storage-identity redirect; rounds 36-50's own
     regression tests for every prior axis remain valid and pass
-    unmodified. Fixed in commit `<pending>`. Full local
+    unmodified. Fixed in commit `7fe79c6`. Full local
     re-verification: full test file (113/113), full mutation suite
-    (37/37), `test_g2_27_self_construction.py` (pending), and full
-    repository sweep (pending).
+    (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1409 passed, 2 skipped, only the 9 known
+    pre-existing Windows-only failures, zero regressions).
 
 ## Real, honest end-to-end result
 
