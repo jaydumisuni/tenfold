@@ -666,6 +666,14 @@ _ADJUDICATED_EXCEPTIONS: dict[tuple[str, str], str] = {
         "re-deriving, bypassing, or weakening any of RepositoryFacility's own real authority/lease/"
         "request-binding logic -- SC-23 closure, round 23, docs/gen2/G2-27-SC23-closure-review-record.md"
     ),
+    ("tenfold.gen2.repository_construction_facility", "_reject_altered_authority_validation_globals"): (
+        "defensive integrity check reading RepositoryFacility.create_branch.__globals__ to locate and pin the "
+        "real validate_live_task/validate_task bindings against post-import rebinding -- reaches "
+        "RepositoryFacility only to find the module namespace its OWN real methods already execute within, "
+        "never re-deriving, bypassing, or weakening any of Gen1's real authority/lease/epoch validation logic "
+        "itself, which this check exists solely to keep genuinely callable and untampered -- SC-23 closure, "
+        "round 45, docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
     # Round 24's own "_current_transport" entry (an exact-type check
     # `type(self._facility) is not RepositoryFacility`) is removed here,
     # round 25: that check no longer exists -- `_current_transport` was

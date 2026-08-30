@@ -1311,6 +1311,58 @@ def test_sc23_wrapper_rejects_a_transport_method_kwdefaults_mutated_in_place(tmp
         LocalGitRepositoryTransport._run.__kwdefaults__.update(original_kwdefaults)
 
 
+def test_sc23_kwdefaults_check_never_invokes_an_untrusted_keys_comparison_methods(tmp_path) -> None:
+    """Review finding (PR #86, round 45, P1, Codex, reproduced by the
+    reviewer -- "Validate keyword-default keys before sorting"): round
+    44's own `_function_defaults_snapshot`/`_function_defaults_match`
+    sorted `__kwdefaults__.items()` by KEY before any exact-type check
+    on those keys ever ran -- `sorted()` invokes `__lt__` on the keys
+    themselves to determine order, and Python never validates
+    `__kwdefaults__`'s keys against the function's real parameter
+    names, so an attacker-controlled key TYPE with an overloaded
+    `__lt__` carrying a malicious SIDE EFFECT (not merely a lying
+    comparison RESULT, the round-28 pattern this module already
+    guarded against -- an ACTUAL side effect that fires the moment
+    `sorted()` calls it) would already have run by the time the
+    exact-type checks could reject it. The reviewer reproduced two
+    `str` subclasses whose `__lt__` performed a real, observable side
+    effect. Every key's exact type is now verified BEFORE `sorted()`
+    is ever called in both helper functions -- this test confirms the
+    malicious comparison method is never invoked at all, not merely
+    that the tampering is eventually caught."""
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    triggered = {"called": False}
+
+    class _MaliciousKey(str):
+        def __lt__(self, other):
+            triggered["called"] = True
+            return False
+
+        def __gt__(self, other):
+            triggered["called"] = True
+            return True
+
+    original_kwdefaults = dict(LocalGitRepositoryTransport._run.__kwdefaults__)
+    try:
+        LocalGitRepositoryTransport._run.__kwdefaults__[_MaliciousKey("zzz_attacker_key")] = "value"  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+        with pytest.raises(RepositoryConstructionQualificationError):
+            facility.create_branch(None, repository="existing", branch="sc23/kwdefaults-malicious-key", owner="assign-post", base_ref="main", expected_base_sha="0" * 40, operation_id="op-kwdefaults-malicious-key", foreman_epoch=1)
+    finally:
+        LocalGitRepositoryTransport._run.__kwdefaults__.clear()
+        LocalGitRepositoryTransport._run.__kwdefaults__.update(original_kwdefaults)
+
+    assert triggered["called"] is False
+
+
 def test_sc23_wrapper_rejects_a_facility_method_code_object_mutated_in_place(tmp_path) -> None:
     """Round 37 defense-in-depth (see `_TRUSTED_FACILITY_CLASS_CODE_OBJECTS`'s
     own docstring): applies the round-37 `_run.__code__` lesson,
@@ -1339,6 +1391,81 @@ def test_sc23_wrapper_rejects_a_facility_method_code_object_mutated_in_place(tmp
             facility.create_branch(None, repository="existing", branch="sc23/facility-create-branch-code-mutated", owner="assign-post", base_ref="main", expected_base_sha=initial_sha, operation_id="op-facility-create-branch-code-mutated", foreman_epoch=1)
     finally:
         RepositoryFacility.create_branch.__code__ = original_code
+
+
+def test_sc23_wrapper_rejects_a_rebound_validate_live_task_global(tmp_path) -> None:
+    """Review finding (PR #86, round 45, P1, Codex, reproduced by the
+    reviewer -- "Pin delegated methods' global dependencies"): every
+    check so far (rounds 21/23/37/44) pins `RepositoryFacility`'s OWN
+    class attributes, code objects, and keyword defaults -- but says
+    nothing about the GLOBAL NAMESPACE its methods actually execute
+    WITHIN. `RepositoryFacility._live_mutable` calls
+    `validate_live_task(...)` as an ordinary global-scope name lookup,
+    resolved via `tenfold.repository_facility`'s own module
+    namespace -- an ORDINARY, PUBLICLY importable module, no special
+    reachability trick needed at all (unlike round 27/34's disclosed
+    bypasses). The reviewer reproduced rebinding
+    `tenfold.repository_facility.validate_live_task` to a replacement
+    that performs NO real authority/lease/epoch validation, then
+    calling `create_branch` with a bare `SimpleNamespace` carrying no
+    real seal at all -- the malicious replacement ran, and the branch
+    was created. `_TRUSTED_VALIDATE_LIVE_TASK` now separately pins
+    this binding's reference/`__code__`/defaults at this module's own
+    import time, re-verified on every check -- both at admission and
+    every per-mutation revalidation."""
+    from types import SimpleNamespace
+
+    import tenfold.repository_facility as repository_facility_module
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    def malicious_validate_live_task(task, authority_store, **kwargs):
+        return SimpleNamespace(snapshot=None, lease=None)
+
+    original_validate_live_task = repository_facility_module.validate_live_task
+    try:
+        repository_facility_module.validate_live_task = malicious_validate_live_task  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+        with pytest.raises(RepositoryConstructionQualificationError):
+            facility.create_branch(SimpleNamespace(assignment_id="attacker"), repository="existing", branch="sc23/rebound-validate-live-task", owner="attacker", base_ref="main", expected_base_sha="0" * 40, operation_id="op-rebound-validate-live-task", foreman_epoch=1)
+    finally:
+        repository_facility_module.validate_live_task = original_validate_live_task
+
+
+def test_sc23_wrapper_rejects_a_rebound_validate_task_global(tmp_path) -> None:
+    """Round 45 defense-in-depth (see `_TRUSTED_VALIDATE_LIVE_TASK`'s
+    own module-level comment): `validate_live_task` itself calls
+    `validate_task` internally, resolved via a DIFFERENT module's
+    namespace (`tenfold.facility`, not `tenfold.repository_facility`)
+    -- the SAME class of dependency one level deeper. Not separately
+    demonstrated by the reviewer, but pinned pre-emptively rather than
+    waiting for a predictable next-round rediscovery, the same
+    discipline round 23 already established pre-empting a predictable
+    round-24 rediscovery."""
+    import tenfold.facility as facility_module
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    repo_root = tmp_path / "existing-repo"
+    _real_existing_repo(repo_root, tmp_path)
+
+    transport = LocalGitRepositoryTransport({"existing": repo_root})
+    facility = gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / "state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    original_validate_task = facility_module.validate_task
+    try:
+        facility_module.validate_task = lambda *args, **kwargs: None  # noqa: SLF001 -- test-only, reproducing the same class of attack one layer deeper
+
+        with pytest.raises(RepositoryConstructionQualificationError):
+            facility.create_branch(None, repository="existing", branch="sc23/rebound-validate-task", owner="assign-post", base_ref="main", expected_base_sha="0" * 40, operation_id="op-rebound-validate-task", foreman_epoch=1)
+    finally:
+        facility_module.validate_task = original_validate_task
 
 
 def test_sc23_wrapper_ignores_a_wholesale_replaced_inner_facility(rig) -> None:

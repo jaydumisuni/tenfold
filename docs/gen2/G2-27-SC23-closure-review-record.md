@@ -2782,6 +2782,96 @@ verdict (see below) rather than a hardcoded stale expectation.
     (37/37), `test_g2_27_self_construction.py` (33/33), and full
     repository sweep (1394 passed, 2 skipped, only the 9 known
     pre-existing Windows-only failures, zero regressions).
+45. A fresh Codex pass against the round-44 commit (`e376651`/`e00ec80`)
+    found 2 further genuine P1 findings -- one a real bug SELF-CAUGHT
+    IN this closure's own round-44 fix, the other a genuinely NEW axis
+    of the trust model this campaign had not yet checked:
+    - **P1 ("Validate keyword-default keys before sorting"), Codex**:
+      round 44's own `_function_defaults_snapshot`/`_function_defaults_match`
+      sorted `__kwdefaults__.items()` by KEY before any exact-type
+      check on those keys ever ran -- `sorted()` invokes `__lt__` on
+      the keys themselves to determine order, and Python never
+      validates `__kwdefaults__`'s keys against the function's real
+      parameter names, so an attacker-controlled key TYPE with an
+      overloaded `__lt__` carrying a malicious SIDE EFFECT (not merely
+      a lying comparison RESULT, the round-28 pattern round 44 already
+      guarded against -- an ACTUAL side effect that fires the moment
+      `sorted()` calls it) would already have run by the time the
+      exact-type checks could reject it. The reviewer reproduced two
+      `str` subclasses whose `__lt__` performed a real, observable
+      side effect (writing outside the repository); a facility call
+      eventually raised, but only AFTER that side effect had already
+      occurred.
+
+      **Fixed**: every key's exact type is now verified BEFORE
+      `sorted()` is ever called in both helper functions --
+      `all(type(k) is str for k in kwdefaults)` calls only the builtin
+      `type()`, never `<`/`==` on a potentially untrusted key, so this
+      guard itself cannot be subverted the same way.
+    - **P1 ("Pin delegated methods' global dependencies"), Codex**:
+      every check so far (rounds 21/23/37/44) pins `RepositoryFacility`/
+      `LocalGitRepositoryTransport`'s OWN class attributes, code
+      objects, and keyword defaults -- but says nothing about the
+      GLOBAL NAMESPACE those classes' methods actually execute WITHIN.
+      `RepositoryFacility._live_mutable` calls `validate_live_task(...)`
+      as an ordinary global-scope name lookup, resolved via
+      `tenfold.repository_facility`'s own module namespace -- an
+      ORDINARY, PUBLICLY importable Gen1 module, no special
+      reachability trick needed at all (unlike round 27/34's disclosed
+      bypasses, which needed SOME cleverness -- this needs none). The
+      reviewer reproduced rebinding
+      `tenfold.repository_facility.validate_live_task`, then calling
+      `create_branch` with a bare `SimpleNamespace(assignment_id="attacker")`
+      -- no real seal, capability, permission, epoch, or lease at all
+      -- and the malicious replacement ran, skipping EVERY real
+      authority check, with the branch still created.
+
+      **Fixed the SAME way rounds 21/23/37/44 pin `RepositoryFacility`'s
+      OWN methods**: `validate_live_task`'s reference, `__code__`, and
+      `__defaults__`/`__kwdefaults__` are now captured at THIS
+      module's own import time, from EXACTLY the binding
+      `_live_mutable`'s bytecode will actually resolve
+      (`RepositoryFacility.create_branch.__globals__`), and
+      re-verified on every check via a new
+      `_reject_altered_authority_validation_globals`, wired into both
+      admission and every per-mutation revalidation.
+
+      Also closed PRE-EMPTIVELY, one layer deeper, without waiting for
+      a separate reviewer demonstration (the same discipline round 23
+      already established pre-empting a predictable round-24
+      rediscovery): `validate_live_task` itself calls `validate_task`
+      internally, resolved via a DIFFERENT module's namespace
+      (`tenfold.facility`, not `tenfold.repository_facility`) -- the
+      SAME class of dependency one level deeper. Pinned identically.
+
+      **Disclosed scope, deliberately NOT recursing further**:
+      `RepositoryFacility`'s methods reference several OTHER
+      module-level names too (`FacilityError`, `FacilityEvidence`,
+      `FacilityKind`, `stable_digest`), none of which are pinned.
+      `validate_live_task`/`validate_task` are the ONLY names whose
+      replacement directly grants an UNAUTHORIZED CAPABILITY; the
+      others affect correctness/idempotency, not authorization, and
+      recursing into every transitively-referenced name would have no
+      natural stopping point short of the Python standard library
+      itself -- named this boundary explicitly rather than leaving it
+      silently assumed.
+
+      Required a new adjudicated residual-Gen1-dependency exception
+      (`_reject_altered_authority_validation_globals` in
+      `self_construction.py`, matching round 23's precedent for the
+      identically-shaped `_reject_altered_facility_class_implementation`
+      entry), since this new function genuinely references
+      `RepositoryFacility` by name to locate the module namespace its
+      own real methods execute within.
+
+    Both fixed with real mechanisms. 3 new permanent regression tests
+    reproduce each finding exactly (the sort-safety fix, the
+    `validate_live_task` rebinding, and the pre-emptive `validate_task`
+    sibling). Fixed in commit `<pending>`. Full local re-verification:
+    full test file (101/101), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (pending, only the 9 known pre-existing Windows-only
+    failures expected).
 
 ## Real, honest end-to-end result
 
