@@ -2867,11 +2867,11 @@ verdict (see below) rather than a hardcoded stale expectation.
     Both fixed with real mechanisms. 3 new permanent regression tests
     reproduce each finding exactly (the sort-safety fix, the
     `validate_live_task` rebinding, and the pre-emptive `validate_task`
-    sibling). Fixed in commit `<pending>`. Full local re-verification:
+    sibling). Fixed in commit `b9a204f`. Full local re-verification:
     full test file (101/101), full mutation suite (37/37),
     `test_g2_27_self_construction.py` (33/33), and full repository
-    sweep (pending, only the 9 known pre-existing Windows-only
-    failures expected).
+    sweep (1397 passed, 2 skipped, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
 
 ## Real, honest end-to-end result
 
