@@ -2576,6 +2576,95 @@ verdict (see below) rather than a hardcoded stale expectation.
     (37/37), `test_g2_27_self_construction.py` (33/33), and full
     repository sweep (1389 passed, 2 skipped, only the 9 known
     pre-existing Windows-only failures, zero regressions).
+42. Codex's review quota was exhausted again for this round (three
+    rounds running now, requested against `737f159`/`ec8a342`), and
+    CodeRabbit's incremental review had nothing new. Per this
+    closure's own standing discipline, the round was filled by
+    another independent, genuinely adversarial review Agent,
+    deliberately pointed at `_SEALED_PROXY_CAPTURED_STATE` and
+    `_AdmittedTransportState` -- looking for a sibling gap to round
+    41's fix (a fix closing one instance of a pattern but missing a
+    structurally identical one elsewhere is the SAME class of gap
+    round 36->38's state-sealing reversal and round 40's proxy-code-
+    pinning both already demonstrated). It found one genuinely
+    significant finding:
+    - **"Cross-admission (cross-identity) confinement break via
+      WeakKeyDictionary enumeration"**: both `_ADMITTED_TRANSPORT_STATE`
+      and `_SEALED_PROXY_CAPTURED_STATE` are single, PROCESS-GLOBAL
+      registries holding every LIVE admission -- a real, anticipated
+      coexistence (round 25's own recovery/takeover scenario
+      legitimately keeps two admissions of the same transport alive
+      simultaneously). The reviewer reproduced admitting TWO
+      independent facilities, then -- holding only the FIRST --
+      reaching the module via the already-disclosed round-34
+      `sys.modules` boundary and ENUMERATING the registry's keys to
+      reach the SECOND, completely UNRELATED admission's own entry,
+      never handed to the attacker at all. `_AdmittedTransportState`
+      was previously a PLAIN (non-frozen) dataclass, so
+      `other_admitted.facility = attacker_facility` genuinely
+      redirected the VICTIM's own, perfectly ordinary `create_branch`
+      calls to attacker-controlled output -- a complete cross-identity
+      compromise reached without the attacker ever holding a
+      reference to the victim's wrapper. The identical enumeration
+      path also reached `_SEALED_PROXY_CAPTURED_STATE`, letting the
+      attacker invoke round 41's own harness-only
+      `_inject_fault_for_qualification_harness` escape hatch against
+      the VICTIM's sealed `authority_store` proxy -- whose docstring
+      had explicitly, and (it turns out) incorrectly, claimed it was
+      reachable "ONLY by code that already holds a direct reference
+      to THIS proxy object."
+
+      Split into what's genuinely new and what isn't: the
+      REACHABILITY half (enumerating the registry at all) is NOT a
+      new gap -- it is the SAME already-disclosed round-34 fact ("no
+      interpreter-level mechanism can make a name defined in this
+      module genuinely unreachable from code that already holds a
+      reference to ANY object this module produced"), now
+      demonstrated with a materially stronger, previously
+      undemonstrated CONSEQUENCE (cross-identity compromise, not
+      merely self-inspection). The MUTABILITY half -- that a reached
+      entry's fields were reassignable via ORDINARY syntax with zero
+      further effort -- IS a genuine, fixable gap.
+
+      **Fixed**: `_AdmittedTransportState` is now `@dataclass(frozen=True)`,
+      closing the ordinary-syntax field reassignment this round
+      demonstrated -- the same defensive posture already used
+      elsewhere in this file for advertised-immutable state. The ONE
+      legitimate internal mutation site
+      (`_revalidate_transport_integrity` refreshing `no_hooks_dirs`
+      after hook re-neutralization) now uses `object.__setattr__`
+      explicitly, the established, narrowly-scoped escape hatch for
+      module-private code that needs to mutate what an external
+      caller must not. `object.__setattr__` bypassing `frozen=True`
+      for an attacker who ALSO reaches an unrelated entry remains the
+      SAME disclosed, unfixable low-level-bypass class rounds
+      25/27/39/41 already established -- narrowing the EASY,
+      ordinary-syntax attack this round demonstrated, not claiming to
+      close every conceivable path.
+
+      **Disclosed, not fixed**: `_inject_fault_for_qualification_harness`'s
+      docstring overclaim was corrected -- it is callable against ANY
+      LIVE proxy reached via enumeration, not only one the caller was
+      legitimately handed. There is no code-level way to distinguish
+      "the trusted harness calling this on its own proxy" from "any
+      other code that enumerated its way here" without a fragile
+      caller-identity heuristic this codebase deliberately avoids (see
+      this file's own "detect presence, don't interpret" philosophy).
+
+    Fixed with a real mechanism (closing the demonstrated ordinary-
+    syntax attack); the underlying enumeration reachability and the
+    resulting `_inject_fault_for_qualification_harness` reach are both
+    disclosed, matching round 27/34's precedent. Because this finding
+    did not arrive through the GitHub PR review API (no review thread
+    exists for it), it is recorded here and via a plain PR comment on
+    #86 with the commit SHA. 2 new permanent regression tests
+    reproduce the fix (frozen-dataclass rejection) and document the
+    disclosed residual (`_inject_fault_for_qualification_harness`
+    cross-admission reach) respectively. Fixed in commit `<pending>`.
+    Full local re-verification: full test file (95/95), full mutation
+    suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (pending, only the 9 known pre-existing
+    Windows-only failures expected).
 
 ## Real, honest end-to-end result
 

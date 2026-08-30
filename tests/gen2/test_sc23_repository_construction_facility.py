@@ -2339,6 +2339,106 @@ def test_sc23_sealed_collaborator_proxy_denies_direct_access_to_its_own_captured
     assert callable(sealed.read)
 
 
+def test_sc23_admitted_transport_state_rejects_cross_admission_field_reassignment(tmp_path) -> None:
+    """Review finding (PR #86, round 42 -- an independently-launched
+    adversarial re-review, run because Codex's review quota was
+    exhausted a third time): `_ADMITTED_TRANSPORT_STATE` is a single,
+    process-global registry holding every LIVE admission (a real,
+    anticipated coexistence -- round 25's own recovery/takeover
+    scenario legitimately keeps two admissions alive at once). The
+    reviewer reproduced admitting TWO independent facilities, then --
+    holding only the FIRST -- reaching the module via the already-
+    disclosed round-34 `sys.modules` boundary and ENUMERATING the
+    registry's keys to reach the SECOND, unrelated admission's own
+    entry, never handed to the attacker at all. Since
+    `_AdmittedTransportState` was previously a PLAIN (non-frozen)
+    dataclass, `other_admitted.facility = attacker_facility` genuinely
+    redirected the VICTIM's own, perfectly ordinary `create_branch`
+    calls to attacker-controlled behavior -- a complete cross-identity
+    compromise. `frozen=True` now rejects this ordinary-syntax field
+    reassignment outright, closing the easy path this round
+    demonstrated (the underlying enumeration REACHABILITY remains the
+    same already-disclosed round-34 fact, not newly closed here --
+    see `_AdmittedTransportState`'s own docstring for the full
+    account)."""
+    import dataclasses
+    import sys
+
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    def admit(name: str):
+        repo_root = tmp_path / name
+        _real_existing_repo(repo_root, tmp_path)
+        transport = LocalGitRepositoryTransport({"existing": repo_root})
+        return gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / f"{name}-state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    facility1 = admit("one")
+    facility2 = admit("two")  # victim -- the attacker below never holds a reference to this
+
+    module = sys.modules[type(facility1).__module__]
+    other_entries = [key for key in module._ADMITTED_TRANSPORT_STATE if key is not facility1]  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack: enumeration via the already-disclosed round-34 boundary
+    assert len(other_entries) == 1
+    victim_admitted = module._ADMITTED_TRANSPORT_STATE[other_entries[0]]
+    assert victim_admitted.facility is not None  # confirms the victim's real entry was reached, not facility1's own
+
+    class _MaliciousFacility:
+        def create_branch(self, *args, **kwargs):
+            return "ATTACKER-CONTROLLED"
+
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        victim_admitted.facility = _MaliciousFacility()
+
+    assert facility2 is not None  # both admissions genuinely coexisted for the reproduction above
+
+
+def test_sc23_sealed_proxy_registry_enumeration_reaches_an_unrelated_admissions_fault_injection_seam(tmp_path) -> None:
+    """SECURITY NOTE -- DISCLOSED LIMITATION (review finding, PR #86,
+    round 42 -- an independently-launched adversarial re-review, run
+    because Codex's review quota was exhausted a third time). See
+    `_SealedCollaboratorProxy._inject_fault_for_qualification_harness`'s
+    own docstring for the full account: its earlier text overclaimed
+    that reaching it required already holding "THIS proxy object" --
+    that was wrong. `_SEALED_PROXY_CAPTURED_STATE`, like
+    `_ADMITTED_TRANSPORT_STATE`, is a single process-global registry;
+    the reviewer reproduced enumerating it, via the already-disclosed
+    round-34 `sys.modules` boundary, to reach a COMPLETELY UNRELATED
+    admission's sealed `authority_store` proxy -- one the caller below
+    never held a reference to -- and successfully invoking its
+    fault-injection seam against it. This test does NOT assert
+    protection -- it documents, honestly and permanently, that the
+    reach succeeds, matching the round-14/27/34/37/39/41 disclosed-
+    limitation precedent: there is no code-level way to distinguish
+    "the trusted harness calling this on its own proxy" from "any
+    other code that enumerated its way here" without a fragile
+    caller-identity heuristic this codebase deliberately avoids."""
+    import sys
+
+    from tenfold.gen2.repository_construction_facility import RepositoryStateStore, _MutableAuthorityStore, _admitted_state_for, _empty_snapshot
+    from tenfold.local_git_transport import LocalGitRepositoryTransport
+
+    def admit(name: str):
+        repo_root = tmp_path / name
+        _real_existing_repo(repo_root, tmp_path)
+        transport = LocalGitRepositoryTransport({"existing": repo_root})
+        return gen1_wrap_repository_construction_facility(transport, RepositoryStateStore(str(tmp_path / f"{name}-state.db")), _MutableAuthorityStore(_empty_snapshot(campaign_generation=1, foreman_epoch=1)))
+
+    facility1 = admit("one")
+    facility2 = admit("two")  # victim -- the caller below never holds a reference to this
+
+    module = sys.modules[type(facility1).__module__]
+    victim_proxy = _admitted_state_for(facility2).facility.authority_store
+    other_proxies = [key for key in module._SEALED_PROXY_CAPTURED_STATE if key is victim_proxy]  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack: enumeration via the already-disclosed round-34 boundary
+    assert len(other_proxies) == 1
+
+    def fake_read(campaign_id):
+        return "INJECTED"
+
+    other_proxies[0]._inject_fault_for_qualification_harness("read", fake_read)  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+
+    assert victim_proxy.read("any-campaign") == "INJECTED"
+
+
 def test_sc23_wrapper_rejects_a_transport_git_executable_with_content_replaced_in_place(tmp_path) -> None:
     """Review finding (PR #86, round 38, P1, Codex, reproduced by the
     reviewer -- "Verify the Git executable rather than only its

@@ -861,7 +861,16 @@ _STATE_STORE_CAPTURED_METHODS = ("receipt", "put_receipt", "acquire_writer", "re
 #: disclosed round-34 `sys.modules`-introspection boundary every other
 #: module-private name in this file already accepts -- this fix closes
 #: the TRIVIAL, one-line `proxy._captured` access, not that
-#: underlying, structurally unfixable reachability fact.
+#: underlying, structurally unfixable reachability fact. Round 42 (see
+#: `_AdmittedTransportState`'s own docstring for the full account)
+#: further demonstrated that a single, process-global registry like
+#: this one is ENUMERABLE, not merely look-up-able by one's own key --
+#: reaching it via ANY admission grants enumeration of EVERY live
+#: proxy's captured state, including one belonging to an unrelated
+#: caller. `_SealedCollaboratorProxy._inject_fault_for_qualification_harness`'s
+#: own docstring documents this consequence for this specific
+#: registry; not a new reachability fact, but a stronger, previously
+#: undemonstrated one.
 _SEALED_PROXY_CAPTURED_STATE: "weakref.WeakKeyDictionary[_SealedCollaboratorProxy, tuple[dict, dict]]" = weakref.WeakKeyDictionary()
 
 
@@ -961,19 +970,33 @@ class _SealedCollaboratorProxy:
         genuine crash/recovery scenarios need to substitute ONE
         captured method mid-scenario (simulating a crash-before-persist
         in `put_receipt`, for instance) without reopening the
-        caller-retained-reference gap round 36/38 close. This is
-        reachable ONLY by code that already holds a direct reference
-        to THIS proxy object -- which means going through
-        `_admitted_state_for`'s module-private registry lookup, since
+        caller-retained-reference gap round 36/38 close. Reachable
+        only by code that already holds a direct reference to a
+        `_SealedCollaboratorProxy` object -- which means going through
+        `_SEALED_PROXY_CAPTURED_STATE`'s module-private registry, since
         neither the wrapper's `__getattr__` (round 32/36) nor any
         caller-retained reference to the ORIGINAL `state_store`/
-        `authority_store` (this proxy is never constructed FROM one
-        that any external caller still holds a live path to) can reach
-        it. Not a general-purpose unsealing mechanism -- a narrowly
-        named, explicitly test-labeled escape hatch for this module's
-        own internal harness, the same trust boundary
-        `_admitted_state_for` itself already represents everywhere
-        else in this file."""
+        `authority_store` can reach it. Not a general-purpose unsealing
+        mechanism -- a narrowly named, explicitly test-labeled escape
+        hatch for this module's own internal harness.
+
+        CORRECTION (review finding, PR #86, round 42): this docstring
+        previously claimed the reference had to be "THIS proxy object,"
+        implying only the harness's OWN proxy was reachable this way --
+        that was an overclaim, corrected here. Round 42's own finding
+        (see `_AdmittedTransportState`'s docstring for the full
+        account) demonstrated that `_SEALED_PROXY_CAPTURED_STATE`,
+        being a single process-global registry, is ENUMERABLE by
+        anyone who reaches the module via the already-disclosed round-
+        34 boundary -- meaning this method is callable against ANY
+        LIVE proxy reached this way, not only one the caller was
+        legitimately handed. This is the SAME already-disclosed
+        reachability fact, not a new category; there is no
+        code-level way to distinguish "the trusted harness is calling
+        this" from "an attacker who enumerated their way here is
+        calling this" without a fragile caller-identity heuristic this
+        codebase deliberately avoids (see this file's own "detect
+        presence, don't interpret" philosophy). Disclosed, not fixed."""
         if not callable(replacement):
             raise RepositoryConstructionQualificationError(
                 f"_SealedCollaboratorProxy._inject_fault_for_qualification_harness: replacement for {name!r} is not callable"
@@ -1442,9 +1465,57 @@ def _registered_repositories_match(current: object, established: dict) -> bool:
     return True
 
 
-@dataclass
+@dataclass(frozen=True)
 class _AdmittedTransportState:
-    """Review finding (PR #86, round 22, P1, Codex, reproduced by the
+    """Review finding (PR #86, round 42 -- an independently-launched
+    adversarial re-review, run because Codex's review quota was
+    exhausted a third time): round 34's own disclosure ("no
+    interpreter-level mechanism can make a name defined in this
+    module genuinely unreachable from code that already holds a
+    reference to ANY object this module produced") establishes that
+    `_ADMITTED_TRANSPORT_STATE` itself is reachable this way -- but
+    that disclosure only ever demonstrated READING one's OWN entry.
+    The reviewer went further: since `_ADMITTED_TRANSPORT_STATE` is a
+    single, PROCESS-GLOBAL registry holding every LIVE admission (a
+    real, anticipated coexistence -- round 25's own recovery/takeover
+    scenario legitimately keeps two admissions of the same transport
+    alive at once), a caller who reaches the module via ANY admission
+    they hold can ENUMERATE the registry's keys and reach every OTHER,
+    UNRELATED admission too -- including one belonging to a completely
+    different caller who handed the attacker nothing at all. This
+    class was previously a PLAIN (non-frozen) dataclass, so once an
+    unrelated entry was reached this way, EVERY field --
+    `facility`/`instance_state`/`no_hooks_dirs`/
+    `established_facility_state`/`established_facility_authority_store`
+    -- was trivially reassignable via ordinary syntax, no bypass
+    technique needed at all: `other_admitted.facility =
+    attacker_facility` genuinely redirected the VICTIM's own,
+    perfectly ordinary `create_branch` calls to attacker-controlled
+    output, a complete cross-identity compromise reached without the
+    attacker ever holding a reference to the victim's wrapper.
+
+    The REACHABILITY half of this (enumerating the registry at all) is
+    NOT a new gap -- it is the SAME already-disclosed round-34 fact,
+    now demonstrated with a materially stronger consequence
+    (cross-identity compromise, not merely self-inspection) than its
+    original text named. The MUTABILITY half -- that a reached entry's
+    fields could be reassigned via ORDINARY syntax with zero further
+    effort -- IS a genuine, fixable gap, closed here: `frozen=True`
+    rejects ordinary field reassignment outright (`FrozenInstanceError`),
+    the same defensive posture already used elsewhere in this file for
+    advertised-immutable state. The ONE legitimate internal mutation
+    site (`_revalidate_transport_integrity` refreshing
+    `no_hooks_dirs` after hook re-neutralization) now uses
+    `object.__setattr__` explicitly, the established, narrowly-scoped
+    escape hatch for module-private code that needs to mutate what an
+    external caller must not. `object.__setattr__` bypassing
+    `frozen=True` for an attacker who ALSO reaches an unrelated entry
+    remains the SAME disclosed, unfixable low-level-bypass class rounds
+    25/27/39/41 already established -- narrowing the EASY, ordinary-
+    syntax attack this round demonstrated, not claiming to close every
+    conceivable path.
+
+    Review finding (PR #86, round 22, P1, Codex, reproduced by the
     reviewer -- "Keep the admission snapshot caller-independent"): the
     round 19/20 fix (`_reject_altered_transport_instance_state`) is
     only as trustworthy as the snapshot it compares against -- and
@@ -1887,7 +1958,14 @@ def _revalidate_transport_integrity(wrapper: "_ContainmentReCheckedRepositoryFac
     # registry entry (never a wrapper attribute -- see
     # `_AdmittedTransportState`'s own docstring for why).
     if not _hooks_neutralization_still_intact(transport, admitted.no_hooks_dirs):
-        admitted.no_hooks_dirs = _neutralize_hooks_for_every_registered_repository(transport)
+        # Round 42 (see `_AdmittedTransportState`'s own docstring):
+        # `frozen=True` now rejects ordinary field reassignment --
+        # this IS the one legitimate, module-private site that needs
+        # to refresh `no_hooks_dirs`, so it uses `object.__setattr__`
+        # explicitly, the same narrowly-scoped escape hatch this
+        # file's other frozen/sealed constructs already reserve for
+        # their own internal setup.
+        object.__setattr__(admitted, "no_hooks_dirs", _neutralize_hooks_for_every_registered_repository(transport))
     return admitted
 
 
