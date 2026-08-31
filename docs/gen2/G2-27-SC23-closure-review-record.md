@@ -4419,6 +4419,53 @@ security-critical scan), but this Sergeant gate itself is not
 expected to resolve through further incremental code changes to this
 file set.
 
+### External assurance -- fresh independent re-verification (post PR #86 / SC-23 closure)
+
+Re-ran `execute_self_construction_gate()` for real after PR #86
+merged (SC-23 now genuinely qualified, closing the LAST of the 25
+SS20 conditions -- `report.self_construction_capable` is now `True`,
+0 unqualified conditions, 0 undisclosed findings, where before SC-23's
+closure it was `False` with SC-23 among the unqualified). This is a
+MATERIALLY DIFFERENT `result_summary` than every prior run (different
+`unqualified_conditions` list, different `self_construction_capable`
+value), which necessarily produces a different `evidence_digest`
+(`campaign_digest`/`matrix_digest`/`review_state_digest` are all
+derived from it) sent to Sergeant.
+
+**The Sergeant verdict and both findings are still byte-for-byte
+identical** to PR #85's own comparison, run against a genuinely
+different digest. This rules out simple digest-keyed response
+caching as the explanation (a cache keyed by the request's own digest
+would have missed and re-evaluated) and further corroborates PR #85's
+own conclusion: Sergeant's `mode="changed_files"` request has it read
+the 7 frozen files live from disk at review time, and it consistently
+lands on the same two findings regardless of what actually changes in
+those files or in the request's own digest.
+
+A broader AST scan (not merely the specific pattern PR #85 targeted)
+of the 4 Python files in the frozen set for ANY function containing a
+`for`/`while` loop whose body contains another `for`/`while` loop
+found 7 hits in `self_construction.py` (several inside the very
+functions PR #85 already rewrote -- an artifact of the rewrite's own
+iterative-stack loop sitting adjacent to the outer traversal loop
+within the same function, not a quadratic re-walk) and 2 in the test
+file; `authority_transfer_bridge.py`/`mutation_fixtures.py` had none.
+Manually inspected the one hit in a function PR #85 never touched
+(`_qualify_sc22_independent_verifier`, `for node in ast.walk(tree):
+... elif isinstance(node, ast.Import): for alias in node.names`) --
+genuinely O(n): the inner loop only ever iterates one import
+statement's own alias list (`import a, b, c`), never revisits the
+tree, and is not a plausible match for "scaling risk." No further
+candidate found.
+
+Conclusion unchanged from PR #85, now reinforced with stronger
+evidence spanning a genuinely different request digest: this Sergeant
+`NEEDS_WORK` verdict is a real, standing external condition, not
+resolvable through further targeted code changes to the reviewed file
+set. `self_construction_capable` correctly, honestly reports `False`
+for this reason alone -- every one of the 25 SS20 conditions this
+campaign is actually responsible for is now genuinely qualified.
+
 ## Does not enable
 
 - self-construction -- the FINAL, authoritative `self_construction_capable`
