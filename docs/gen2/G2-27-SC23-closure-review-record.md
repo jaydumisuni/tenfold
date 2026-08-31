@@ -4018,6 +4018,83 @@ Windows-only failures, zero regressions).
     sweep (1420 passed, 2 skipped, only the 9 known pre-existing
     Windows-only subprocess failures).
 
+60. A fresh Codex pass against the round-59 commit (`2143d60`/`4ee7831`)
+    found 2 further genuine P1 findings -- both one structural layer
+    deeper than rounds 57-59's own checks: validating the OUTER
+    shape/type of a caller argument does not validate what is INSIDE
+    it.
+    - **P1 ("Reject subclassed byte payloads before revalidation"),
+      Codex**: round 58's own `files` fix validated only the dict's
+      KEYS, never its VALUES. Gen1's own `_file_digests` (called at
+      the very START of `RepositoryFacility.commit`, before
+      `_live_mutable`/`claim_writer`/the actual mutation) calls
+      `data.hex()` on every file's content -- invoking a `bytes`
+      SUBCLASS's own overridden `hex()` the moment it runs. The
+      reviewer reproduced a malicious `bytes` subclass whose `hex()`
+      moves the real `.git/objects` outside the repository and
+      replaces it with a symlink;
+      `LocalGitRepositoryTransport.commit_files` only checks
+      `isinstance(content, bytes)` (admitting the subclass), so the
+      authorized commit still succeeded and Git wrote objects
+      externally.
+    - **P1 ("Validate the fields inside exact TaskPackets"), Codex**:
+      requiring the outer `task` object to be an exact `TaskPacket`
+      (round 59) says nothing about its FIELDS -- dataclass
+      annotations are unenforced at runtime. The reviewer reproduced
+      placing a `str` SUBCLASS in an otherwise-valid, genuinely-sealed
+      packet's `assignment_id`; `RepositoryFacility._live_mutable`'s
+      own owner comparison (`owner != task.assignment_id`) invokes the
+      subclass's overridden `__eq__`/`__ne__` (Python prefers a
+      subclass's reflected method over the base type's, so the
+      malicious value's dunder runs even as the RIGHT operand) --
+      after both `_revalidate_transport_integrity` and the round-59
+      task-type check already passed. The seal itself stays genuinely
+      valid throughout: `canonical_digest` serializes via
+      `json.dumps`, which encodes a `str` subclass's VALUE identically
+      to a plain `str`, so the digest comparison in `validate_task`
+      never notices the subclass at all.
+
+      Both fixed with a real mechanism, one level deeper than the
+      checks they extend, matching this campaign's own "generalize,
+      don't wait for the next round" discipline: `files`' own VALUES
+      are now ALSO validated for exact `type(v) is bytes`, in the same
+      function (renamed `_reject_non_exact_dispatch_arguments`, from
+      `_reject_non_exact_str_dispatch_arguments`, since it no longer
+      validates strings exclusively) that already validates `files`'
+      keys; `task`'s own field values are now ALSO validated for exact
+      `type(v) is str` (checked with a plain `getattr`, safe because
+      `type(task) is TaskPacket` is already confirmed by that point --
+      no subclass `__getattribute__` left to invoke), extending
+      `_reject_non_exact_task_packet_argument`. Self-audit (before
+      considering this round closed) found the identical exposure one
+      level deeper still on the task-fields side: every STRING element
+      inside a `tuple`-typed field (`scope`, `capabilities`,
+      `permissions`, `evidence_obligations`, `stop_conditions` --
+      each iterated and string-compared by Gen1's own code:
+      `_path_in_scope`, `capability not in task.capabilities`,
+      `permission not in task.permissions`) is now ALSO validated the
+      same way, one level deep, matching the `files`-keys precedent
+      exactly.
+
+      No new adjudicated residual-Gen1-dependency exceptions needed --
+      both extended functions are Gen2-owned, reached via the same
+      already-adjudicated dispatch methods; confirmed via a clean
+      residual-dependency scan after the fix.
+
+    2 new permanent regression tests: one reproduces the reviewer's
+    exact side-effecting-`hex()` `bytes` subclass file content via a
+    real, fully-authorized `commit` dispatch, asserting the malicious
+    `hex()` never actually runs at all; the other reproduces the
+    reviewer's exact side-effecting-`__eq__`/`__ne__` `str` subclass
+    `assignment_id` inside a genuinely, correctly sealed `TaskPacket`
+    via a real, fully-authorized `create_branch` dispatch, asserting
+    the malicious `__eq__`/`__ne__` never actually runs at all, both
+    followed by a sanity dispatch confirming no over-rejection. Fixed
+    in commit `<pending>`. Full local re-verification: full test file
+    (126/126), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (pending), and full repository
+    sweep (pending).
+
 ## Real, honest end-to-end result
 
 Running `execute_self_construction_gate()` for real against the live

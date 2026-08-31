@@ -2596,6 +2596,123 @@ def test_sc23_wrapper_rejects_a_task_argument_that_is_a_taskpacket_subclass(rig)
     assert receipt is not None
 
 
+def test_sc23_wrapper_rejects_a_non_exact_bytes_file_content_value(rig) -> None:
+    """Review finding (PR #86, round 60, P1, Codex, reproduced by the
+    reviewer -- "Reject subclassed byte payloads before revalidation"):
+    round 58's own `files` fix validated only the dict's KEYS, never
+    its VALUES. Gen1's own `_file_digests` (called at the very START
+    of `RepositoryFacility.commit`, before `_live_mutable`/
+    `claim_writer`/the actual mutation) calls `data.hex()` on every
+    file's content -- invoking a `bytes` SUBCLASS's own overridden
+    `hex()` the moment it runs. The reviewer reproduced a malicious
+    `bytes` subclass whose `hex()` moves the real `.git/objects`
+    outside the repository and replaces it with a symlink;
+    `LocalGitRepositoryTransport.commit_files` only checks
+    `isinstance(content, bytes)` (admitting the subclass), so the
+    authorized commit still succeeded and Git wrote objects externally.
+    Fixed by `_reject_non_exact_dispatch_arguments` (renamed from
+    `_reject_non_exact_str_dispatch_arguments`, since it no longer
+    validates strings exclusively), now also requiring `files`' own
+    VALUES to be exact `type(v) is bytes`. This test asserts the
+    malicious `hex()` never actually runs at all."""
+    from tenfold.gen2.repository_construction_facility import _dispatch, _file_digests
+    from tenfold.repository_facility import repository_ref_resource, repository_request_binding
+
+    triggered = {"hex_called": False}
+
+    class _SideEffectingBytes(bytes):
+        def hex(self, *args, **kwargs):
+            triggered["hex_called"] = True
+            return bytes.hex(self, *args, **kwargs)
+
+    plain_files = {"malicious.txt": b"content", "other.txt": b"more content"}
+    malicious_files = {"malicious.txt": _SideEffectingBytes(b"content"), "other.txt": b"more content"}
+
+    request = {"operation_id": "op-side-effecting-file-content", "repository": rig.repository, "branch": "sc23/side-effecting-file-content", "owner": "assign-post", "base_ref": "main", "expected_base_sha": rig.initial_sha}
+    binding = repository_request_binding("create_branch", **request)
+    resource = repository_ref_resource(rig.repository, request["branch"])
+    task = _dispatch(rig, assignment_id="assign-post", attempt=1, campaign_generation=1, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=resource, request_binding=binding)
+    receipt = rig.facility.create_branch(task, repository=request["repository"], branch=request["branch"], owner=request["owner"], base_ref=request["base_ref"], expected_base_sha=request["expected_base_sha"], operation_id=request["operation_id"], foreman_epoch=1)
+    assert receipt is not None
+
+    # The binding is computed against the PLAIN-content files dict, the
+    # same reasoning as the round-58 files-key test: using the
+    # malicious dict here would trigger the malicious hex() in the
+    # test's OWN setup rather than the real dispatch under test.
+    commit_request = {"operation_id": "op-side-effecting-file-content-commit", "repository": rig.repository, "branch": request["branch"], "owner": "assign-post", "expected_head": rig.initial_sha, "files": _file_digests(plain_files), "message": "test\n"}
+    commit_binding = repository_request_binding("commit", **commit_request)
+    commit_resource = repository_ref_resource(rig.repository, request["branch"])
+    commit_task = _dispatch(rig, assignment_id="assign-post", attempt=2, campaign_generation=1, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=commit_resource, request_binding=commit_binding)
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        rig.facility.commit(commit_task, repository=rig.repository, branch=request["branch"], owner="assign-post", expected_head=rig.initial_sha, files=malicious_files, message="test\n", operation_id=commit_request["operation_id"], foreman_epoch=1)
+
+    assert triggered["hex_called"] is False, "the malicious file content's own hex() must never be invoked at all"
+
+
+def test_sc23_wrapper_rejects_a_task_field_that_is_a_str_subclass(rig) -> None:
+    """Review finding (PR #86, round 60, P1, Codex, reproduced by the
+    reviewer -- "Validate the fields inside exact TaskPackets"):
+    requiring the outer `task` object to be an exact `TaskPacket`
+    (round 59) says nothing about its FIELDS -- dataclass annotations
+    are unenforced at runtime. The reviewer reproduced placing a `str`
+    SUBCLASS in an otherwise-valid, genuinely-sealed packet's
+    `assignment_id`; `RepositoryFacility._live_mutable`'s own owner
+    comparison (`owner != task.assignment_id`) invokes the subclass's
+    overridden `__eq__`/`__ne__` (Python prefers a subclass's reflected
+    method over the base type's, so the malicious value's dunder runs
+    even as the RIGHT operand) -- after both
+    `_revalidate_transport_integrity` and the round-59 task-type check
+    already passed. The seal itself stays genuinely valid throughout:
+    `canonical_digest` serializes via `json.dumps`, which encodes a
+    `str` subclass's VALUE identically to a plain `str`, so this test
+    builds a genuinely, correctly sealed packet carrying the malicious
+    value, exactly matching the reviewer's own reproduction. Fixed by
+    `_reject_non_exact_task_packet_argument`, now also validating
+    every one of `task`'s own field values (and, self-audited, every
+    string element inside its tuple-typed fields) for exact `type(v)
+    is str`. This test asserts the malicious `__eq__`/`__ne__` never
+    actually runs at all."""
+    import dataclasses
+
+    from tenfold.contracts import TaskPacket, canonical_digest
+    from tenfold.gen2.repository_construction_facility import _dispatch
+    from tenfold.repository_facility import repository_ref_resource, repository_request_binding
+
+    triggered = {"eq_called": False}
+
+    class _SideEffectingStr(str):
+        __hash__ = str.__hash__
+
+        def __eq__(self, other):
+            triggered["eq_called"] = True
+            return str.__eq__(self, other)
+
+        def __ne__(self, other):
+            triggered["eq_called"] = True
+            return str.__ne__(self, other)
+
+    request = {"operation_id": "op-side-effecting-task-field", "repository": rig.repository, "branch": "sc23/side-effecting-task-field", "owner": "assign-post", "base_ref": "main", "expected_base_sha": rig.initial_sha}
+    binding = repository_request_binding("create_branch", **request)
+    resource = repository_ref_resource(rig.repository, request["branch"])
+    real_task = _dispatch(rig, assignment_id="assign-post", attempt=1, campaign_generation=1, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=resource, request_binding=binding)
+
+    raw = dataclasses.asdict(real_task)
+    raw["assignment_id"] = _SideEffectingStr(raw["assignment_id"])
+    raw["dispatch_digest"] = ""
+    raw["dispatch_digest"] = canonical_digest(raw)
+    malicious_task = TaskPacket(**raw)
+    assert type(malicious_task) is TaskPacket
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        rig.facility.create_branch(malicious_task, repository=request["repository"], branch=request["branch"], owner=request["owner"], base_ref=request["base_ref"], expected_base_sha=request["expected_base_sha"], operation_id=request["operation_id"], foreman_epoch=1)
+
+    assert triggered["eq_called"] is False, "the malicious assignment_id's own __eq__/__ne__ must never be invoked at all"
+
+    receipt = _real_create_branch_on_rig(rig, branch="sc23/side-effecting-task-field-sanity", operation_id="op-side-effecting-task-field-sanity")
+    assert receipt is not None
+
+
 def test_sc23_wrapper_ignores_a_wholesale_replaced_inner_facility(rig) -> None:
     """Review finding (PR #86, round 24, P1, Codex, reproduced by the
     reviewer -- "Verify the inner facility identity before

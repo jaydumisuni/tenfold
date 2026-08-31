@@ -48,7 +48,7 @@ import tempfile
 import time
 import types
 import weakref
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from hashlib import sha256
 from pathlib import Path
 
@@ -3314,35 +3314,61 @@ def _current_transport(wrapper: "_ContainmentReCheckedRepositoryFacility") -> Lo
 #: arbitrary nested caller data, which has no natural stopping point
 #: -- this file's own established DISCLOSED SCOPE line, applied here
 #: too).
-def _reject_non_exact_str_dispatch_arguments(kwargs: dict) -> None:
+#:
+#: ROUND 60 WIDENING (P1, Codex, reproduced by the reviewer -- "Reject
+#: subclassed byte payloads before revalidation"): round 58's own
+#: `files` fix validated only the dict's KEYS, never its VALUES.
+#: Gen1's own `_file_digests` (`tenfold.repository_facility`, called at
+#: the very START of `RepositoryFacility.commit`, before
+#: `_live_mutable`/`claim_writer`/the actual mutation) calls
+#: `data.hex()` on every file's content -- invoking a `bytes`
+#: SUBCLASS's own overridden `hex()` the moment it runs. The reviewer
+#: reproduced a malicious `bytes` subclass whose `hex()` moves the real
+#: `.git/objects` outside the repository and replaces it with a
+#: symlink; `LocalGitRepositoryTransport.commit_files` only checks
+#: `isinstance(content, bytes)` (admitting the subclass), so the
+#: authorized commit still succeeded and Git wrote objects externally.
+#: The SAME structural gap as `files`' own keys, one field over: a
+#: caller-controlled value reachable via `isinstance` but never exact
+#: `type(...) is ...`. Fixed the same way -- `files`' own VALUES are
+#: now ALSO validated for exact `type(v) is bytes`, renaming this
+#: function from `_reject_non_exact_str_dispatch_arguments` since it no
+#: longer validates strings exclusively.
+def _reject_non_exact_dispatch_arguments(kwargs: dict) -> None:
     """See this function's own module-level comment for the
-    round-57/58 findings this closes. Checked BEFORE any delegation,
+    round-57/58/60 findings this closes. Checked BEFORE any delegation,
     revalidation, or containment scanning even runs -- the earliest
     possible point, since a malicious side effect can fire the moment
-    ANY of these values is ever hashed, compared, sorted, or formatted
-    ANYWHERE downstream, including inside Gen1's own real code this
-    module does not otherwise control. Deliberately does nothing for a
-    keyword argument that is simply ABSENT (a caller who forgot a
-    required keyword-only argument gets Python's own natural, more
-    informative `TypeError` from the real delegated call instead) or
-    whose value is not even `isinstance(v, str)` in the first place
-    (an `int`/`dict`/etc. argument was never the shape this finding is
-    about) -- this check only ever judges a value that is genuinely
-    PRESENT and genuinely string-shaped, matching this file's own
-    "detect presence, don't interpret" discipline."""
+    ANY of these values is ever hashed, compared, sorted, formatted, or
+    hex-encoded ANYWHERE downstream, including inside Gen1's own real
+    code this module does not otherwise control. Deliberately does
+    nothing for a keyword argument that is simply ABSENT (a caller who
+    forgot a required keyword-only argument gets Python's own natural,
+    more informative `TypeError` from the real delegated call instead)
+    or whose value is not even `isinstance(v, str)`/`isinstance(v,
+    bytes)` in the first place (an `int`/`dict`/etc. argument was never
+    the shape this finding is about) -- this check only ever judges a
+    value that is genuinely PRESENT and genuinely string- or
+    bytes-shaped, matching this file's own "detect presence, don't
+    interpret" discipline."""
     for name, value in kwargs.items():
         if isinstance(value, str) and type(value) is not str:
             raise RepositoryConstructionQualificationError(
-                f"_reject_non_exact_str_dispatch_arguments: {name} must be an exact str "
+                f"_reject_non_exact_dispatch_arguments: {name} must be an exact str "
                 f"(got {type(value).__name__}) -- refusing to dispatch"
             )
     files = kwargs.get("files")
     if isinstance(files, dict):
-        for path in files:
+        for path, content in files.items():
             if isinstance(path, str) and type(path) is not str:
                 raise RepositoryConstructionQualificationError(
-                    f"_reject_non_exact_str_dispatch_arguments: files has a non-exact-str "
+                    f"_reject_non_exact_dispatch_arguments: files has a non-exact-str "
                     f"path key (got {type(path).__name__}) -- refusing to dispatch"
+                )
+            if isinstance(content, bytes) and type(content) is not bytes:
+                raise RepositoryConstructionQualificationError(
+                    f"_reject_non_exact_dispatch_arguments: files has a non-exact-bytes "
+                    f"content value for {path!r} (got {type(content).__name__}) -- refusing to dispatch"
                 )
 
 
@@ -3372,7 +3398,7 @@ def _reject_non_exact_str_dispatch_arguments(kwargs: dict) -> None:
 #: `isinstance`, which admits the malicious subclass reproduced here),
 #: matching round 28's own established discipline. Deliberately checked
 #: AFTER `_revalidate_transport_integrity`, not before (unlike
-#: `_reject_non_exact_str_dispatch_arguments`, which runs before
+#: `_reject_non_exact_dispatch_arguments`, which runs before
 #: revalidation because a malicious STRING argument's dunder can fire
 #: inside Gen1's code regardless of what this module's own trust state
 #: looks like): this file's own extensive tampering-detection test
@@ -3388,16 +3414,47 @@ def _reject_non_exact_str_dispatch_arguments(kwargs: dict) -> None:
 #: that already passed every trust-state check this module owns --
 #: exactly the callers a malicious task subclass would need to slip
 #: past to reach Gen1's own `asdict()` call at all.
+#:
+#: ROUND 60 WIDENING (P1, Codex, reproduced by the reviewer -- "Validate
+#: the fields inside exact TaskPackets"): requiring the OUTER object to
+#: be an exact `TaskPacket` says nothing about its FIELDS -- dataclass
+#: annotations are unenforced at runtime. The reviewer reproduced
+#: placing a `str` SUBCLASS in an otherwise-valid, genuinely-sealed
+#: packet's `assignment_id`; `RepositoryFacility._live_mutable`'s own
+#: owner comparison (`owner != task.assignment_id`) invokes the
+#: subclass's overridden `__eq__`/`__ne__` (Python prefers a subclass's
+#: reflected method over the base type's, so the malicious value's
+#: dunder runs even as the RIGHT operand) -- AFTER
+#: `_revalidate_transport_integrity` and the task-type check above both
+#: already passed. The seal itself stays genuinely valid throughout:
+#: `canonical_digest` serializes via `json.dumps`, which encodes a
+#: `str` subclass's VALUE identically to a plain `str`, so the digest
+#: comparison in `validate_task` never notices the subclass at all.
+#: Fixed by validating `task`'s own field values the same way `files`'
+#: keys/values are validated: every field that is `isinstance(v, str)`
+#: must be exact `type(v) is str`, and (self-audit, before considering
+#: this round closed) every STRING element inside a `tuple`-typed field
+#: (`scope`, `capabilities`, `permissions`, `evidence_obligations`,
+#: `stop_conditions` -- each iterated and string-compared by Gen1's own
+#: code: `_path_in_scope`, `capability not in task.capabilities`,
+#: `permission not in task.permissions`) must be exact `type(v) is str`
+#: too, one level deep, matching the `files`-keys precedent exactly.
+#: Safe to run with a plain `getattr` (not `inspect.getattr_static`):
+#: by this point `type(task) is TaskPacket` is already confirmed, so
+#: there is no subclass `__getattribute__` left to invoke.
 def _reject_non_exact_task_packet_argument(args: tuple, kwargs: dict) -> None:
-    """See this function's own module-level comment for the round-59
-    finding this closes. `task` is always the first POSITIONAL
-    argument on every real call site in this codebase (Gen1's own
-    `RepositoryFacility` methods declare it positional-or-keyword,
-    before the keyword-only `*`), but a caller could in principle pass
-    it as `task=...` too, so both forms are checked. Deliberately does
-    nothing when `task` is genuinely absent from both `args` and
-    `kwargs` -- the real delegated call raises Python's own, more
-    informative `TypeError` for a missing required argument instead."""
+    """See this function's own module-level comment for the
+    round-59/60 findings this closes. `task` is always the first
+    POSITIONAL argument on every real call site in this codebase
+    (Gen1's own `RepositoryFacility` methods declare it
+    positional-or-keyword, before the keyword-only `*`), but a caller
+    could in principle pass it as `task=...` too, so both forms are
+    checked. Deliberately does nothing when `task` is genuinely absent
+    from both `args` and `kwargs` -- the real delegated call raises
+    Python's own, more informative `TypeError` for a missing required
+    argument instead. Once `task` is confirmed an exact `TaskPacket`,
+    also validates its own field values the same way -- see this
+    function's own module-level ROUND 60 comment."""
     if args:
         task = args[0]
     elif "task" in kwargs:
@@ -3409,6 +3466,23 @@ def _reject_non_exact_task_packet_argument(args: tuple, kwargs: dict) -> None:
             f"_reject_non_exact_task_packet_argument: task must be an exact TaskPacket "
             f"(got {type(task).__name__}) -- refusing to dispatch"
         )
+    # Round 60: `type(task) is TaskPacket` is now confirmed, so a plain
+    # `getattr` below is safe -- no subclass `__getattribute__` exists
+    # to invoke.
+    for field in fields(TaskPacket):
+        value = getattr(task, field.name)
+        if isinstance(value, str) and type(value) is not str:
+            raise RepositoryConstructionQualificationError(
+                f"_reject_non_exact_task_packet_argument: task.{field.name} must be an exact str "
+                f"(got {type(value).__name__}) -- refusing to dispatch"
+            )
+        if isinstance(value, tuple):
+            for item in value:
+                if isinstance(item, str) and type(item) is not str:
+                    raise RepositoryConstructionQualificationError(
+                        f"_reject_non_exact_task_packet_argument: task.{field.name} has a "
+                        f"non-exact-str element (got {type(item).__name__}) -- refusing to dispatch"
+                    )
 
 
 def _revalidate_transport_integrity(wrapper: "_ContainmentReCheckedRepositoryFacility") -> "_AdmittedTransportState":
@@ -3770,41 +3844,41 @@ class _ContainmentReCheckedRepositoryFacility(metaclass=_FrozenClassMeta):
         # `_revalidate_transport_integrity`'s own docstring): all FIVE
         # dispatch methods now call the SAME, fully comprehensive
         # check, unifying what used to be a narrower check for
-        # `open_pr`/`merge_pr`. Round 57/58 (see
-        # `_reject_non_exact_str_dispatch_arguments`'s own docstring):
+        # `open_pr`/`merge_pr`. Round 57/58/60 (see
+        # `_reject_non_exact_dispatch_arguments`'s own docstring):
         # checked FIRST, before revalidation even runs, since the
         # finding it closes is about the CALLER's own arguments, not
-        # this module's trust state. Round 59 (see
+        # this module's trust state. Round 59/60 (see
         # `_reject_non_exact_task_packet_argument`'s own docstring):
         # checked AFTER revalidation instead -- this file's own
         # tampering-detection tests deliberately dispatch with a
         # placeholder `task=None` expecting revalidation itself to
         # catch tampering first.
-        _reject_non_exact_str_dispatch_arguments(kwargs)
+        _reject_non_exact_dispatch_arguments(kwargs)
         admitted = _revalidate_transport_integrity(self)
         _reject_non_exact_task_packet_argument(args, kwargs)
         return admitted.facility.create_branch(*args, **kwargs)
 
     def commit(self, *args, **kwargs):
-        _reject_non_exact_str_dispatch_arguments(kwargs)
+        _reject_non_exact_dispatch_arguments(kwargs)
         admitted = _revalidate_transport_integrity(self)
         _reject_non_exact_task_packet_argument(args, kwargs)
         return admitted.facility.commit(*args, **kwargs)
 
     def read(self, *args, **kwargs):
-        _reject_non_exact_str_dispatch_arguments(kwargs)
+        _reject_non_exact_dispatch_arguments(kwargs)
         admitted = _revalidate_transport_integrity(self)
         _reject_non_exact_task_packet_argument(args, kwargs)
         return admitted.facility.read(*args, **kwargs)
 
     def open_pr(self, *args, **kwargs):
-        _reject_non_exact_str_dispatch_arguments(kwargs)
+        _reject_non_exact_dispatch_arguments(kwargs)
         admitted = _revalidate_transport_integrity(self)
         _reject_non_exact_task_packet_argument(args, kwargs)
         return admitted.facility.open_pr(*args, **kwargs)
 
     def merge_pr(self, *args, **kwargs):
-        _reject_non_exact_str_dispatch_arguments(kwargs)
+        _reject_non_exact_dispatch_arguments(kwargs)
         admitted = _revalidate_transport_integrity(self)
         _reject_non_exact_task_packet_argument(args, kwargs)
         return admitted.facility.merge_pr(*args, **kwargs)
