@@ -508,6 +508,79 @@ def _reject_altered_facility_class_implementation() -> None:
     _reject_altered_class_implementation(RepositoryFacility, _TRUSTED_FACILITY_CLASS_ATTRIBUTES, _TRUSTED_FACILITY_CLASS_CODE_OBJECTS, _TRUSTED_FACILITY_CLASS_DEFAULTS, "RepositoryFacility")
 
 
+#: Round 63 (P1, Codex, reproduced by the reviewer -- "Avoid descriptor
+#: dispatch when validating task fields"): round 62's own field-type
+#: allowlist reads every field via `getattr(task, field.name)`,
+#: reasoning that this is safe because `type(task) is TaskPacket` was
+#: already confirmed exactly (round 59), so no SUBCLASS
+#: `__getattribute__` override could still be in play. That reasoning
+#: covered instance-level/subclass tampering, but missed a THIRD axis:
+#: a same-process caller can assign a DATA DESCRIPTOR (any object
+#: exposing `__get__` alongside `__set__`/`__delete__`) directly onto
+#: the `TaskPacket` CLASS itself (`TaskPacket.assignment_id =
+#: malicious_descriptor`) -- Python's own attribute-lookup protocol
+#: gives a data descriptor found on the TYPE priority over ANY
+#: instance's own `__dict__` entry, for EVERY instance of that class,
+#: process-wide, regardless of how genuinely that instance was
+#: constructed. The reviewer reproduced a descriptor whose `__get__`
+#: moves `.git/refs/heads` to an external directory, installs a
+#: symlink, and returns the ORIGINAL PLAIN STRING (so every exact-type
+#: and authority check downstream still passes) -- an otherwise
+#: perfectly legitimate, genuinely-sealed task, with every field a
+#: plain exact `str`, still triggered the descriptor's side effect the
+#: moment `getattr` ran, and an authorized `create_branch` wrote the
+#: ref externally.
+#:
+#: This is the SAME "same-process caller can rebind a class's own
+#: attributes to intercept normal operations" pattern rounds 21/23
+#: already established for `LocalGitRepositoryTransport`/
+#: `RepositoryFacility` -- `TaskPacket` was simply never added to that
+#: same pinning mechanism, since rounds 59-62 were reasoning about the
+#: TASK INSTANCE's own trustworthiness, never about `TaskPacket` the
+#: CLASS being just as mutable, same-process, as every other class
+#: this file already pins. Fixed with the reviewer's own two-part
+#: recommendation, both reusing established mechanisms rather than
+#: inventing new ones: (1) `TaskPacket` is now pinned via the SAME
+#: generic `_reject_altered_class_implementation` every other trusted
+#: class in this file already uses -- a data descriptor assignment
+#: adds a NEW name to `vars(TaskPacket)` (dataclass fields without a
+#: default, like `assignment_id`, have no class-level attribute at
+#: all until tampered with), caught by the existing set-difference
+#: check with no changes to that function itself; (2) field reads
+#: switch from `getattr(task, field.name)` to
+#: `inspect.getattr_static(task, field.name)` -- the SAME tool round
+#: 56 already established for exactly this purpose
+#: (`_leaf_attribute_namespace_get`), which NEVER invokes `__get__` on
+#: anything it finds. Empirically verified (not merely assumed) before
+#: relying on it: for the ORDINARY case -- no class-level attribute
+#: for that name at all, which is exactly how a dataclass field
+#: WITHOUT a default (like `assignment_id`) normally is --
+#: `getattr_static` returns the genuine value straight from the
+#: instance's own `__dict__`, identical to what a legitimate
+#: `getattr` would return. If a same-process caller HAS installed a
+#: DATA descriptor on the class, `getattr_static` instead returns the
+#: RAW DESCRIPTOR OBJECT itself, unresolved -- `__get__` is never
+#: called at all -- which then fails the exact-type check on its own
+#: (a descriptor instance is never `str`/`int`/`tuple`), rejecting the
+#: dispatch without the malicious side effect ever running. Check (1)
+#: above still runs first and gives a clearer, earlier, more specific
+#: rejection reason than "field has the wrong type" for this exact
+#: scenario -- kept as genuine defense-in-depth, not redundant with
+#: (2), matching the reviewer's own two-part recommendation.
+_TRUSTED_TASK_PACKET_CLASS_ATTRIBUTES = _immutable_snapshot(dict(vars(TaskPacket)))
+_TRUSTED_TASK_PACKET_CLASS_CODE_OBJECTS = _immutable_snapshot({name: value.__code__ for name, value in _TRUSTED_TASK_PACKET_CLASS_ATTRIBUTES if inspect.isfunction(value)})
+_TRUSTED_TASK_PACKET_CLASS_DEFAULTS = _immutable_snapshot({name: _function_defaults_snapshot(value) for name, value in _TRUSTED_TASK_PACKET_CLASS_ATTRIBUTES if inspect.isfunction(value)})
+
+
+def _reject_altered_task_packet_class_implementation() -> None:
+    """See `_TRUSTED_TASK_PACKET_CLASS_ATTRIBUTES`'s own module-level
+    comment for the round-63 finding this closes. Called from
+    `_reject_non_exact_task_packet_argument`, immediately after
+    `type(task) is TaskPacket` is confirmed and before any field is
+    read."""
+    _reject_altered_class_implementation(TaskPacket, _TRUSTED_TASK_PACKET_CLASS_ATTRIBUTES, _TRUSTED_TASK_PACKET_CLASS_CODE_OBJECTS, _TRUSTED_TASK_PACKET_CLASS_DEFAULTS, "TaskPacket")
+
+
 #: Review finding (PR #86, round 45, P1, Codex, reproduced by the
 #: reviewer -- "Pin delegated methods' global dependencies"): every
 #: check so far (rounds 21/23/37/44) pins `RepositoryFacility`/
@@ -3618,8 +3691,8 @@ _TASK_PACKET_FIELD_EXACT_TYPES: dict = {
 
 def _reject_non_exact_task_packet_argument(args: tuple, kwargs: dict) -> None:
     """See this function's own module-level comment for the
-    round-59/60/61/62 findings this closes. `task` is always the first
-    POSITIONAL argument on every real call site in this codebase
+    round-59/60/61/62/63 findings this closes. `task` is always the
+    first POSITIONAL argument on every real call site in this codebase
     (Gen1's own `RepositoryFacility` methods declare it
     positional-or-keyword, before the keyword-only `*`), but a caller
     could in principle pass it as `task=...` too, so both forms are
@@ -3630,7 +3703,9 @@ def _reject_non_exact_task_packet_argument(args: tuple, kwargs: dict) -> None:
     also validates its own field values against
     `_TASK_PACKET_FIELD_EXACT_TYPES`, unconditionally -- see this
     function's own module-level ROUND 62 comment for why this is no
-    longer an `isinstance`-gated check."""
+    longer an `isinstance`-gated check, and the ROUND 63 comment on
+    `_TRUSTED_TASK_PACKET_CLASS_ATTRIBUTES` for why field reads use
+    `inspect.getattr_static` and the class itself is pinned first."""
     if args:
         task = args[0]
     elif "task" in kwargs:
@@ -3642,11 +3717,23 @@ def _reject_non_exact_task_packet_argument(args: tuple, kwargs: dict) -> None:
             f"_reject_non_exact_task_packet_argument: task must be an exact TaskPacket "
             f"(got {type(task).__name__}) -- refusing to dispatch"
         )
-    # Round 60: `type(task) is TaskPacket` is now confirmed, so a plain
-    # `getattr` below is safe -- no subclass `__getattribute__` exists
-    # to invoke.
+    # Round 63: pin TaskPacket's own class implementation BEFORE
+    # reading any field -- a same-process caller assigning a data
+    # descriptor onto the class (e.g. `TaskPacket.assignment_id =
+    # malicious_descriptor`) intercepts attribute lookup for EVERY
+    # instance, regardless of how genuinely that instance was built.
+    _reject_altered_task_packet_class_implementation()
+    # Round 63: `inspect.getattr_static`, not `getattr` -- reads the
+    # instance's own `__dict__` entry directly (TaskPacket has no
+    # `__slots__`, so every field genuinely lives there after
+    # `__init__`), never triggering the class's descriptor protocol.
+    # `type(task) is TaskPacket` (confirmed above) rules out a
+    # subclass `__getattribute__` override; the class pin immediately
+    # above rules out a class-level descriptor. `getattr_static` is
+    # belt-and-suspenders on top of both, matching round 56's own
+    # precedent for this exact tool.
     for field in fields(TaskPacket):
-        value = getattr(task, field.name)
+        value = inspect.getattr_static(task, field.name)
         expected = _TASK_PACKET_FIELD_EXACT_TYPES.get(field.name)
         if expected is None or type(value) is expected:
             if expected is tuple:

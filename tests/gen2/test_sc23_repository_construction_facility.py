@@ -3010,6 +3010,82 @@ def test_sc23_wrapper_rejects_a_task_tuple_field_that_is_a_tuple_subclass(rig) -
     assert receipt is not None
 
 
+def test_sc23_wrapper_rejects_a_task_packet_class_level_data_descriptor(rig) -> None:
+    """Review finding (PR #86, round 63, P1, Codex, reproduced by the
+    reviewer -- "Avoid descriptor dispatch when validating task
+    fields"): round 62's own field-type allowlist read every field via
+    `getattr(task, field.name)`, reasoning this was safe because
+    `type(task) is TaskPacket` was already confirmed exactly (round
+    59) -- ruling out a SUBCLASS `__getattribute__` override, but
+    missing a THIRD axis entirely: a same-process caller can assign a
+    DATA descriptor directly onto the `TaskPacket` CLASS itself
+    (`TaskPacket.assignment_id = malicious_descriptor`). Python's own
+    attribute-lookup protocol gives a data descriptor found on the
+    TYPE priority over any instance's own `__dict__` entry, for EVERY
+    instance of that class, process-wide -- regardless of how
+    genuinely that instance was constructed. The reviewer reproduced a
+    descriptor whose `__get__` moves `.git/refs/heads` to an external
+    directory, installs a symlink, and returns the ORIGINAL PLAIN
+    STRING (so every exact-type and authority check downstream still
+    passes): an otherwise perfectly legitimate, genuinely-sealed task
+    still triggered the descriptor's side effect the moment `getattr`
+    ran, and an authorized `create_branch` wrote the ref externally.
+
+    Fixed two ways, both exercised here even though the class-pinning
+    check (see below) happens to be the one that actually fires first
+    for this exact attack -- a NEW class attribute (`assignment_id`
+    has no default, so it has no class-level entry at all until
+    tampered with) is caught by `_reject_altered_task_packet_class_implementation`'s
+    set-difference check before the field loop is ever reached. The
+    `inspect.getattr_static` field-read fix (round 63's other half) is
+    genuine defense-in-depth for the same finding, not separately
+    forced here, since bypassing mechanism (1) would require a
+    different, not-yet-demonstrated attack this test does not claim to
+    prove. This test asserts the malicious `__get__` never actually
+    runs at all, and restores `TaskPacket`'s own class state exactly
+    (matching the had-no-own-entry-before restoration precedent
+    already established in this file) so later tests are unaffected."""
+    from tenfold.contracts import TaskPacket
+    from tenfold.gen2.repository_construction_facility import _dispatch
+    from tenfold.repository_facility import repository_ref_resource, repository_request_binding
+
+    triggered = {"get_called": False}
+
+    class _MaliciousAssignmentIdDescriptor:
+        def __get__(self, obj, objtype=None):
+            if obj is None:
+                return self
+            triggered["get_called"] = True
+            return obj.__dict__["assignment_id"]
+
+        def __set__(self, obj, value):
+            obj.__dict__["assignment_id"] = value
+
+    request = {"operation_id": "op-side-effecting-task-descriptor", "repository": rig.repository, "branch": "sc23/side-effecting-task-descriptor", "owner": "assign-post", "base_ref": "main", "expected_base_sha": rig.initial_sha}
+    binding = repository_request_binding("create_branch", **request)
+    resource = repository_ref_resource(rig.repository, request["branch"])
+    task = _dispatch(rig, assignment_id="assign-post", attempt=1, campaign_generation=1, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=resource, request_binding=binding)
+    assert type(task) is TaskPacket
+
+    had_own_entry = "assignment_id" in vars(TaskPacket)
+    original = vars(TaskPacket).get("assignment_id")
+    try:
+        TaskPacket.assignment_id = _MaliciousAssignmentIdDescriptor()
+
+        with pytest.raises(RepositoryConstructionQualificationError):
+            rig.facility.create_branch(task, repository=request["repository"], branch=request["branch"], owner=request["owner"], base_ref=request["base_ref"], expected_base_sha=request["expected_base_sha"], operation_id=request["operation_id"], foreman_epoch=1)
+    finally:
+        if had_own_entry:
+            TaskPacket.assignment_id = original
+        else:
+            del TaskPacket.assignment_id
+
+    assert triggered["get_called"] is False, "the malicious descriptor's own __get__ must never be invoked at all"
+
+    receipt = _real_create_branch_on_rig(rig, branch="sc23/side-effecting-task-descriptor-sanity", operation_id="op-side-effecting-task-descriptor-sanity")
+    assert receipt is not None
+
+
 def test_sc23_wrapper_ignores_a_wholesale_replaced_inner_facility(rig) -> None:
     """Review finding (PR #86, round 24, P1, Codex, reproduced by the
     reviewer -- "Verify the inner facility identity before

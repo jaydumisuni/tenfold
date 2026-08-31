@@ -4263,6 +4263,96 @@ Windows-only failures, zero regressions).
     (33/33), and full repository sweep (1428 passed, 2 skipped, only
     the 9 known pre-existing Windows-only subprocess failures).
 
+63. A fresh Codex pass against the round-62 commit (`65b12d5`/`2d313c2`)
+    found 1 further genuine P1 finding -- a genuinely NEW axis, not
+    another instance of round 62's own isinstance-vs-duck-typing gap:
+    round 62's structural fix closed every way a caller-supplied VALUE
+    could spoof a shape; round 63's finding is about the READ
+    MECHANISM itself being spoofable, independent of the value.
+    - **P1 ("Avoid descriptor dispatch when validating task fields"),
+      Codex**: round 62's own field-type allowlist read every field via
+      `getattr(task, field.name)`, reasoning this was safe because
+      `type(task) is TaskPacket` was already confirmed exactly (round
+      59) -- ruling out a SUBCLASS `__getattribute__` override, but
+      missing a third axis entirely: a same-process caller can assign
+      a DATA descriptor directly onto the `TaskPacket` CLASS itself
+      (`TaskPacket.assignment_id = malicious_descriptor`). Python's own
+      attribute-lookup protocol gives a data descriptor found on the
+      TYPE priority over ANY instance's own `__dict__` entry, for
+      EVERY instance of that class, process-wide, regardless of how
+      genuinely that instance was constructed. The reviewer reproduced
+      a descriptor whose `__get__` moves `.git/refs/heads` to an
+      external directory, installs a symlink, and returns the ORIGINAL
+      PLAIN STRING (so every exact-type and authority check downstream
+      still passes) -- an otherwise perfectly legitimate,
+      genuinely-sealed task, with every field a plain exact `str`,
+      still triggered the descriptor's side effect the moment
+      `getattr` ran, and an authorized `create_branch` wrote the ref
+      externally.
+
+      This is the SAME "same-process caller can rebind a class's own
+      attributes to intercept normal operations" pattern rounds 21/23
+      already established for `LocalGitRepositoryTransport`/
+      `RepositoryFacility` -- `TaskPacket` was simply never added to
+      that same pinning mechanism, since rounds 59-62 were reasoning
+      about the TASK INSTANCE's own trustworthiness, never about
+      `TaskPacket` the CLASS being just as mutable, same-process, as
+      every other class this file already pins.
+
+      Fixed with the reviewer's own two-part recommendation, both
+      reusing established mechanisms rather than inventing new ones:
+      (1) `TaskPacket` is now pinned via the SAME generic
+      `_reject_altered_class_implementation` every other trusted class
+      in this file already uses (`_reject_altered_task_packet_class_implementation`,
+      called from `_reject_non_exact_task_packet_argument` immediately
+      after the exact-type check, before any field is read) -- a data
+      descriptor assignment adds a NEW name to `vars(TaskPacket)`
+      (dataclass fields without a default, like `assignment_id`, have
+      no class-level attribute at all until tampered with), caught by
+      the existing set-difference check with no changes to that
+      function itself; (2) field reads switch from `getattr(task,
+      field.name)` to `inspect.getattr_static(task, field.name)` --
+      the same tool round 56 already established for exactly this
+      purpose, which never invokes `__get__` on anything it finds.
+      Empirically verified (not merely assumed) before relying on it:
+      for the ordinary, untampered case, `getattr_static` returns the
+      genuine value straight from the instance's own `__dict__`,
+      identical to a legitimate `getattr`; if a data descriptor HAS
+      been installed on the class, `getattr_static` instead returns
+      the raw descriptor object itself, unresolved -- `__get__` is
+      never called at all -- which then fails the exact-type check on
+      its own (a descriptor instance is never `str`/`int`/`tuple`).
+      Mechanism (1) happens to fire first for this exact attack (a
+      brand new class attribute is exactly what its set-difference
+      check catches), making mechanism (2) genuine defense-in-depth
+      rather than independently load-bearing for this specific
+      reproduction -- kept anyway, matching the reviewer's own
+      two-part ask and this file's established "belt and suspenders
+      when both are cheap and independently correct" precedent.
+
+      No new adjudicated residual-Gen1-dependency exceptions needed --
+      `TaskPacket` (from `tenfold.contracts`) was already a tracked
+      Gen1 dependency via the existing residual-dependency scan (the
+      same class every field-type check since round 59 has referenced);
+      pinning its class implementation adds no NEW Gen1 module
+      dependency of its own; confirmed via a clean residual-dependency
+      scan after the fix.
+
+    1 new permanent regression test reproduces the reviewer's exact
+    side-effecting-descriptor `assignment_id` class-level tampering
+    via a real, fully-authorized `create_branch` dispatch (using a
+    genuinely, previously-constructed task, with the descriptor
+    installed on the real, shared `TaskPacket` class only afterward,
+    matching the reviewer's own "after admission" framing, and
+    restored in a `finally` block exactly matching this file's
+    established had-no-own-entry-before restoration precedent),
+    asserting the malicious `__get__` never actually runs at all,
+    followed by a sanity dispatch confirming no over-rejection. Fixed
+    in commit `<pending>`. Full local re-verification: full test file
+    (133/133), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (pending), and full repository
+    sweep (pending).
+
 ## Real, honest end-to-end result
 
 Running `execute_self_construction_gate()` for real against the live
