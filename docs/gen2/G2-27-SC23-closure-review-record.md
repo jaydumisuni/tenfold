@@ -3721,10 +3721,11 @@ Windows-only failures, zero regressions).
     over-rejection); the existing wholesale-rebind disclosed-
     limitation test is updated to reflect the new tuple-based
     mechanism rather than testing a `MappingProxyType` construction
-    this file no longer uses. Fixed in commit `<pending>`. Full local
+    this file no longer uses. Fixed in commit `123f116`. Full local
     re-verification: full test file (119/119), full mutation suite
-    (37/37), `test_g2_27_self_construction.py` (pending), and full
-    repository sweep (pending).
+    (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1415 passed, 2 skipped, only the 9 known
+    pre-existing Windows-only failures, zero regressions).
 
 ## Real, honest end-to-end result
 
