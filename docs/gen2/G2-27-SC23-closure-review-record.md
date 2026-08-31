@@ -4170,10 +4170,11 @@ Windows-only failures, zero regressions).
     dispatch. Every test asserts the malicious dunder never actually
     runs at all, and the three with a successful path follow with a
     sanity dispatch confirming no over-rejection. Fixed in commit
-    `<pending>`. Full local re-verification: full test file
+    `342c6fe`. Full local re-verification: full test file
     (130/130), full mutation suite (37/37),
-    `test_g2_27_self_construction.py` (pending), and full repository
-    sweep (pending).
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (1426 passed, 2 skipped, only the 9 known pre-existing
+    Windows-only subprocess failures).
 
 ## Real, honest end-to-end result
 
