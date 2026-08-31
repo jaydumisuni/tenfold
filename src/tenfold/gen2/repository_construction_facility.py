@@ -700,6 +700,15 @@ def _tenfold_owned_function(value: object) -> bool:
 #: reachable name is still genuinely local, first-party code; see
 #: `_tenfold_owned_function`'s own docstring for where that boundary
 #: is deliberately drawn and why.
+#: Round 56: sentinel distinguishing "genuinely absent" from "present
+#: but happens to be `None`" for `inspect.getattr_static`'s own
+#: `default` parameter, used wherever this file needs to check
+#: attribute PRESENCE on a class without ever triggering descriptor
+#: dispatch (unlike `hasattr`, which invokes `__get__` the same way
+#: `getattr` does).
+_LEAF_ATTRIBUTE_ABSENT = object()
+
+
 def _leaf_attribute_roots(func) -> list:
     """SELF-CAUGHT FINDING (review finding, PR #86, round 51, P1,
     Codex, reproduced by the reviewer -- "Snapshot mutable attributes
@@ -823,7 +832,15 @@ def _leaf_attribute_roots(func) -> list:
             while stack:
                 cls = stack.pop()
                 for attr_name in referenced:
-                    if attr_name != name and hasattr(cls, attr_name):
+                    # Round 56 (see `_leaf_attribute_namespace_get`'s
+                    # own ROUND 56 WIDENING docstring section): plain
+                    # `hasattr` invokes descriptor `__get__` the same
+                    # way plain `getattr` does, so even this
+                    # DISCOVERY-phase existence check could trigger a
+                    # malicious descriptor's side effect (not merely a
+                    # lying comparison result). `getattr_static`
+                    # checks presence without ever invoking `__get__`.
+                    if attr_name != name and inspect.getattr_static(cls, attr_name, _LEAF_ATTRIBUTE_ABSENT) is not _LEAF_ATTRIBUTE_ABSENT:
                         pairs.append((cls, attr_name))
                 for method in vars(cls).values():
                     # `__new__` (the exact method `Path`'s own
@@ -852,15 +869,41 @@ def _leaf_attribute_namespace_get(namespace, name):
     `__dict__`, unchanged since round 51/52 -- read via plain key
     lookup, seeing only what that SPECIFIC object directly defines
     itself) or a CLASS OBJECT itself (`_leaf_attribute_roots`'s new
-    concrete-subclass entries) -- read via ordinary MRO-resolved
-    attribute lookup (`getattr`), seeing the actual, EFFECTIVE value
-    any real instance of that class would get, from wherever in its
-    own MRO it's actually defined. Shared by
-    `_capture_transitive_authority_globals`'s own capture step and
-    `_transitive_global_entry_matches`'s own verification, so both
-    read a given namespace identically."""
+    concrete-subclass entries) -- read via MRO-resolved attribute
+    lookup, seeing the actual binding any real instance of that class
+    would resolve to, from wherever in its own MRO it's actually
+    defined. Shared by `_capture_transitive_authority_globals`'s own
+    capture step and `_transitive_global_entry_matches`'s own
+    verification, so both read a given namespace identically.
+
+    ROUND 56 WIDENING (P1, Codex, reproduced by the reviewer --
+    "Avoid descriptor dispatch while validating class leaves"): the
+    round-53/55 versions read the class branch via plain `getattr`,
+    which -- for ANY attribute that is a DESCRIPTOR (an object
+    implementing `__get__`, which every plain function already is) --
+    INVOKES that descriptor's `__get__` rather than returning the raw
+    binding stored in the class's own MRO. The reviewer reproduced
+    installing a CUSTOM descriptor on the concrete `Path` subclass
+    whose `__get__` inspects its `obj` argument and returns
+    DIFFERENTLY depending on the caller: `descriptor.__get__(None,
+    cls)` (CLASS-level access, exactly what `getattr(cls, name)`
+    performs, and exactly what this verification used) returned the
+    ORIGINALLY-ADMITTED `is_symlink` function, so every identity
+    comparison kept passing -- while `descriptor.__get__(instance,
+    cls)` (INSTANCE-level access, what REAL code performs via
+    `git_dir.is_symlink()`) returned a function that always reports
+    `False`. Fixed by reading the class branch via
+    `inspect.getattr_static` instead -- the SAME descriptor-free,
+    MRO-walking read this file already uses elsewhere for exactly
+    this reason (see `_capture_collaborator_relied_upon_attributes`'s
+    own use of it) -- which returns the RAW object actually stored at
+    that point in the MRO, invoking no `__get__` at all: a malicious
+    descriptor is itself the value compared, correctly differing by
+    identity from the originally-captured plain function, with no
+    separate "reject descriptors" step needed beyond the SAME
+    identity check every other leaf already receives."""
     if isinstance(namespace, type):
-        return getattr(namespace, name, None)
+        return inspect.getattr_static(namespace, name, None)
     return namespace.get(name)
 
 

@@ -2320,6 +2320,72 @@ def test_sc23_wrapper_rejects_a_rebound_pathlib_concrete_class_factory_selector(
     assert receipt is not None
 
 
+def test_sc23_wrapper_rejects_a_schizophrenic_descriptor_on_a_path_subclass(rig) -> None:
+    """Review finding (PR #86, round 56, P1, Codex, reproduced by the
+    reviewer -- "Avoid descriptor dispatch while validating class
+    leaves"): the round-53/55 class-leaf verification read the
+    concrete class via plain `getattr`, which -- for any attribute
+    that is a DESCRIPTOR (an object implementing `__get__`) --
+    INVOKES that descriptor's `__get__` rather than returning the raw
+    MRO binding. The reviewer reproduced installing a custom
+    descriptor on the concrete `Path` subclass whose `__get__`
+    inspects its `obj` argument and answers DIFFERENTLY depending on
+    the caller: `descriptor.__get__(None, cls)` (CLASS-level access --
+    exactly what this file's own verification performed) returned the
+    ORIGINALLY-ADMITTED `is_symlink` function, so every identity
+    comparison kept passing, while `descriptor.__get__(instance, cls)`
+    (INSTANCE-level access -- what REAL code performs via
+    `git_dir.is_symlink()`) returned a function that always reports
+    `False`. Fixed by reading the class branch via
+    `inspect.getattr_static` instead (both in
+    `_leaf_attribute_namespace_get`'s own verification AND in
+    `_leaf_attribute_roots`'s own discovery-phase existence check,
+    which used `hasattr` -- ALSO descriptor-invoking -- found via
+    self-audit before considering this round closed), which returns
+    the RAW object stored in the MRO without ever invoking `__get__`
+    at all. This performs a REAL, fully-authorized `create_branch`
+    dispatch to prove the malicious descriptor's instance-level lie
+    genuinely never runs undetected. The concrete class's `is_symlink`
+    is restored in a `finally` block, since it is a real, shared,
+    process-global class."""
+    from pathlib import Path
+
+    concrete = type(Path())
+    had_own_entry = "is_symlink" in concrete.__dict__
+    original_is_symlink = concrete.is_symlink
+
+    triggered = {"instance_level_lie_returned": False}
+
+    class _SchizophrenicDescriptor:
+        def __get__(self, obj, objtype=None):
+            if obj is None:
+                # CLASS-level access -- exactly what this file's own
+                # verification performs -- lies by returning the
+                # originally-admitted, real function.
+                return original_is_symlink
+
+            def _always_false():
+                triggered["instance_level_lie_returned"] = True
+                return False
+
+            return _always_false
+
+    concrete.is_symlink = _SchizophrenicDescriptor()  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack: a descriptor answering differently by caller
+    try:
+        with pytest.raises(RepositoryConstructionQualificationError):
+            _real_create_branch_on_rig(rig, branch="sc23/schizophrenic-path-descriptor", operation_id="op-schizophrenic-path-descriptor")
+    finally:
+        if had_own_entry:
+            concrete.is_symlink = original_is_symlink
+        else:
+            del concrete.is_symlink
+
+    assert triggered["instance_level_lie_returned"] is False
+
+    receipt = _real_create_branch_on_rig(rig, branch="sc23/schizophrenic-path-descriptor-sanity", operation_id="op-schizophrenic-path-descriptor-sanity")
+    assert receipt is not None
+
+
 def test_sc23_wrapper_ignores_a_wholesale_replaced_inner_facility(rig) -> None:
     """Review finding (PR #86, round 24, P1, Codex, reproduced by the
     reviewer -- "Verify the inner facility identity before

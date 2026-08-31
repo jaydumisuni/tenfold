@@ -3727,6 +3727,77 @@ Windows-only failures, zero regressions).
     repository sweep (1415 passed, 2 skipped, only the 9 known
     pre-existing Windows-only failures, zero regressions).
 
+56. A fresh Codex pass against the round-55 commit (`123f116`/`ac4606b`)
+    found 1 further genuine P1 finding -- a THIRD consecutive round
+    attacking a mechanism this closure itself introduced in round 53,
+    and the first finding this campaign has faced that exploits
+    Python's descriptor protocol directly:
+    - **P1 ("Avoid descriptor dispatch while validating class
+      leaves"), Codex**: the round-53/55 class-leaf verification read
+      the concrete class via plain `getattr`, which -- for ANY
+      attribute that is a DESCRIPTOR (an object implementing
+      `__get__`, which every plain function already is) -- INVOKES
+      that descriptor's `__get__` rather than returning the raw
+      binding stored in the class's own MRO. The reviewer reproduced
+      installing a CUSTOM descriptor on the concrete `Path` subclass
+      whose `__get__` inspects its `obj` argument and answers
+      DIFFERENTLY depending on the caller: `descriptor.__get__(None,
+      cls)` (CLASS-level access, exactly what `getattr(cls, name)`
+      performs, and exactly what this file's own verification used)
+      returned the ORIGINALLY-ADMITTED `is_symlink` function, so every
+      identity comparison kept passing -- while
+      `descriptor.__get__(instance, cls)` (INSTANCE-level access, what
+      REAL code performs via `git_dir.is_symlink()`) returned a
+      function that always reports `False`, letting a symlinked
+      `.git/refs/heads` escape detection during a fully authorized
+      `create_branch`.
+
+      Fixed by switching `_leaf_attribute_namespace_get`'s class
+      branch from plain `getattr` to `inspect.getattr_static` -- the
+      SAME descriptor-free, MRO-walking read this file already used
+      elsewhere for exactly this reason (`_capture_collaborator_relied_upon_attributes`'s
+      own class-attribute reads have used `getattr_static` since
+      round 48, confirmed via self-audit to have NEVER shared this
+      exposure) -- which returns the RAW object actually stored at
+      that point in the MRO, invoking no `__get__` at all: a
+      malicious descriptor becomes the value being compared, correctly
+      differing by identity from the originally-captured plain
+      function, with no separate "reject descriptors" step needed
+      beyond the SAME identity check every other leaf already
+      receives. Self-audit (before considering this round closed)
+      found the IDENTICAL exposure one step earlier, in
+      `_leaf_attribute_roots`'s own DISCOVERY-phase existence check:
+      `hasattr(cls, attr_name)` invokes `__get__` the same way
+      `getattr` does, meaning even deciding WHETHER to pin a name
+      could trigger a malicious descriptor's side effect (not merely
+      accept a lying comparison result) -- fixed the same way, via a
+      `getattr_static`-plus-sentinel presence check instead of
+      `hasattr`.
+
+      This is the third consecutive round (53, 55, 56) finding a
+      genuine gap in the SAME round-53 class-leaf mechanism -- each a
+      DIFFERENT axis (concrete subclass identity, backing-container
+      reachability, now descriptor dispatch) rather than a repeat of
+      any prior one, confirming this mechanism was worth the
+      sustained scrutiny rather than indicating the earlier fixes
+      were themselves careless.
+
+      No new adjudicated residual-Gen1-dependency exceptions needed --
+      every mechanism name reached is unchanged; confirmed via a clean
+      residual-dependency scan after the fix.
+
+    Fixed with a real mechanism, reusing an existing, already-proven
+    pattern from elsewhere in this file rather than inventing a new
+    one. 1 new permanent regression test reproduces the reviewer's
+    exact schizophrenic-descriptor attack via a real, fully-authorized
+    `create_branch` dispatch, asserting the instance-level lie never
+    actually ran, restored to the EXACT prior state in a `finally`
+    block, followed by a sanity dispatch confirming no over-rejection.
+    Fixed in commit `<pending>`. Full local re-verification: full
+    test file (120/120), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (pending), and full repository
+    sweep (pending).
+
 ## Real, honest end-to-end result
 
 Running `execute_self_construction_gate()` for real against the live
