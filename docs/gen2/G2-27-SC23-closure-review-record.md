@@ -4257,10 +4257,11 @@ Windows-only failures, zero regressions).
     malicious tuple during the test's own setup) via a real,
     fully-authorized `create_branch` dispatch, followed by a sanity
     dispatch confirming no over-rejection. Both assert the malicious
-    `__iter__` never actually runs at all. Fixed in commit `<pending>`.
+    `__iter__` never actually runs at all. Fixed in commit `65b12d5`.
     Full local re-verification: full test file (132/132), full
     mutation suite (37/37), `test_g2_27_self_construction.py`
-    (pending), and full repository sweep (pending).
+    (33/33), and full repository sweep (1428 passed, 2 skipped, only
+    the 9 known pre-existing Windows-only subprocess failures).
 
 ## Real, honest end-to-end result
 
