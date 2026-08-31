@@ -3874,6 +3874,79 @@ Windows-only failures, zero regressions).
     full repository sweep (1417 passed, 2 skipped, only the 9 known
     pre-existing Windows-only failures, zero regressions).
 
+58. A fresh Codex pass against the round-57 commit (`6aadb8a`/`6828736`)
+    found 1 further genuine P1 finding -- round 57's own self-audit
+    proven wrong one argument later, and a direct instance of the
+    "generalize, don't wait for the next round" lesson this campaign
+    has repeatedly learned and, this once, failed to apply pre-emptively:
+    - **P1 ("Validate the branch argument before containment
+      scanning"), Codex**: round 57's own self-audit claimed
+      `repository` was the ONLY argument any dispatch method's Gen1
+      delegate uses in a dunder-invoking way, reasoning that other
+      arguments are "only ever passed to `subprocess`... or used in
+      string formatting, NEITHER OF WHICH invokes `__hash__`/`__eq__`"
+      -- an overclaim: string formatting invokes a COMPLETELY
+      DIFFERENT dunder method, `__format__`, which a subclass can
+      equally override with a malicious side effect. The reviewer
+      reproduced exactly this: `repository_ref_resource(repository,
+      branch)`'s own `f"repository:{repository}:ref:{ref}"` formats
+      `branch` the moment `RepositoryFacility.create_branch` computes
+      its own resource string, deep inside Gen1's real code, well
+      AFTER `_revalidate_transport_integrity` already ran -- letting a
+      malicious `branch.__format__` plant the SAME symlink round 57's
+      `repository` finding did, with a fully authorized
+      `create_branch` STILL SUCCEEDING and returning a genuine
+      receipt.
+
+      Given round 57's own narrow, per-argument scoping is EXACTLY
+      what let this recur one argument later, the fix this round is a
+      change in KIND, not another name added to an allowlist:
+      `_reject_non_exact_str_dispatch_arguments` (renamed from
+      `_reject_non_exact_str_repository_argument`) now validates EVERY
+      top-level keyword argument any of the five dispatch methods
+      receives that is ALREADY `isinstance(v, str)` (a plain `str` or
+      ANY subclass) for exact `type(v) is str`, regardless of its
+      NAME -- closing `repository` (round 57), `branch` (this round),
+      and any FUTURE string-typed parameter Gen1's own code might
+      someday format, hash, or compare, without needing its own round
+      to discover it.
+
+      Self-audit (before considering this round closed) found the
+      IDENTICAL exposure one level deeper still: `commit`'s own
+      `files: dict[str, bytes]` argument has caller-controlled STRING
+      KEYS that Gen1's own `_file_digests` SORTS
+      (`sorted(files.items())`, invoking `__lt__` -- the exact
+      round-45 sort-before-type-check pattern, now on a
+      caller-supplied dict's own keys rather than this module's
+      internal `__kwdefaults__`) and
+      `LocalGitRepositoryTransport.commit_files` uses as dict keys
+      (invoking `__hash__`/`__eq__` again). `files`' own keys are now
+      ALSO validated the same way, one level into that ONE specific
+      nested structure -- deliberately not a general recursive walk of
+      arbitrary nested caller data, which has no natural stopping
+      point, matching this file's own established DISCLOSED SCOPE
+      line applied here too.
+
+      No new adjudicated residual-Gen1-dependency exceptions needed --
+      the renamed function is Gen2-owned and reached via the same
+      already-adjudicated dispatch methods; confirmed via a clean
+      residual-dependency scan after the fix.
+
+    Fixed with a real mechanism, generalizing past round 57's own
+    narrow scoping rather than patching one more name. 2 new permanent
+    regression tests: one reproduces the reviewer's exact
+    side-effecting-`__format__` `branch` argument via a real,
+    fully-authorized `create_branch` dispatch, asserting the malicious
+    `__format__` never actually runs at all, followed by a sanity
+    dispatch confirming no over-rejection; the other, a self-audited
+    sibling, reproduces a side-effecting-`__lt__` `files` dict key via
+    a real, fully-authorized `commit` dispatch, asserting the
+    malicious `__lt__` never actually runs at all. Fixed in commit
+    `<pending>`. Full local re-verification: full test file
+    (123/123), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (pending), and full repository
+    sweep (pending).
+
 ## Real, honest end-to-end result
 
 Running `execute_self_construction_gate()` for real against the live

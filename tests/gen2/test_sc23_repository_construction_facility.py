@@ -2437,6 +2437,115 @@ def test_sc23_wrapper_rejects_a_repository_argument_with_a_side_effecting_hash(r
     assert triggered["hash_called"] is False, "the malicious repository argument's own __hash__ must never be invoked at all"
 
 
+def test_sc23_wrapper_rejects_a_branch_argument_with_a_side_effecting_format(rig) -> None:
+    """Review finding (PR #86, round 58, P1, Codex, reproduced by the
+    reviewer -- "Validate the branch argument before containment
+    scanning"): round 57's own self-audit claimed `repository` was
+    the ONLY argument any dispatch method's Gen1 delegate uses in a
+    dunder-invoking way, reasoning that other arguments are "only
+    ever passed to `subprocess`... or used in string formatting,
+    neither of which invokes `__hash__`/`__eq__`" -- an overclaim:
+    string formatting invokes a COMPLETELY DIFFERENT dunder method,
+    `__format__`, which a subclass can equally override with a
+    malicious side effect. The reviewer reproduced exactly this:
+    `repository_ref_resource(repository, branch)`'s own
+    `f"repository:{repository}:ref:{ref}"` formats `branch` the
+    moment `RepositoryFacility.create_branch` computes its own
+    resource string, deep inside Gen1's real code, well AFTER
+    `_revalidate_transport_integrity` already ran -- letting a
+    malicious `branch.__format__` plant the same symlink round 57's
+    `repository` finding did, with a fully authorized `create_branch`
+    STILL SUCCEEDING and returning a genuine receipt. Fixed by a
+    change in KIND, not another name added to an allowlist:
+    `_reject_non_exact_str_dispatch_arguments` (renamed from
+    `_reject_non_exact_str_repository_argument`) now validates EVERY
+    top-level string-typed keyword argument, regardless of name, for
+    exact `type(v) is str`. This test asserts the malicious
+    `__format__` never actually runs at all -- not merely that some
+    error was eventually raised, and that a real, fully-authorized
+    `create_branch` with a genuine `str` branch still succeeds
+    afterward."""
+    from tenfold.gen2.repository_construction_facility import _dispatch
+    from tenfold.repository_facility import repository_ref_resource, repository_request_binding
+
+    triggered = {"format_called": False}
+
+    class _SideEffectingBranch(str):
+        def __format__(self, format_spec):
+            triggered["format_called"] = True
+            return str.__format__(str(self), format_spec)
+
+    malicious_branch = _SideEffectingBranch("sc23/side-effecting-branch-format")
+
+    request = {"operation_id": "op-side-effecting-branch-format", "repository": rig.repository, "branch": str(malicious_branch), "owner": "assign-post", "base_ref": "main", "expected_base_sha": rig.initial_sha}
+    binding = repository_request_binding("create_branch", **request)
+    resource = repository_ref_resource(rig.repository, request["branch"])
+    task = _dispatch(rig, assignment_id="assign-post", attempt=1, campaign_generation=1, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=resource, request_binding=binding)
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        rig.facility.create_branch(task, repository=request["repository"], branch=malicious_branch, owner=request["owner"], base_ref=request["base_ref"], expected_base_sha=request["expected_base_sha"], operation_id=request["operation_id"], foreman_epoch=1)
+
+    assert triggered["format_called"] is False, "the malicious branch argument's own __format__ must never be invoked at all"
+
+    receipt = _real_create_branch_on_rig(rig, branch="sc23/side-effecting-branch-format-sanity", operation_id="op-side-effecting-branch-format-sanity")
+    assert receipt is not None
+
+
+def test_sc23_wrapper_rejects_a_non_exact_str_file_path_key(rig) -> None:
+    """Self-audited sibling of the round-58 finding (see
+    `test_sc23_wrapper_rejects_a_branch_argument_with_a_side_effecting_format`'s
+    own docstring): found before considering round 58 closed, not
+    separately demonstrated by the reviewer. `commit`'s own `files:
+    dict[str, bytes]` argument has caller-controlled STRING KEYS that
+    Gen1's own `_file_digests` SORTS (`sorted(files.items())`,
+    invoking `__lt__` -- the exact round-45 sort-before-type-check
+    pattern, now on a caller-supplied dict's own keys rather than this
+    module's internal `__kwdefaults__`) and
+    `LocalGitRepositoryTransport.commit_files` uses as dict keys
+    (`normalized_files`, invoking `__hash__`/`__eq__` again).
+    `_reject_non_exact_str_dispatch_arguments` validates `files`' own
+    keys the same way, one level into that one specific nested
+    structure. This test asserts the malicious key's own `__lt__` is
+    never invoked at all."""
+    from tenfold.gen2.repository_construction_facility import _dispatch, _file_digests
+    from tenfold.repository_facility import repository_ref_resource, repository_request_binding
+
+    triggered = {"lt_called": False}
+
+    class _SideEffectingPath(str):
+        def __lt__(self, other):
+            triggered["lt_called"] = True
+            return str.__lt__(self, other)
+
+    plain_files = {"malicious.txt": b"content", "other.txt": b"more content"}
+    malicious_path = _SideEffectingPath("malicious.txt")
+    malicious_files = {malicious_path: b"content", "other.txt": b"more content"}
+
+    request = {"operation_id": "op-side-effecting-file-key", "repository": rig.repository, "branch": "sc23/side-effecting-file-key", "owner": "assign-post", "base_ref": "main", "expected_base_sha": rig.initial_sha}
+    binding = repository_request_binding("create_branch", **request)
+    resource = repository_ref_resource(rig.repository, request["branch"])
+    task = _dispatch(rig, assignment_id="assign-post", attempt=1, campaign_generation=1, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=resource, request_binding=binding)
+    receipt = rig.facility.create_branch(task, repository=request["repository"], branch=request["branch"], owner=request["owner"], base_ref=request["base_ref"], expected_base_sha=request["expected_base_sha"], operation_id=request["operation_id"], foreman_epoch=1)
+    assert receipt is not None
+
+    # The binding is computed against the PLAIN-keyed files dict (via
+    # _file_digests, which SORTS internally -- using the malicious
+    # dict here would trigger the same __lt__ this test is proving
+    # never runs, in the test's OWN setup rather than the real
+    # dispatch). The wrapper's own type check runs and raises BEFORE
+    # request-binding validation is ever reached, so this mismatch
+    # against the actually-passed `malicious_files` never matters.
+    commit_request = {"operation_id": "op-side-effecting-file-key-commit", "repository": rig.repository, "branch": request["branch"], "owner": "assign-post", "expected_head": rig.initial_sha, "files": _file_digests(plain_files), "message": "test\n"}
+    commit_binding = repository_request_binding("commit", **commit_request)
+    commit_resource = repository_ref_resource(rig.repository, request["branch"])
+    commit_task = _dispatch(rig, assignment_id="assign-post", attempt=2, campaign_generation=1, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=commit_resource, request_binding=commit_binding)
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        rig.facility.commit(commit_task, repository=rig.repository, branch=request["branch"], owner="assign-post", expected_head=rig.initial_sha, files=malicious_files, message="test\n", operation_id=commit_request["operation_id"], foreman_epoch=1)
+
+    assert triggered["lt_called"] is False, "the malicious file path key's own __lt__ must never be invoked at all"
+
+
 def test_sc23_wrapper_ignores_a_wholesale_replaced_inner_facility(rig) -> None:
     """Review finding (PR #86, round 24, P1, Codex, reproduced by the
     reviewer -- "Verify the inner facility identity before

@@ -3271,38 +3271,79 @@ def _current_transport(wrapper: "_ContainmentReCheckedRepositoryFacility") -> Lo
 #: processing, not by a concurrent thread or process racing against a
 #: window of time.
 #:
-#: Fixed the same way round 28 already established for THIS module's
-#: own internal data (`kwdefaults` keys/values): a caller-controlled
-#: value's dunder methods (`__hash__`, `__eq__`, `__lt__`, ...) must
-#: never be invoked before its EXACT type is confirmed via `type(x) is
-#: str` (never `isinstance`, which admits a malicious subclass exactly
-#: like the one reproduced here). Confirmed by self-audit that
-#: `repository` is the ONLY caller-supplied argument to any of the
-#: five dispatch methods below that Gen1's own real code ever uses as
-#: a dict key anywhere (`grep` against both
-#: `local_git_transport.py`/`repository_facility.py` found no other
-#: site) -- `branch`/`owner`/`base_ref`/`path`/etc. are only ever
-#: passed to `subprocess` as plain command-line arguments or used in
-#: string formatting, neither of which invokes `__hash__`/`__eq__` on
-#: the value at all.
-def _reject_non_exact_str_repository_argument(kwargs: dict) -> None:
-    """See this function's own module-level comment for the round-57
-    finding this closes. Checked BEFORE any delegation, revalidation,
-    or containment scanning even runs -- the earliest possible point,
-    since the malicious side effect fires the moment `repository` is
-    ever used as a dict key ANYWHERE downstream, including inside
-    Gen1's own real code this module does not otherwise control.
-    Deliberately does nothing when `repository` is simply ABSENT from
-    `kwargs` (a caller who forgot a required keyword-only argument
-    gets Python's own natural, more informative `TypeError` from the
-    real delegated call instead) -- this check only ever judges a
-    value that is genuinely PRESENT, matching this file's own
+#: ROUND 58 WIDENING (P1, Codex, reproduced by the reviewer --
+#: "Validate the branch argument before containment scanning"): round
+#: 57's own self-audit claimed `repository` was the ONLY argument any
+#: dispatch method's Gen1 delegate uses in a dunder-invoking way,
+#: reasoning "`branch`/... are only ever passed to `subprocess` as
+#: plain command-line arguments or used in string formatting, NEITHER
+#: OF WHICH invokes `__hash__`/`__eq__` on the value at all" -- an
+#: overclaim, corrected here: STRING FORMATTING (an f-string, in
+#: particular) invokes a COMPLETELY DIFFERENT dunder method,
+#: `__format__`, which a subclass can equally override with a
+#: malicious side effect. The reviewer reproduced exactly this:
+#: `repository_ref_resource(repository, branch)`'s own
+#: `f"repository:{repository}:ref:{ref}"` formats `branch` (passed as
+#: `ref`) the moment `RepositoryFacility.create_branch` computes its
+#: OWN resource string, deep inside Gen1's real code, well AFTER
+#: `_revalidate_transport_integrity` already ran -- letting a
+#: malicious `branch.__format__` plant the SAME symlink round 57's
+#: `repository` finding did, with a fully authorized `create_branch`
+#: STILL SUCCEEDING and returning a genuine receipt.
+#:
+#: Given round 57's own narrow, per-argument scoping is EXACTLY what
+#: let this recur one argument later, the fix this round is a change
+#: in KIND, not another name added to an allowlist: EVERY top-level
+#: keyword argument any of the five dispatch methods below receives
+#: that is ALREADY `isinstance(v, str)` (a plain `str` or ANY
+#: subclass) is now validated for EXACT `type(v) is str`, regardless
+#: of its NAME -- closing `repository` (round 57), `branch` (this
+#: round), and any FUTURE string-typed parameter Gen1's own code might
+#: someday format, hash, or compare, without needing its own round to
+#: discover it. Self-audit (before considering this round closed)
+#: found the IDENTICAL exposure one level deeper still: `commit`'s own
+#: `files: dict[str, bytes]` argument has caller-controlled STRING
+#: KEYS that Gen1's own `_file_digests` SORTS
+#: (`sorted(files.items())`, invoking `__lt__` -- the exact round-45
+#: sort-before-type-check pattern, now on a caller-supplied dict's own
+#: keys rather than this module's internal `__kwdefaults__`) and
+#: `LocalGitRepositoryTransport.commit_files` uses as dict keys
+#: (`normalized_files`, invoking `__hash__`/`__eq__` again) -- so
+#: `files`' own keys are validated the SAME way, one level into that
+#: ONE specific nested structure (not a general recursive walk of
+#: arbitrary nested caller data, which has no natural stopping point
+#: -- this file's own established DISCLOSED SCOPE line, applied here
+#: too).
+def _reject_non_exact_str_dispatch_arguments(kwargs: dict) -> None:
+    """See this function's own module-level comment for the
+    round-57/58 findings this closes. Checked BEFORE any delegation,
+    revalidation, or containment scanning even runs -- the earliest
+    possible point, since a malicious side effect can fire the moment
+    ANY of these values is ever hashed, compared, sorted, or formatted
+    ANYWHERE downstream, including inside Gen1's own real code this
+    module does not otherwise control. Deliberately does nothing for a
+    keyword argument that is simply ABSENT (a caller who forgot a
+    required keyword-only argument gets Python's own natural, more
+    informative `TypeError` from the real delegated call instead) or
+    whose value is not even `isinstance(v, str)` in the first place
+    (an `int`/`dict`/etc. argument was never the shape this finding is
+    about) -- this check only ever judges a value that is genuinely
+    PRESENT and genuinely string-shaped, matching this file's own
     "detect presence, don't interpret" discipline."""
-    if "repository" in kwargs and type(kwargs["repository"]) is not str:
-        raise RepositoryConstructionQualificationError(
-            f"_reject_non_exact_str_repository_argument: repository must be an exact str "
-            f"(got {type(kwargs['repository']).__name__}) -- refusing to dispatch"
-        )
+    for name, value in kwargs.items():
+        if isinstance(value, str) and type(value) is not str:
+            raise RepositoryConstructionQualificationError(
+                f"_reject_non_exact_str_dispatch_arguments: {name} must be an exact str "
+                f"(got {type(value).__name__}) -- refusing to dispatch"
+            )
+    files = kwargs.get("files")
+    if isinstance(files, dict):
+        for path in files:
+            if isinstance(path, str) and type(path) is not str:
+                raise RepositoryConstructionQualificationError(
+                    f"_reject_non_exact_str_dispatch_arguments: files has a non-exact-str "
+                    f"path key (got {type(path).__name__}) -- refusing to dispatch"
+                )
 
 
 def _revalidate_transport_integrity(wrapper: "_ContainmentReCheckedRepositoryFacility") -> "_AdmittedTransportState":
@@ -3664,32 +3705,32 @@ class _ContainmentReCheckedRepositoryFacility(metaclass=_FrozenClassMeta):
         # `_revalidate_transport_integrity`'s own docstring): all FIVE
         # dispatch methods now call the SAME, fully comprehensive
         # check, unifying what used to be a narrower check for
-        # `open_pr`/`merge_pr`. Round 57 (see
-        # `_reject_non_exact_str_repository_argument`'s own docstring):
+        # `open_pr`/`merge_pr`. Round 57/58 (see
+        # `_reject_non_exact_str_dispatch_arguments`'s own docstring):
         # checked FIRST, before revalidation even runs, since the
-        # finding it closes is about the CALLER's own argument, not
+        # finding it closes is about the CALLER's own arguments, not
         # this module's trust state.
-        _reject_non_exact_str_repository_argument(kwargs)
+        _reject_non_exact_str_dispatch_arguments(kwargs)
         admitted = _revalidate_transport_integrity(self)
         return admitted.facility.create_branch(*args, **kwargs)
 
     def commit(self, *args, **kwargs):
-        _reject_non_exact_str_repository_argument(kwargs)
+        _reject_non_exact_str_dispatch_arguments(kwargs)
         admitted = _revalidate_transport_integrity(self)
         return admitted.facility.commit(*args, **kwargs)
 
     def read(self, *args, **kwargs):
-        _reject_non_exact_str_repository_argument(kwargs)
+        _reject_non_exact_str_dispatch_arguments(kwargs)
         admitted = _revalidate_transport_integrity(self)
         return admitted.facility.read(*args, **kwargs)
 
     def open_pr(self, *args, **kwargs):
-        _reject_non_exact_str_repository_argument(kwargs)
+        _reject_non_exact_str_dispatch_arguments(kwargs)
         admitted = _revalidate_transport_integrity(self)
         return admitted.facility.open_pr(*args, **kwargs)
 
     def merge_pr(self, *args, **kwargs):
-        _reject_non_exact_str_repository_argument(kwargs)
+        _reject_non_exact_str_dispatch_arguments(kwargs)
         admitted = _revalidate_transport_integrity(self)
         return admitted.facility.merge_pr(*args, **kwargs)
 
