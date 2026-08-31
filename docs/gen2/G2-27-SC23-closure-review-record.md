@@ -4176,6 +4176,92 @@ Windows-only failures, zero regressions).
     sweep (1426 passed, 2 skipped, only the 9 known pre-existing
     Windows-only subprocess failures).
 
+62. A fresh Codex pass against the round-61 commit (`342c6fe`/`0091df4`)
+    found 2 further genuine P1 findings -- and this round is a
+    STRUCTURAL fix, not one more argument-by-argument widening. 15
+    consecutive rounds (47-61) had each found one more caller-reachable
+    value that reached a dunder-dispatch-sensitive Gen1 code path
+    before this module's own type validation; round 62's own two
+    findings are proof that rounds 57-61's whole approach --
+    `isinstance(v, SHAPE) and type(v) is not SHAPE`, REACTIVE, only
+    catches a SUBCLASS of the expected shape -- has a hole no amount of
+    further per-argument widening closes: it never even LOOKS at a
+    value that was never `isinstance`-shaped in the first place, even
+    though Gen1's own code duck-types every one of these values (plain
+    `for`/`in`/`.items()`, no `isinstance` check anywhere in Gen1
+    itself).
+    - **P1 ("Require files to be an exact dict"), Codex**: round 61's
+      own fix was `isinstance(files, dict) and type(files) is not
+      dict` -- this never even inspects an object that isn't
+      `isinstance` `dict` at all. The reviewer reproduced a custom
+      mapping (implementing `.items()`/`__iter__`, NOT a `dict`
+      subclass) whose `__iter__` moved `.git/objects` externally and
+      installed a symlink; the authorized commit still returned a
+      genuine receipt.
+    - **P1 ("Require exact tuple types for TaskPacket containers"),
+      Codex**: round 60's own tuple-element check (`if isinstance(value,
+      tuple): for item in value: ...`) ITERATED the field before
+      confirming its container type at all -- so a `tuple` SUBCLASS's
+      own malicious `__iter__` fired INSIDE that check itself, not
+      merely downstream in Gen1. The reviewer reproduced an otherwise
+      valid sealed task whose `scope` iterator moved `.git/refs/heads`
+      externally and installed a symlink; `create_branch` then
+      succeeded.
+
+      Given the same structural gap recurring a second consecutive
+      round despite two separate widenings in between (round 61's own
+      `files`/int fixes), this round's fix is a change in MECHANISM,
+      not another name or type added to a reactive check -- exactly
+      the "generalize, don't wait for the next round" discipline this
+      campaign has repeatedly cited, applied to the checking mechanism
+      itself rather than to one more argument. `_reject_non_exact_dispatch_arguments`
+      and `_reject_non_exact_task_packet_argument` are both rewritten
+      around a POSITIVE ALLOWLIST (`_DISPATCH_ARGUMENT_EXACT_TYPES`,
+      keyed by Gen1's own dispatch-method kwarg names;
+      `_TASK_PACKET_FIELD_EXACT_TYPES`, keyed by `TaskPacket`'s own
+      field names) mapping each recognized name to the ONE type it is
+      ever legitimately allowed to carry, checked UNCONDITIONALLY --
+      no `isinstance` gate anywhere. `files`' own keys/values and
+      tuple-typed task fields' own elements are still validated one
+      level deep (matching the established DISCLOSED SCOPE boundary),
+      but the CONTAINER's own exact type is now always confirmed
+      first, so no malicious container-level dunder (`__iter__`,
+      `.items()`) can ever fire during validation itself, in this
+      module's own checks or in Gen1's.
+
+      This closes the WHOLE family in one mechanism: subclass spoofing
+      (rounds 57/58/60/61's own findings) AND unrelated-duck-typed
+      -object spoofing (this round's two findings) both fail the SAME
+      unconditional `type(v) is expected` test. It also needs no
+      future round to widen it argument-by-argument again: any brand
+      new kwarg or field Gen1 might someday add is safe BY DEFAULT
+      (absent from the allowlist, silently unchecked -- the same
+      "detect presence, don't interpret" boundary this file has always
+      drawn, now applied to names instead of shapes) until explicitly
+      added, rather than needing a new `isinstance` branch to even
+      notice it exists.
+
+      No new adjudicated residual-Gen1-dependency exceptions needed --
+      both rewritten functions are Gen2-owned, reached via the same
+      already-adjudicated dispatch methods; confirmed via a clean
+      residual-dependency scan after the fix.
+
+    2 new permanent regression tests: one reproduces the reviewer's
+    exact side-effecting-`__iter__` custom (non-`dict`-subclass)
+    mapping `files` argument via a real, fully-authorized `commit`
+    dispatch; the other reproduces the reviewer's exact
+    side-effecting-`__iter__` `tuple` subclass `scope` field inside a
+    genuinely, correctly sealed `TaskPacket` (digest reused from the
+    original, content-identical plain tuple rather than recomputed
+    over the malicious one, so `json.dumps` never touches the
+    malicious tuple during the test's own setup) via a real,
+    fully-authorized `create_branch` dispatch, followed by a sanity
+    dispatch confirming no over-rejection. Both assert the malicious
+    `__iter__` never actually runs at all. Fixed in commit `<pending>`.
+    Full local re-verification: full test file (132/132), full
+    mutation suite (37/37), `test_g2_27_self_construction.py`
+    (pending), and full repository sweep (pending).
+
 ## Real, honest end-to-end result
 
 Running `execute_self_construction_gate()` for real against the live

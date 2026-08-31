@@ -2896,6 +2896,120 @@ def test_sc23_wrapper_rejects_a_task_int_field_that_is_an_int_subclass(rig) -> N
     assert receipt is not None
 
 
+def test_sc23_wrapper_rejects_a_non_dict_mapping_files_argument(rig) -> None:
+    """Review finding (PR #86, round 62, P1, Codex, reproduced by the
+    reviewer -- "Require files to be an exact dict"): fresh evidence
+    beyond round 61's own `dict`-subclass fix -- round 61's check was
+    `isinstance(files, dict) and type(files) is not dict`, which never
+    even LOOKS at an object that isn't `isinstance` `dict` at all.
+    Gen1's own code duck-types `files` (`for path in files`,
+    `files.items()` -- no `isinstance` check anywhere), so a custom
+    mapping that is NOT a `dict` subclass reaches Gen1 completely
+    unchecked. The reviewer reproduced a custom mapping whose
+    `__iter__` moved `.git/objects` externally and installed a
+    symlink; the authorized commit still returned a genuine receipt.
+    Fixed by `_DISPATCH_ARGUMENT_EXACT_TYPES`'s unconditional
+    `type(files) is dict` requirement (round 62's structural rewrite
+    -- see that function's own module-level comment). This test
+    asserts the malicious `__iter__` never actually runs at all."""
+    from tenfold.gen2.repository_construction_facility import _dispatch, _file_digests
+    from tenfold.repository_facility import repository_ref_resource, repository_request_binding
+
+    triggered = {"iter_called": False}
+
+    class _DuckTypedMapping:
+        def __init__(self, data):
+            self._data = dict(data)
+
+        def items(self):
+            return self._data.items()
+
+        def __iter__(self):
+            triggered["iter_called"] = True
+            return iter(self._data)
+
+        def __len__(self):
+            return len(self._data)
+
+    plain_files = {"malicious.txt": b"content", "other.txt": b"more content"}
+    malicious_files = _DuckTypedMapping(plain_files)
+
+    request = {"operation_id": "op-side-effecting-files-mapping", "repository": rig.repository, "branch": "sc23/side-effecting-files-mapping", "owner": "assign-post", "base_ref": "main", "expected_base_sha": rig.initial_sha}
+    binding = repository_request_binding("create_branch", **request)
+    resource = repository_ref_resource(rig.repository, request["branch"])
+    task = _dispatch(rig, assignment_id="assign-post", attempt=1, campaign_generation=1, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=resource, request_binding=binding)
+    receipt = rig.facility.create_branch(task, repository=request["repository"], branch=request["branch"], owner=request["owner"], base_ref=request["base_ref"], expected_base_sha=request["expected_base_sha"], operation_id=request["operation_id"], foreman_epoch=1)
+    assert receipt is not None
+
+    commit_request = {"operation_id": "op-side-effecting-files-mapping-commit", "repository": rig.repository, "branch": request["branch"], "owner": "assign-post", "expected_head": rig.initial_sha, "files": _file_digests(plain_files), "message": "test\n"}
+    commit_binding = repository_request_binding("commit", **commit_request)
+    commit_resource = repository_ref_resource(rig.repository, request["branch"])
+    commit_task = _dispatch(rig, assignment_id="assign-post", attempt=2, campaign_generation=1, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=commit_resource, request_binding=commit_binding)
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        rig.facility.commit(commit_task, repository=rig.repository, branch=request["branch"], owner="assign-post", expected_head=rig.initial_sha, files=malicious_files, message="test\n", operation_id=commit_request["operation_id"], foreman_epoch=1)
+
+    assert triggered["iter_called"] is False, "the malicious mapping's own __iter__ must never be invoked at all"
+
+
+def test_sc23_wrapper_rejects_a_task_tuple_field_that_is_a_tuple_subclass(rig) -> None:
+    """Review finding (PR #86, round 62, P1, Codex, reproduced by the
+    reviewer -- "Require exact tuple types for TaskPacket containers"):
+    round 60's own tuple-element check (`if isinstance(value, tuple):
+    for item in value: ...`) ITERATED the field before confirming its
+    container type, so a `tuple` SUBCLASS's own malicious `__iter__`
+    fired INSIDE that check itself, not merely downstream in Gen1. The
+    reviewer reproduced an otherwise valid sealed task whose `scope`
+    iterator moved `.git/refs/heads` externally and installed a
+    symlink; `create_branch` then succeeded. Fixed by
+    `_TASK_PACKET_FIELD_EXACT_TYPES`'s unconditional `type(value) is
+    tuple` requirement, confirmed BEFORE ever iterating the field
+    (round 62's structural rewrite). This test asserts the malicious
+    `__iter__` never actually runs at all. The seal is computed BEFORE
+    the malicious tuple is substituted in (its element content is
+    identical to the original, so the digest stays genuinely valid --
+    see the round-58 files-key test's own precedent for this same
+    setup-vs-under-test ordering concern): computing the digest
+    AFTER substitution would invoke `json.dumps`'s own iteration over
+    the malicious tuple in this test's OWN setup, not the dispatch
+    under test."""
+    import dataclasses
+
+    from tenfold.contracts import TaskPacket
+    from tenfold.gen2.repository_construction_facility import _dispatch
+    from tenfold.repository_facility import repository_ref_resource, repository_request_binding
+
+    triggered = {"iter_called": False}
+
+    class _SideEffectingTuple(tuple):
+        def __iter__(self):
+            triggered["iter_called"] = True
+            return tuple.__iter__(self)
+
+    request = {"operation_id": "op-side-effecting-task-scope", "repository": rig.repository, "branch": "sc23/side-effecting-task-scope", "owner": "assign-post", "base_ref": "main", "expected_base_sha": rig.initial_sha}
+    binding = repository_request_binding("create_branch", **request)
+    resource = repository_ref_resource(rig.repository, request["branch"])
+    real_task = _dispatch(rig, assignment_id="assign-post", attempt=1, campaign_generation=1, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=resource, request_binding=binding)
+
+    # real_task's own dispatch_digest already matches this raw dict's
+    # content (the malicious tuple's elements are identical to the
+    # original plain tuple's), so it is reused as-is -- genuinely
+    # valid, without ever calling canonical_digest/json.dumps on the
+    # malicious tuple.
+    raw = dataclasses.asdict(real_task)
+    raw["scope"] = _SideEffectingTuple(raw["scope"])
+    malicious_task = TaskPacket(**raw)
+    assert type(malicious_task) is TaskPacket
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        rig.facility.create_branch(malicious_task, repository=request["repository"], branch=request["branch"], owner=request["owner"], base_ref=request["base_ref"], expected_base_sha=request["expected_base_sha"], operation_id=request["operation_id"], foreman_epoch=1)
+
+    assert triggered["iter_called"] is False, "the malicious scope tuple's own __iter__ must never be invoked at all"
+
+    receipt = _real_create_branch_on_rig(rig, branch="sc23/side-effecting-task-scope-sanity", operation_id="op-side-effecting-task-scope-sanity")
+    assert receipt is not None
+
+
 def test_sc23_wrapper_ignores_a_wholesale_replaced_inner_facility(rig) -> None:
     """Review finding (PR #86, round 24, P1, Codex, reproduced by the
     reviewer -- "Verify the inner facility identity before

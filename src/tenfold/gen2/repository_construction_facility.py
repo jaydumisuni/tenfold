@@ -3370,9 +3370,76 @@ def _current_transport(wrapper: "_ContainmentReCheckedRepositoryFacility") -> Lo
 #: `isinstance(v, int)` (and not `bool`, which is technically an `int`
 #: subclass in Python but never a value any real call site here
 #: legitimately passes) must be exact `type(v) is int`.
+#:
+#: ROUND 62 -- STRUCTURAL FIX (P1, Codex, reproduced by the reviewer --
+#: "Require files to be an exact dict"): fresh evidence that rounds
+#: 57-61's whole approach -- `isinstance(v, SHAPE) and type(v) is not
+#: SHAPE` -- has a fundamental hole, not merely another argument left
+#: uncovered: it only rejects a SUBCLASS of the expected shape.
+#: `files` never has to be `isinstance(files, dict)` at all for Gen1's
+#: own code to accept it -- `RepositoryFacility.commit` does plain
+#: container iteration (`for path in files`) and `_file_digests` calls
+#: `.items()`, both DUCK-TYPED, no `isinstance` check anywhere in
+#: Gen1. The reviewer reproduced passing a custom mapping (NOT a
+#: `dict` subclass -- `isinstance(files, dict)` is FALSE for it, so
+#: round 61's own `isinstance`-gated check never even looked at it)
+#: whose `__iter__` moved `.git/objects` externally and installed a
+#: symlink; the authorized commit still returned a genuine receipt.
+#: The identical hole applies to EVERY other kwarg this function
+#: checks: `self._repositories.get(repository)` is a plain dict
+#: lookup, accepting ANY hashable object, `isinstance(v, str)` or not.
+#:
+#: Round 61's own note (right above this one) already flagged this
+#: exact risk -- 15 consecutive rounds (47-61) finding one more
+#: caller-reachable value one round at a time is the signal this
+#: campaign's own discipline says to act on: generalize the MECHANISM,
+#: not the argument list. Fixed by inverting the check from REACTIVE
+#: (isinstance-gated, only catches subclass spoofing) to a POSITIVE
+#: ALLOWLIST (`_DISPATCH_ARGUMENT_EXACT_TYPES`, keyed by the exact
+#: parameter names Gen1's own five dispatch methods declare):
+#: unconditionally, for every kwarg name this dispatch surface
+#: recognizes, `type(v) is` the ONE type that name is ever legitimately
+#: allowed to carry -- str, int, or dict -- with no isinstance gate in
+#: front of it. This closes subclass spoofing (rounds 57/58/60/61's
+#: own findings) AND unrelated-duck-typed-object spoofing (this
+#: round's finding) in the SAME mechanism, and needs no future round
+#: to widen it argument-by-argument again: any BRAND NEW kwarg Gen1
+#: might someday add is safe by DEFAULT (simply absent from the
+#: allowlist, silently unchecked -- the same "detect presence, don't
+#: interpret" boundary this file has always drawn, now applied to
+#: names instead of shapes) until explicitly added, rather than
+#: needing a new isinstance branch to even notice it exists. `files`'
+#: own keys/values are similarly unconditional now (`type(path) is
+#: str`/`type(content) is bytes`, no `isinstance` gate), for the exact
+#: same reason -- a caller-supplied dict key/value need never actually
+#: BE string/bytes-shaped to reach `_file_digests`'s `sorted()`/`.hex()`
+#: calls.
+_DISPATCH_ARGUMENT_EXACT_TYPES: dict = {
+    "repository": str,
+    "branch": str,
+    "owner": str,
+    "base_ref": str,
+    "expected_base_sha": str,
+    "operation_id": str,
+    "path": str,
+    "ref": str,
+    "expected_sha": str,
+    "request_id": str,
+    "message": str,
+    "title": str,
+    "body": str,
+    "head": str,
+    "base": str,
+    "expected_head": str,
+    "foreman_epoch": int,
+    "pr_number": int,
+    "files": dict,
+}
+
+
 def _reject_non_exact_dispatch_arguments(kwargs: dict) -> None:
     """See this function's own module-level comment for the
-    round-57/58/60/61 findings this closes. Checked BEFORE any
+    round-57/58/60/61/62 findings this closes. Checked BEFORE any
     delegation, revalidation, or containment scanning even runs -- the
     earliest possible point, since a malicious side effect can fire
     the moment ANY of these values is ever hashed, compared, sorted,
@@ -3381,38 +3448,31 @@ def _reject_non_exact_dispatch_arguments(kwargs: dict) -> None:
     control. Deliberately does nothing for a keyword argument that is
     simply ABSENT (a caller who forgot a required keyword-only
     argument gets Python's own natural, more informative `TypeError`
-    from the real delegated call instead) or whose value is not even
-    `isinstance(v, str)`/`isinstance(v, bytes)`/`isinstance(v, int)`
-    in the first place (a `dict`/etc. argument was never the shape
-    this finding is about) -- this check only ever judges a value that
-    is genuinely PRESENT and genuinely string-, bytes-, or int-shaped,
-    matching this file's own "detect presence, don't interpret"
-    discipline."""
+    from the real delegated call instead) or whose NAME is not even
+    one this dispatch surface recognizes (`_DISPATCH_ARGUMENT_EXACT_TYPES`
+    is a closed allowlist of the exact kwargs Gen1's own five dispatch
+    methods declare -- a name outside it was never the shape this
+    finding is about) -- but UNLIKE rounds 57-61, this check no longer
+    gates on the VALUE's own runtime shape at all: any value for a
+    recognized name that is not EXACTLY the one allowed type is
+    rejected, whether or not it happens to already look like that
+    type."""
     for name, value in kwargs.items():
-        if isinstance(value, str) and type(value) is not str:
+        expected = _DISPATCH_ARGUMENT_EXACT_TYPES.get(name)
+        if expected is not None and value is not None and type(value) is not expected:
             raise RepositoryConstructionQualificationError(
-                f"_reject_non_exact_dispatch_arguments: {name} must be an exact str "
-                f"(got {type(value).__name__}) -- refusing to dispatch"
-            )
-        if isinstance(value, int) and type(value) is not int:
-            raise RepositoryConstructionQualificationError(
-                f"_reject_non_exact_dispatch_arguments: {name} must be an exact int "
-                f"(got {type(value).__name__}) -- refusing to dispatch"
+                f"_reject_non_exact_dispatch_arguments: {name} must be an exact "
+                f"{expected.__name__} (got {type(value).__name__}) -- refusing to dispatch"
             )
     files = kwargs.get("files")
-    if isinstance(files, dict) and type(files) is not dict:
-        raise RepositoryConstructionQualificationError(
-            f"_reject_non_exact_dispatch_arguments: files must be an exact dict "
-            f"(got {type(files).__name__}) -- refusing to dispatch"
-        )
-    if isinstance(files, dict):
+    if type(files) is dict:
         for path, content in files.items():
-            if isinstance(path, str) and type(path) is not str:
+            if type(path) is not str:
                 raise RepositoryConstructionQualificationError(
                     f"_reject_non_exact_dispatch_arguments: files has a non-exact-str "
                     f"path key (got {type(path).__name__}) -- refusing to dispatch"
                 )
-            if isinstance(content, bytes) and type(content) is not bytes:
+            if type(content) is not bytes:
                 raise RepositoryConstructionQualificationError(
                     f"_reject_non_exact_dispatch_arguments: files has a non-exact-bytes "
                     f"content value for {path!r} (got {type(content).__name__}) -- refusing to dispatch"
@@ -3506,9 +3566,59 @@ def _reject_non_exact_dispatch_arguments(kwargs: dict) -> None:
 #: closed for `assignment_id`, one type kind later. Fixed the same
 #: way: every field that is `isinstance(v, int)` must be exact
 #: `type(v) is int` too, in the same loop as the string check.
+#:
+#: ROUND 62 -- STRUCTURAL FIX (P1, Codex, reproduced by the reviewer --
+#: "Require exact tuple types for TaskPacket containers"): the SAME
+#: hole `_reject_non_exact_dispatch_arguments`'s own round-62 rewrite
+#: closes applied here too, and worse: round 60's own tuple-element
+#: check (`if isinstance(value, tuple): for item in value: ...`)
+#: ITERATES the field before confirming its container type, so a
+#: `tuple` SUBCLASS's malicious `__iter__` fired inside THIS function's
+#: own check, not merely downstream in Gen1. The reviewer reproduced an
+#: otherwise valid sealed task whose `scope` iterator moved
+#: `.git/refs/heads` externally and installed a symlink; `create_branch`
+#: then succeeded. `_path_in_scope`/`capability not in
+#: task.capabilities`/etc. are all DUCK-TYPED in Gen1 (plain `for`/`in`,
+#: no `isinstance` check), so a non-tuple custom iterable would have
+#: bypassed round 60's `isinstance(value, tuple)` gate entirely, the
+#: identical class of gap as `files`.
+#:
+#: Fixed the same structural way: `_TASK_PACKET_FIELD_EXACT_TYPES` is a
+#: POSITIVE allowlist, keyed by `TaskPacket`'s own field names, of the
+#: ONE type each field is ever legitimately allowed to carry (`str`,
+#: `int`, or `tuple`) -- checked UNCONDITIONALLY, no `isinstance` gate.
+#: For a `tuple`-typed field, the container's own exact type is
+#: confirmed FIRST (so a subclass's `__iter__` can never fire, in this
+#: function or Gen1's), and only then are its elements safely iterated
+#: and checked (still exact `type(v) is str`, one level deep, matching
+#: the `files`-keys precedent).
+_TASK_PACKET_FIELD_EXACT_TYPES: dict = {
+    "task_id": str,
+    "campaign_id": str,
+    "campaign_generation": int,
+    "node_id": str,
+    "assignment_id": str,
+    "attempt": int,
+    "objective": str,
+    "scope": tuple,
+    "capabilities": tuple,
+    "permissions": tuple,
+    "evidence_obligations": tuple,
+    "stop_conditions": tuple,
+    "reporting_officer": str,
+    "source_binding": str,
+    "dispatch_digest": str,
+    "foreman_epoch": int,
+    "lease_id": str,
+    "lease_epoch": int,
+    "lease_generation": int,
+    "request_binding": str,
+}
+
+
 def _reject_non_exact_task_packet_argument(args: tuple, kwargs: dict) -> None:
     """See this function's own module-level comment for the
-    round-59/60/61 findings this closes. `task` is always the first
+    round-59/60/61/62 findings this closes. `task` is always the first
     POSITIONAL argument on every real call site in this codebase
     (Gen1's own `RepositoryFacility` methods declare it
     positional-or-keyword, before the keyword-only `*`), but a caller
@@ -3517,8 +3627,10 @@ def _reject_non_exact_task_packet_argument(args: tuple, kwargs: dict) -> None:
     from both `args` and `kwargs` -- the real delegated call raises
     Python's own, more informative `TypeError` for a missing required
     argument instead. Once `task` is confirmed an exact `TaskPacket`,
-    also validates its own field values the same way -- see this
-    function's own module-level ROUND 60/61 comments."""
+    also validates its own field values against
+    `_TASK_PACKET_FIELD_EXACT_TYPES`, unconditionally -- see this
+    function's own module-level ROUND 62 comment for why this is no
+    longer an `isinstance`-gated check."""
     if args:
         task = args[0]
     elif "task" in kwargs:
@@ -3535,23 +3647,20 @@ def _reject_non_exact_task_packet_argument(args: tuple, kwargs: dict) -> None:
     # to invoke.
     for field in fields(TaskPacket):
         value = getattr(task, field.name)
-        if isinstance(value, str) and type(value) is not str:
-            raise RepositoryConstructionQualificationError(
-                f"_reject_non_exact_task_packet_argument: task.{field.name} must be an exact str "
-                f"(got {type(value).__name__}) -- refusing to dispatch"
-            )
-        if isinstance(value, int) and type(value) is not int:
-            raise RepositoryConstructionQualificationError(
-                f"_reject_non_exact_task_packet_argument: task.{field.name} must be an exact int "
-                f"(got {type(value).__name__}) -- refusing to dispatch"
-            )
-        if isinstance(value, tuple):
-            for item in value:
-                if isinstance(item, str) and type(item) is not str:
-                    raise RepositoryConstructionQualificationError(
-                        f"_reject_non_exact_task_packet_argument: task.{field.name} has a "
-                        f"non-exact-str element (got {type(item).__name__}) -- refusing to dispatch"
-                    )
+        expected = _TASK_PACKET_FIELD_EXACT_TYPES.get(field.name)
+        if expected is None or type(value) is expected:
+            if expected is tuple:
+                for item in value:
+                    if type(item) is not str:
+                        raise RepositoryConstructionQualificationError(
+                            f"_reject_non_exact_task_packet_argument: task.{field.name} has a "
+                            f"non-exact-str element (got {type(item).__name__}) -- refusing to dispatch"
+                        )
+            continue
+        raise RepositoryConstructionQualificationError(
+            f"_reject_non_exact_task_packet_argument: task.{field.name} must be an exact "
+            f"{expected.__name__} (got {type(value).__name__}) -- refusing to dispatch"
+        )
 
 
 def _revalidate_transport_integrity(wrapper: "_ContainmentReCheckedRepositoryFacility") -> "_AdmittedTransportState":
