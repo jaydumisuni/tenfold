@@ -1,0 +1,57 @@
+# G2-28 — Gen2 Self-Construction Campaign — First Real Construction Slice
+
+**Status:** MECHANISM VERIFIED (this PR) — live action pending a separate, explicitly-flagged follow-up
+**Authority:** G2-00 activation limits + Owner explicit authorization (see below)
+**Dependency context:** SC-23 closed (PR #86, merged `2627875`), the last of the 25 SS20 self-construction conditions; `report.self_construction_capable` (internal, 25-condition claim) is now genuinely `True`. The FINAL, combined `self_construction_capable` remains `False`, driven solely by an external Sergeant `NEEDS_WORK` verdict for `g2-27`, exhaustively investigated and confirmed not code-fixable from this repository (`docs/gen2/G2-27-SC23-closure-review-record.md`, "External assurance follow-up" sections).
+
+## Owner authorization — disclosed, not hidden
+
+The repository owner explicitly, twice, with full understanding of what it means, authorized proceeding to G2-28 now — genuinely beginning the Gen1-to-Gen2 construction-execution-authority transfer — treating the open Sergeant condition as a known, disclosed, deferred bug to revisit once Sergeant itself is upgraded, not as something to hide or fabricate as resolved. This departs from every prior milestone's sequencing (each proceeded only after its own gate genuinely, fully passed); the departure is itself carried in this slice's own evidence trail (`src/tenfold/gen2/self_construction_campaign.py`'s `G2_28_OWNER_AUTHORIZATION`, folded into `docs/gen2/G2-28-construction-log.md`'s first entry and into the `AuthorityTransferRecord.stabilization_evidence["observer_predicates"]` category), never omitted from any evidence package (including the one submitted to Sergeant for `g2-28` itself).
+
+## Purpose and scope of THIS slice
+
+G2-28's own Purpose, verbatim: "Prove Gen2 can execute the remaining already-approved roadmap against itself." Its own Acceptance, verbatim: "At least one meaningful remaining Gen2 milestone is constructed and proven using only Gen2 live execution authority."
+
+This slice does **not** claim that Acceptance is satisfied. It does not claim `STABILIZATION_PROVEN`/`IRREVERSIBLY_COMMITTED` for the authority transfer (both require substantial real operational evidence across all 8 mandatory categories, accumulated from genuine repeated use over time — 5 of the 8 categories are explicitly, honestly marked "deferred to a later slice" in `build_g2_28_construction_authority_transfer_policy()`, never filled with placeholder prose pretending completeness). It does not remove Gen1's live construction authority. "Gen2 owns construction-execution authority" is understood here, exactly as G2-21's own Result clause was for Identity/Generation, as "the transfer protocol for this slice is now genuinely exercised," not "live dispatch has switched."
+
+Research before implementation (see this repository's own session record) confirmed there was no existing "switch" to flip: every prior authority-migration milestone (G2-21, G2-23, G2-25) was deliberately scoped to prove its mechanism only, against disposable fixtures — Gen1's real `Foreman` remains, today, the sole dispatcher of every real construction action in this project's history, including the one that built G2-01 through G2-27 themselves. This slice builds the first genuinely live Gen2 dispatch/mutation path.
+
+## What this PR delivers
+
+New module `src/tenfold/gen2/self_construction_campaign.py`, reusing every piece of already-PROVEN machinery directly (nothing re-derived):
+
+- `AuthorityTransferRecord`/`AuthorityTransferStage`/`AuthorityTransferStabilizationPolicy` (G2-02, reused via `constitutional.py`) — `open_g2_28_construction_authority_transfer()` drives `PREPARED → STAGED`, real Python transition plus real, independent Rust re-derivation (`authority_transfer_bridge.rust_check_authority_transfer_transition`), mirroring `authority_transfer.py`'s own G2-21 pattern exactly.
+- `campaign_compiler.compile_campaign_program` (G2-07, reused) — `compile_g2_28_first_construction_program()` builds one real, minimal, single-task `CompiledCampaign` for one `MUTATION` obligation routed to `sergeant` assurance.
+- `dispatch_lease.gen1_lease_acquire` (G2-11, reused) — a real `tenfold.ownership.LeaseRegistry` lease, genuine Gen1 fencing safety continuing to gate the mutation unchanged by the transfer (the module is explicitly "Gen1 authoritative; Gen2 shadow only" — a safety rail, not construction authority).
+- `repository_construction_facility` (SC-23, reused) — `build_live_repository_construction_facility()` wraps SC-23's own already-hardened `DisposableRepositoryConstructionRig`/`gen1_wrap_repository_construction_facility` against a real (not disposable) repository target; `build_live_construction_dispatch()` builds a sealed `TaskPacket` bound to the real lease above (a known, confirmed-by-source-comparison gap: `dispatch_lease.sealed_task_dispatch_digest` builds a fixed G2-11-parity-fixture shape that does not digest-match a real repository-construction task, so this builds its own matching `TaskPacket` instead).
+- `effect_census`/`runtime_obligation`/`proof_graph` (G2-18/G2-13/G2-12, reused) — real `ExpectedEffect`/`ObservedEffect` built from real `git` queries (`effect_census.probe_facility_for_observed_effects` doesn't apply to a git-backed facility, intentionally bypassed rather than forced), real `RuntimeObligationCandidateLedger` (one honestly `REJECTED` entry — the census comes back clean and terminal, so no genuine runtime obligation is needed, a positive finding not a skipped check) and two real `HazardRecord`s (mid-commit interruption made unreachable by SC-23's own already-qualified `reconciliation_and_ack_semantics` property; the open Sergeant condition explicitly, honestly disposed as `EXPLICITLY_ACCEPTED_BOUNDED` under the Owner authorization), real `admit_evidence`/`compute_proof_verdict` chain.
+- `run_g2_28_external_assurance()` — G2-28's own real, separate Sergeant submission (its own `milestone_id`, its own `changed_files`), structurally identical to `self_construction.py`'s `run_g2_27_external_assurance`, never assuming PASS, raising only on genuine `BLOCK` or reconciliation mismatch.
+
+## Real local verification (this PR, disposable repos only)
+
+`tests/gen2/test_g2_28_self_construction_campaign.py` — 10 tests, all against a disposable, throwaway local git repository, never the live repository:
+
+- Transfer policy well-formedness; `PREPARED → STAGED` transition in Python and real independent Rust; illegal-transition rejection; owner-authorization disclosure content checks.
+- Compiled campaign well-formedness (task IDs, mutation-domain obligation IDs, required assurance = `{"sergeant"}`).
+- Live repository rig construction against a real disposable repo; live dispatch building a genuinely self-sealed `TaskPacket` bound to a real lease.
+- **Full end-to-end orchestration** (`execute_g2_28_first_construction_slice`) against a disposable repo: one real branch, one real commit, real Effect Census (clean, no residue), real Runtime Obligation ledger + hazard resolution, real Proof Graph chain reaching `PROVEN` for the one obligation, and a **real, live Sergeant call** for `g2-28` (safe/repeatable — reviews the new module's own frozen files, not live repository state, same technique `test_g2_27_external_assurance_genuinely_reconciles_two_real_sergeant_invocations` already established).
+- `main` genuinely untouched, and the working tree's checked-out branch genuinely unchanged (the new commit lands on `gen2/g2-28-first-live-construction` only).
+- Model-blackout self-check, mirroring `test_g2_27_self_construction_module_itself_respects_model_blackout`.
+
+**Genuine finding from this run, worth recording honestly:** G2-28's own real Sergeant submission returned `NEEDS_WORK` too — with the **identical two findings** G2-27's own stuck verdict carries ("Nested iteration pattern may create scaling risk", "Changed exported symbols are called from other files"), on an entirely different, brand-new module with no shared content. This is independent, further evidence (beyond the digest-change and nested-loop-elimination tests already recorded against G2-27) that these two specific findings are not meaningfully tied to the actual reviewed content — worth keeping in mind if/when Sergeant is investigated further after its own upgrade. Despite this, the obligation's own Proof Graph verdict correctly reached `PROVEN`: `compute_proof_verdict`'s mandatory-assurance check is about genuine reconciliation (supplied/retained copies agree), not about the verdict being `PASS` — exactly the separation this campaign's own design intends (a `NEEDS_WORK` verdict is "a genuine, non-error, non-fabricated external answer," per `self_construction.py`'s own established language, not a blocker to the per-obligation proof itself; it only ever blocks the separate `eligible_for_satisfaction` gate).
+
+Full local re-verification: new test file (10/10), full repository sweep (see commit for exact counts — only the 9 known pre-existing Windows-only subprocess failures expected, unrelated to this change).
+
+## Does not enable
+
+- The FINAL `self_construction_capable` claim — unchanged by this PR; still `False`, still driven solely by the open external Sergeant condition on `g2-27`.
+- G2-28's own Acceptance ("at least one meaningful remaining Gen2 milestone is constructed and proven using only Gen2 live execution authority") — not claimed satisfied by this slice.
+- `STABILIZATION_PROVEN`/`IRREVERSIBLY_COMMITTED` for the Gen1→Gen2 construction-execution-authority transfer — the record stays at `STAGED`; 5 of 8 mandatory stabilization-evidence categories are explicitly deferred to future slices.
+- Removal of any live Gen1 construction authority — Gen1 remains construction Foreman, unchanged.
+- The live action itself — this PR contains the module and its disposable-fixture tests only. The one real commit against the actual repository is executed as a separate, explicitly-flagged follow-up (a small, human-invoked, untracked script, never a pytest test, never run unattended), reviewed through the same push+PR+CodeRabbit/Codex cycle as everything else in this campaign before it lands.
+
+## Next slice
+
+- Run the live-execution script once, by hand, inspect its real output, open the resulting branch as its own PR.
+- After that PR merges, re-run `execute_self_construction_gate()` and honestly report the real, current result (expected unchanged headline verdict — this slice doesn't touch G2-27's own Sergeant condition — but the transfer record and construction log become real, checkable state).
+- Future slices: genuine induced-failure/recovery rehearsal, a real Chronicle log of transfer-stage transitions, a real external checkpoint at the `SOFT_COMMITTED` boundary, and eventually enough accumulated real operational evidence across all 8 categories to honestly attempt `STABILIZATION_PROVEN`.
