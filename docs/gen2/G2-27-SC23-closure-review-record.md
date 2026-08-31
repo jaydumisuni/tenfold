@@ -3948,6 +3948,75 @@ Windows-only failures, zero regressions).
     sweep (1419 passed, 2 skipped, only the 9 known pre-existing
     Windows-only subprocess failures).
 
+59. A fresh Codex pass against the round-58 commit (`27f0703`/`9cebe97`)
+    found 1 further genuine P1 finding -- a genuinely new axis, not
+    another string-argument sibling: the FIRST POSITIONAL argument
+    every dispatch method receives, `task`, was never validated at
+    all.
+    - **P1 ("Validate task objects before the containment scan"),
+      Codex**: rounds 57/58 validated every STRING-typed caller
+      argument for exact type, but `task` -- always the first
+      positional argument on every real call site -- was never
+      checked. Gen1's own real `validate_task`
+      (`tenfold.facility.validate_task`) calls
+      `dataclasses.asdict(task)`, which accesses every declared field
+      via ordinary `getattr`, invoking a `TaskPacket` SUBCLASS's own
+      overridden `__getattribute__` the moment `asdict` runs. The
+      reviewer reproduced a malicious `TaskPacket` subclass whose
+      `__getattribute__` moves the real `.git/refs/heads` outside the
+      repository and replaces it with a symlink -- firing deep inside
+      Gen1's own `create_branch`, AFTER
+      `_revalidate_transport_integrity`'s containment scan already
+      passed (the repository was still genuinely intact at scan
+      time), but BEFORE the actual git mutation
+      (`self.transport.create_branch(...)`, reached via Gen1's own
+      `_idempotent`). An otherwise fully-authorized `create_branch`
+      returned success and Git wrote the ref outside the repository --
+      the same TOCTOU shape as rounds 57/58, one argument earlier.
+
+      Fixed by a new function, `_reject_non_exact_task_packet_argument`,
+      requiring `type(task) is TaskPacket` exactly (never `isinstance`,
+      which admits the malicious subclass reproduced here), reusing
+      round 28's own established exact-type discipline. Deliberately
+      placed AFTER `_revalidate_transport_integrity`, not before like
+      the string-argument check: this file's own extensive
+      tampering-detection test suite (rounds 14-56) deliberately
+      dispatches with a placeholder `task=None`, documenting
+      explicitly that `_revalidate_transport_integrity` itself must
+      catch tampering "before any task/authority argument is even
+      inspected." Checking task type before revalidation would make
+      every one of those tests raise for the wrong reason (a
+      task-type rejection, not the tampering-detection revalidation
+      is supposed to prove), silently degrading their fidelity as
+      regression tests without changing their pass/fail outcome.
+      Confirmed safe against the full existing test suite: every
+      `task=None`/`SimpleNamespace` call site in the test file (32
+      occurrences) is either inside a `pytest.raises` block backed by
+      genuine tampering `_revalidate_transport_integrity` already
+      catches upstream, or inside one of the two disclosed-limitation
+      tests that bypass the wrapper's own dispatch method entirely
+      (class-swap / code-object-swap), where the new check never
+      executes either way.
+
+      No new adjudicated residual-Gen1-dependency exceptions needed --
+      `_reject_non_exact_task_packet_argument` is Gen2-owned, using
+      `TaskPacket` only as a type reference for the exact-type check,
+      never calling any Gen1 authority logic of its own; confirmed via
+      a clean residual-dependency scan after the fix.
+
+    Fixed with a real mechanism, reusing round 28's own established
+    exact-type discipline for the one caller argument rounds 57/58's
+    string-only scope structurally could not reach. 1 new permanent
+    regression test reproduces the reviewer's exact
+    side-effecting-`__getattribute__` `TaskPacket` subclass via a
+    real, fully-authorized `create_branch` dispatch, asserting the
+    malicious `__getattribute__` never actually runs at all, followed
+    by a sanity dispatch confirming no over-rejection. Fixed in commit
+    `<pending>`. Full local re-verification: full test file
+    (124/124), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (pending), and full repository
+    sweep (pending).
+
 ## Real, honest end-to-end result
 
 Running `execute_self_construction_gate()` for real against the live

@@ -3346,6 +3346,71 @@ def _reject_non_exact_str_dispatch_arguments(kwargs: dict) -> None:
                 )
 
 
+#: ROUND 59 (P1, Codex, reproduced by the reviewer -- "Validate task
+#: objects before the containment scan"): rounds 57/58 validated every
+#: STRING-typed caller argument (`repository`, `branch`, `files` keys)
+#: for exact type before any dunder-invoking code path touches them --
+#: but `task`, the FIRST POSITIONAL argument every one of the five
+#: dispatch methods receives, was never checked at all. Gen1's own real
+#: `validate_task` (`tenfold.facility.validate_task`) calls
+#: `dataclasses.asdict(task)`, which walks every declared field and
+#: accesses it via ordinary `getattr` -- invoking a `TaskPacket`
+#: SUBCLASS's own overridden `__getattribute__`, if the caller supplied
+#: one, the moment `asdict` runs. The reviewer reproduced a malicious
+#: `TaskPacket` subclass whose `__getattribute__` moves the real
+#: `.git/refs/heads` outside the repository and replaces it with a
+#: symlink -- firing deep inside Gen1's own `create_branch`, AFTER
+#: `_revalidate_transport_integrity`'s containment scan already passed
+#: (the repository was still genuinely intact at scan time), but BEFORE
+#: the actual git mutation (`self.transport.create_branch(...)`,
+#: reached via Gen1's own `_idempotent`). An otherwise fully-authorized
+#: `create_branch` returned success and Git wrote the ref outside the
+#: repository -- the same TOCTOU shape as rounds 57/58, one argument
+#: earlier.
+#:
+#: Fixed by requiring `type(task) is TaskPacket` exactly (never
+#: `isinstance`, which admits the malicious subclass reproduced here),
+#: matching round 28's own established discipline. Deliberately checked
+#: AFTER `_revalidate_transport_integrity`, not before (unlike
+#: `_reject_non_exact_str_dispatch_arguments`, which runs before
+#: revalidation because a malicious STRING argument's dunder can fire
+#: inside Gen1's code regardless of what this module's own trust state
+#: looks like): this file's own extensive tampering-detection test
+#: suite (rounds 14-56) deliberately dispatches with a placeholder
+#: `task=None`, documenting explicitly that `_revalidate_transport_integrity`
+#: itself must catch tampering "before any task/authority argument is
+#: even inspected." Checking task type before revalidation would make
+#: every one of those tests raise for the WRONG reason (a task-type
+#: rejection, not the tampering-detection this module's revalidation
+#: mechanism is supposed to prove), silently degrading their fidelity
+#: as regression tests without changing their pass/fail outcome. Placed
+#: after revalidation instead, this check only ever matters for a call
+#: that already passed every trust-state check this module owns --
+#: exactly the callers a malicious task subclass would need to slip
+#: past to reach Gen1's own `asdict()` call at all.
+def _reject_non_exact_task_packet_argument(args: tuple, kwargs: dict) -> None:
+    """See this function's own module-level comment for the round-59
+    finding this closes. `task` is always the first POSITIONAL
+    argument on every real call site in this codebase (Gen1's own
+    `RepositoryFacility` methods declare it positional-or-keyword,
+    before the keyword-only `*`), but a caller could in principle pass
+    it as `task=...` too, so both forms are checked. Deliberately does
+    nothing when `task` is genuinely absent from both `args` and
+    `kwargs` -- the real delegated call raises Python's own, more
+    informative `TypeError` for a missing required argument instead."""
+    if args:
+        task = args[0]
+    elif "task" in kwargs:
+        task = kwargs["task"]
+    else:
+        return
+    if type(task) is not TaskPacket:
+        raise RepositoryConstructionQualificationError(
+            f"_reject_non_exact_task_packet_argument: task must be an exact TaskPacket "
+            f"(got {type(task).__name__}) -- refusing to dispatch"
+        )
+
+
 def _revalidate_transport_integrity(wrapper: "_ContainmentReCheckedRepositoryFacility") -> "_AdmittedTransportState":
     """Renamed from `_revalidate_before_mutation` (round 22, Codex --
     "Revalidate delegated reads before invoking transport"): `read` is
@@ -3709,29 +3774,39 @@ class _ContainmentReCheckedRepositoryFacility(metaclass=_FrozenClassMeta):
         # `_reject_non_exact_str_dispatch_arguments`'s own docstring):
         # checked FIRST, before revalidation even runs, since the
         # finding it closes is about the CALLER's own arguments, not
-        # this module's trust state.
+        # this module's trust state. Round 59 (see
+        # `_reject_non_exact_task_packet_argument`'s own docstring):
+        # checked AFTER revalidation instead -- this file's own
+        # tampering-detection tests deliberately dispatch with a
+        # placeholder `task=None` expecting revalidation itself to
+        # catch tampering first.
         _reject_non_exact_str_dispatch_arguments(kwargs)
         admitted = _revalidate_transport_integrity(self)
+        _reject_non_exact_task_packet_argument(args, kwargs)
         return admitted.facility.create_branch(*args, **kwargs)
 
     def commit(self, *args, **kwargs):
         _reject_non_exact_str_dispatch_arguments(kwargs)
         admitted = _revalidate_transport_integrity(self)
+        _reject_non_exact_task_packet_argument(args, kwargs)
         return admitted.facility.commit(*args, **kwargs)
 
     def read(self, *args, **kwargs):
         _reject_non_exact_str_dispatch_arguments(kwargs)
         admitted = _revalidate_transport_integrity(self)
+        _reject_non_exact_task_packet_argument(args, kwargs)
         return admitted.facility.read(*args, **kwargs)
 
     def open_pr(self, *args, **kwargs):
         _reject_non_exact_str_dispatch_arguments(kwargs)
         admitted = _revalidate_transport_integrity(self)
+        _reject_non_exact_task_packet_argument(args, kwargs)
         return admitted.facility.open_pr(*args, **kwargs)
 
     def merge_pr(self, *args, **kwargs):
         _reject_non_exact_str_dispatch_arguments(kwargs)
         admitted = _revalidate_transport_integrity(self)
+        _reject_non_exact_task_packet_argument(args, kwargs)
         return admitted.facility.merge_pr(*args, **kwargs)
 
 

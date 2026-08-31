@@ -2546,6 +2546,56 @@ def test_sc23_wrapper_rejects_a_non_exact_str_file_path_key(rig) -> None:
     assert triggered["lt_called"] is False, "the malicious file path key's own __lt__ must never be invoked at all"
 
 
+def test_sc23_wrapper_rejects_a_task_argument_that_is_a_taskpacket_subclass(rig) -> None:
+    """Review finding (PR #86, round 59, P1, Codex, reproduced by the
+    reviewer -- "Validate task objects before the containment scan"):
+    rounds 57/58 validated every STRING-typed caller argument for
+    exact type, but `task` -- the FIRST POSITIONAL argument every
+    dispatch method receives -- was never checked at all. Gen1's own
+    `validate_task` calls `dataclasses.asdict(task)`, which accesses
+    every declared field via ordinary `getattr`, invoking a
+    `TaskPacket` subclass's own overridden `__getattribute__` the
+    moment it runs -- deep inside Gen1's real code, well AFTER
+    `_revalidate_transport_integrity`'s containment scan already
+    passed, but BEFORE the actual git mutation. The reviewer
+    reproduced a malicious subclass whose `__getattribute__` plants a
+    symlink at exactly that moment. Fixed by
+    `_reject_non_exact_task_packet_argument`, requiring
+    `type(task) is TaskPacket` exactly, checked after revalidation
+    (see that function's own module-level comment for why it is
+    ordered there and not before, unlike the string-argument check).
+    This test asserts the malicious `__getattribute__` never actually
+    runs at all -- not merely that some error was eventually raised --
+    and that a real, fully-authorized `create_branch` with a genuine
+    `TaskPacket` still succeeds afterward."""
+    from dataclasses import asdict
+
+    from tenfold.contracts import TaskPacket
+    from tenfold.gen2.repository_construction_facility import _dispatch
+    from tenfold.repository_facility import repository_ref_resource, repository_request_binding
+
+    triggered = {"getattribute_called": False}
+
+    class _SideEffectingTaskPacket(TaskPacket):
+        def __getattribute__(self, name):
+            triggered["getattribute_called"] = True
+            return object.__getattribute__(self, name)
+
+    request = {"operation_id": "op-side-effecting-task-subclass", "repository": rig.repository, "branch": "sc23/side-effecting-task-subclass", "owner": "assign-post", "base_ref": "main", "expected_base_sha": rig.initial_sha}
+    binding = repository_request_binding("create_branch", **request)
+    resource = repository_ref_resource(rig.repository, request["branch"])
+    real_task = _dispatch(rig, assignment_id="assign-post", attempt=1, campaign_generation=1, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=resource, request_binding=binding)
+    malicious_task = _SideEffectingTaskPacket(**asdict(real_task))
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        rig.facility.create_branch(malicious_task, repository=request["repository"], branch=request["branch"], owner=request["owner"], base_ref=request["base_ref"], expected_base_sha=request["expected_base_sha"], operation_id=request["operation_id"], foreman_epoch=1)
+
+    assert triggered["getattribute_called"] is False, "the malicious task subclass's own __getattribute__ must never be invoked at all"
+
+    receipt = _real_create_branch_on_rig(rig, branch="sc23/side-effecting-task-subclass-sanity", operation_id="op-side-effecting-task-subclass-sanity")
+    assert receipt is not None
+
+
 def test_sc23_wrapper_ignores_a_wholesale_replaced_inner_facility(rig) -> None:
     """Review finding (PR #86, round 24, P1, Codex, reproduced by the
     reviewer -- "Verify the inner facility identity before
