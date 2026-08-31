@@ -2713,6 +2713,189 @@ def test_sc23_wrapper_rejects_a_task_field_that_is_a_str_subclass(rig) -> None:
     assert receipt is not None
 
 
+def test_sc23_wrapper_rejects_a_non_exact_dict_files_argument(rig) -> None:
+    """Review finding (PR #86, round 61, P1, Codex, reproduced by the
+    reviewer -- "Require an exact files dictionary"): `isinstance(files,
+    dict)` admits a `dict` SUBCLASS. This module's own `files.items()`
+    call happens to return clean entries even for such a subclass, but
+    Gen1's own `RepositoryFacility.commit` later does plain container
+    iteration (`for path in files`), which uses `__iter__` -- a
+    DIFFERENT method than `.items()`, one the reviewer's subclass
+    overrides instead. The reviewer reproduced this moving
+    `.git/objects` outside the repository and installing a symlink,
+    with the authorized commit still returning a genuine receipt.
+    Fixed by requiring `type(files) is dict` exactly, checked before
+    this module's own `.items()` call even runs. This test asserts the
+    malicious `__iter__` never actually runs at all."""
+    from tenfold.gen2.repository_construction_facility import _dispatch, _file_digests
+    from tenfold.repository_facility import repository_ref_resource, repository_request_binding
+
+    triggered = {"iter_called": False}
+
+    class _SideEffectingDict(dict):
+        def __iter__(self):
+            triggered["iter_called"] = True
+            return dict.__iter__(self)
+
+    plain_files = {"malicious.txt": b"content", "other.txt": b"more content"}
+    malicious_files = _SideEffectingDict()
+    malicious_files["malicious.txt"] = b"content"
+    malicious_files["other.txt"] = b"more content"
+
+    request = {"operation_id": "op-side-effecting-files-dict", "repository": rig.repository, "branch": "sc23/side-effecting-files-dict", "owner": "assign-post", "base_ref": "main", "expected_base_sha": rig.initial_sha}
+    binding = repository_request_binding("create_branch", **request)
+    resource = repository_ref_resource(rig.repository, request["branch"])
+    task = _dispatch(rig, assignment_id="assign-post", attempt=1, campaign_generation=1, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=resource, request_binding=binding)
+    receipt = rig.facility.create_branch(task, repository=request["repository"], branch=request["branch"], owner=request["owner"], base_ref=request["base_ref"], expected_base_sha=request["expected_base_sha"], operation_id=request["operation_id"], foreman_epoch=1)
+    assert receipt is not None
+
+    commit_request = {"operation_id": "op-side-effecting-files-dict-commit", "repository": rig.repository, "branch": request["branch"], "owner": "assign-post", "expected_head": rig.initial_sha, "files": _file_digests(plain_files), "message": "test\n"}
+    commit_binding = repository_request_binding("commit", **commit_request)
+    commit_resource = repository_ref_resource(rig.repository, request["branch"])
+    commit_task = _dispatch(rig, assignment_id="assign-post", attempt=2, campaign_generation=1, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=commit_resource, request_binding=commit_binding)
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        rig.facility.commit(commit_task, repository=rig.repository, branch=request["branch"], owner="assign-post", expected_head=rig.initial_sha, files=malicious_files, message="test\n", operation_id=commit_request["operation_id"], foreman_epoch=1)
+
+    assert triggered["iter_called"] is False, "the malicious files dict's own __iter__ must never be invoked at all"
+
+
+def test_sc23_wrapper_rejects_a_foreman_epoch_argument_that_is_an_int_subclass(rig) -> None:
+    """Review finding (PR #86, round 61, P1, Codex, reproduced by the
+    reviewer -- "Reject subclassed numeric dispatch arguments"): every
+    check so far validated only STRING/BYTES-shaped values --
+    `foreman_epoch` is compared (`task.foreman_epoch != foreman_epoch`)
+    inside Gen1's own `validate_task`, after revalidation, invoking an
+    `int` SUBCLASS's overridden `__ne__`/`__eq__` (Python prefers a
+    subclass's reflected method, so the malicious value's dunder runs
+    even as the RIGHT operand -- the same reflected-method mechanism
+    round 60's `assignment_id` finding used). The reviewer reproduced
+    this planting a symlink over `.git/refs/heads`. Fixed by
+    `_reject_non_exact_dispatch_arguments`, now also requiring every
+    `int`-shaped kwarg to be exact `type(v) is int`. This test asserts
+    the malicious `__eq__`/`__ne__` never actually runs at all."""
+    from tenfold.gen2.repository_construction_facility import _dispatch
+    from tenfold.repository_facility import repository_ref_resource, repository_request_binding
+
+    triggered = {"eq_called": False}
+
+    class _SideEffectingInt(int):
+        __hash__ = int.__hash__
+
+        def __eq__(self, other):
+            triggered["eq_called"] = True
+            return int.__eq__(self, other)
+
+        def __ne__(self, other):
+            triggered["eq_called"] = True
+            return int.__ne__(self, other)
+
+    malicious_epoch = _SideEffectingInt(1)
+
+    request = {"operation_id": "op-side-effecting-foreman-epoch", "repository": rig.repository, "branch": "sc23/side-effecting-foreman-epoch", "owner": "assign-post", "base_ref": "main", "expected_base_sha": rig.initial_sha}
+    binding = repository_request_binding("create_branch", **request)
+    resource = repository_ref_resource(rig.repository, request["branch"])
+    task = _dispatch(rig, assignment_id="assign-post", attempt=1, campaign_generation=1, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=resource, request_binding=binding)
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        rig.facility.create_branch(task, repository=request["repository"], branch=request["branch"], owner=request["owner"], base_ref=request["base_ref"], expected_base_sha=request["expected_base_sha"], operation_id=request["operation_id"], foreman_epoch=malicious_epoch)
+
+    assert triggered["eq_called"] is False, "the malicious foreman_epoch's own __eq__/__ne__ must never be invoked at all"
+
+    receipt = _real_create_branch_on_rig(rig, branch="sc23/side-effecting-foreman-epoch-sanity", operation_id="op-side-effecting-foreman-epoch-sanity")
+    assert receipt is not None
+
+
+def test_sc23_wrapper_rejects_a_pr_number_argument_that_is_an_int_subclass(rig) -> None:
+    """Self-audited sibling of
+    `test_sc23_wrapper_rejects_a_foreman_epoch_argument_that_is_an_int_subclass`
+    (see its own docstring): found before considering round 61 closed,
+    not separately demonstrated by the reviewer. `merge_pr`'s own
+    `pr_number` reaches `repository_pr_resource(repository, pr_number)`
+    (`f"repository:{repository}:pr:{pr_number}"`), an f-string
+    invoking `__format__` -- the exact round-58 `branch` pattern, now
+    on an `int`-shaped argument instead of a `str`-shaped one.
+    `merge_pr`/`open_pr` have no successful path in this local-commit
+    -only harness (GitHub push/PR/merge authority is explicitly out of
+    scope), so unlike the sibling test above this one has no sanity
+    dispatch to follow -- it only proves the malicious `__format__`
+    never actually runs at all before this module's own check rejects
+    the call."""
+    from tenfold.gen2.repository_construction_facility import _dispatch
+    from tenfold.repository_facility import repository_pr_resource
+
+    triggered = {"format_called": False}
+
+    class _SideEffectingInt(int):
+        def __format__(self, format_spec):
+            triggered["format_called"] = True
+            return int.__format__(self, format_spec)
+
+    malicious_pr_number = _SideEffectingInt(1)
+
+    resource = repository_pr_resource(rig.repository, 1)
+    task = _dispatch(rig, assignment_id="assign-post", attempt=1, campaign_generation=1, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=resource, request_binding="irrelevant-for-this-check")
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        rig.facility.merge_pr(task, repository=rig.repository, pr_number=malicious_pr_number, expected_head=rig.initial_sha, operation_id="op-side-effecting-pr-number", foreman_epoch=1)
+
+    assert triggered["format_called"] is False, "the malicious pr_number's own __format__ must never be invoked at all"
+
+
+def test_sc23_wrapper_rejects_a_task_int_field_that_is_an_int_subclass(rig) -> None:
+    """Self-audited sibling of
+    `test_sc23_wrapper_rejects_a_task_field_that_is_a_str_subclass`
+    (round 60): found before considering round 61 closed, not
+    separately demonstrated by the reviewer. `task`'s own int-typed
+    fields (`campaign_generation`, `attempt`, `foreman_epoch`,
+    `lease_epoch`, `lease_generation`) are compared the same way round
+    60's `assignment_id` finding demonstrated for `str` fields --
+    `task.campaign_generation != snapshot.campaign_generation`
+    (`validate_live_task`) -- reachable after revalidation, deep
+    inside Gen1's own code. Fixed by
+    `_reject_non_exact_task_packet_argument`, now also requiring every
+    `int`-shaped field to be exact `type(v) is int`. This test asserts
+    the malicious `__eq__`/`__ne__` never actually runs at all."""
+    import dataclasses
+
+    from tenfold.contracts import TaskPacket, canonical_digest
+    from tenfold.gen2.repository_construction_facility import _dispatch
+    from tenfold.repository_facility import repository_ref_resource, repository_request_binding
+
+    triggered = {"eq_called": False}
+
+    class _SideEffectingInt(int):
+        __hash__ = int.__hash__
+
+        def __eq__(self, other):
+            triggered["eq_called"] = True
+            return int.__eq__(self, other)
+
+        def __ne__(self, other):
+            triggered["eq_called"] = True
+            return int.__ne__(self, other)
+
+    request = {"operation_id": "op-side-effecting-task-int-field", "repository": rig.repository, "branch": "sc23/side-effecting-task-int-field", "owner": "assign-post", "base_ref": "main", "expected_base_sha": rig.initial_sha}
+    binding = repository_request_binding("create_branch", **request)
+    resource = repository_ref_resource(rig.repository, request["branch"])
+    real_task = _dispatch(rig, assignment_id="assign-post", attempt=1, campaign_generation=1, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=resource, request_binding=binding)
+
+    raw = dataclasses.asdict(real_task)
+    raw["campaign_generation"] = _SideEffectingInt(raw["campaign_generation"])
+    raw["dispatch_digest"] = ""
+    raw["dispatch_digest"] = canonical_digest(raw)
+    malicious_task = TaskPacket(**raw)
+    assert type(malicious_task) is TaskPacket
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        rig.facility.create_branch(malicious_task, repository=request["repository"], branch=request["branch"], owner=request["owner"], base_ref=request["base_ref"], expected_base_sha=request["expected_base_sha"], operation_id=request["operation_id"], foreman_epoch=1)
+
+    assert triggered["eq_called"] is False, "the malicious campaign_generation's own __eq__/__ne__ must never be invoked at all"
+
+    receipt = _real_create_branch_on_rig(rig, branch="sc23/side-effecting-task-int-field-sanity", operation_id="op-side-effecting-task-int-field-sanity")
+    assert receipt is not None
+
+
 def test_sc23_wrapper_ignores_a_wholesale_replaced_inner_facility(rig) -> None:
     """Review finding (PR #86, round 24, P1, Codex, reproduced by the
     reviewer -- "Verify the inner facility identity before

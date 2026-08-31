@@ -4096,6 +4096,85 @@ Windows-only failures, zero regressions).
     sweep (1422 passed, 2 skipped, only the 9 known pre-existing
     Windows-only subprocess failures).
 
+61. A fresh Codex pass against the round-60 commit (`85b805a`/`226c0a0`)
+    found 2 further genuine P1 findings -- both the same "checked via
+    `isinstance`, never exact `type(...) is ...`" gap applied to
+    shapes rounds 57-60 had not yet reached.
+    - **P1 ("Require an exact files dictionary"), Codex**:
+      `isinstance(files, dict)` admits a `dict` SUBCLASS. This
+      module's own `files.items()` call happens to return clean
+      entries even for such a subclass (so round 58/60's own checks
+      were not fooled), but Gen1's own `RepositoryFacility.commit`
+      later does plain container iteration (`for path in files`),
+      which uses `__iter__`, NOT `.items()` -- a different method the
+      reviewer's subclass overrides instead. The reviewer reproduced
+      this moving `.git/objects` outside the repository and installing
+      a symlink, with the authorized commit still returning a genuine
+      receipt.
+    - **P1 ("Reject subclassed numeric dispatch arguments"), Codex**:
+      every check so far (rounds 57-60) validated only STRING/BYTES
+      -shaped values. `foreman_epoch` (present on all five dispatch
+      methods) is compared (`task.foreman_epoch != foreman_epoch`)
+      inside Gen1's own `validate_task`, after revalidation, invoking
+      an `int` SUBCLASS's overridden `__ne__`/`__eq__` (Python prefers
+      a subclass's reflected method, so the malicious value's dunder
+      runs even as the RIGHT operand -- the same reflected-method
+      mechanism round 60's `assignment_id` finding used). The reviewer
+      reproduced this planting a symlink over `.git/refs/heads`.
+
+      Both fixed the same way as every prior widening: `files` must
+      now be exact `type(files) is dict`, checked before this
+      function's own `.items()` call even runs; every kwarg that is
+      already `isinstance(v, int)` must now be exact `type(v) is int`
+      too, in `_reject_non_exact_dispatch_arguments` (still checked
+      before any delegation, revalidation, or containment scanning).
+
+      Self-audit (before considering this round closed) found two
+      direct siblings, both the identical class of exposure one
+      argument/field over:
+      - `merge_pr`'s own `pr_number` reaches `repository_pr_resource
+        (repository, pr_number)`'s `f"repository:{repository}:pr:
+        {pr_number}"`, an f-string invoking `__format__` -- the exact
+        round-58 `branch` pattern, now on an `int`-shaped argument
+        instead of a `str`-shaped one. Covered by the same generalized
+        `isinstance(v, int)` check (no separate name needed).
+      - `task`'s OWN int-typed fields (`campaign_generation`,
+        `attempt`, `foreman_epoch`, `lease_epoch`, `lease_generation`)
+        are compared the same way round 60's `assignment_id` finding
+        demonstrated for `str` fields (`task.campaign_generation !=
+        snapshot.campaign_generation` in `validate_live_task`; lease
+        fencing similarly) -- reachable after revalidation, deep
+        inside Gen1's own code. `_reject_non_exact_task_packet_argument`
+        now also requires every `int`-shaped field to be exact
+        `type(v) is int`, in the same loop as the round-60 string-field
+        check.
+
+      No new adjudicated residual-Gen1-dependency exceptions needed --
+      both extended functions are Gen2-owned, reached via the same
+      already-adjudicated dispatch methods; confirmed via a clean
+      residual-dependency scan after the fix.
+
+    4 new permanent regression tests: one reproduces the reviewer's
+    exact side-effecting-`__iter__` `dict` subclass `files` argument
+    via a real, fully-authorized `commit` dispatch; one reproduces the
+    reviewer's exact side-effecting-`__eq__`/`__ne__` `int` subclass
+    `foreman_epoch` argument via a real, fully-authorized
+    `create_branch` dispatch; the self-audited `pr_number` sibling
+    reproduces a side-effecting-`__format__` `int` subclass via a
+    real, fully-authorized `merge_pr` dispatch (no sanity dispatch
+    follows -- `merge_pr` has no successful path in this
+    local-commit-only harness); the self-audited task-int-field
+    sibling reproduces a side-effecting-`__eq__`/`__ne__` `int`
+    subclass `campaign_generation` inside a genuinely, correctly
+    sealed `TaskPacket` via a real, fully-authorized `create_branch`
+    dispatch. Every test asserts the malicious dunder never actually
+    runs at all, and the three with a successful path follow with a
+    sanity dispatch confirming no over-rejection. Fixed in commit
+    `<pending>`. Full local re-verification: full test file
+    (130/130), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (pending), and full repository
+    sweep (pending).
+
 ## Real, honest end-to-end result
 
 Running `execute_self_construction_gate()` for real against the live
