@@ -3868,10 +3868,11 @@ Windows-only failures, zero regressions).
     side-effecting-`__hash__` `repository` argument via a real,
     fully-authorized `create_branch` dispatch, asserting the malicious
     `__hash__` never actually runs at all -- not merely that some
-    error was eventually raised. Fixed in commit `<pending>`. Full
+    error was eventually raised. Fixed in commit `6aadb8a`. Full
     local re-verification: full test file (121/121), full mutation
-    suite (37/37), `test_g2_27_self_construction.py` (pending), and
-    full repository sweep (pending).
+    suite (37/37), `test_g2_27_self_construction.py` (33/33), and
+    full repository sweep (1417 passed, 2 skipped, only the 9 known
+    pre-existing Windows-only failures, zero regressions).
 
 ## Real, honest end-to-end result
 
