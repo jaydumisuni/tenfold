@@ -3619,6 +3619,113 @@ Windows-only failures, zero regressions).
     repository sweep (1413 passed, 2 skipped, only the 9 known
     pre-existing Windows-only failures, zero regressions).
 
+55. A fresh Codex pass against the round-54 commit (`28e3a75`/`772b95a`)
+    found 2 further genuine P1 findings -- both attacking round 54's
+    own fix from round 54's own commit, the deepest "fix a fix" this
+    campaign has needed yet:
+    - **P1 ("Pin the Path factory's runtime concrete class"), Codex**:
+      the round-53 fix enumerates CURRENTLY-loaded subclasses via
+      `Path.__subclasses__()` at capture time -- but `Path.__new__`
+      does not discover its concrete class that way at all: its own
+      body reads `cls = WindowsPath if os.name == 'nt' else
+      PosixPath`, an ordinary global lookup resolved fresh, via
+      `Path.__new__.__globals__` (`pathlib`'s own namespace), on
+      EVERY call. Round 53's own snapshot pins whatever concrete
+      class OBJECT was reachable via `__subclasses__()` at import
+      time -- it says nothing about whether the NAME
+      `pathlib.PosixPath`/`pathlib.WindowsPath` itself was later
+      REBOUND to an entirely different class. The reviewer reproduced
+      exactly that: rebind `pathlib.PosixPath` to a brand-new
+      subclass overriding `is_symlink`, so every future `Path(...)`
+      construction returns an instance of the NEW class -- round 53's
+      own pin, still faithfully verifying the OLD class object's own
+      `is_symlink`, has nothing to say about it. Fixed by tracing this
+      module's own containment-scan functions one level further: for
+      every class visited in `_leaf_attribute_roots`'s own subclass
+      walk, every function directly defined on that class
+      (`Path.__new__`, in particular) is ALSO walked for its own
+      `__code__.co_names`, discovering `pathlib.PosixPath`/
+      `pathlib.WindowsPath` as additional roots automatically -- the
+      exact same transitive-closure technique this file already uses
+      for ordinary functions, applied to a class's OWN methods rather
+      than stopping at its attribute VALUES. (Implementation note,
+      caught before this was ever committed: `__new__` is stored as a
+      `staticmethod` WRAPPER in a class's own `__dict__`, not a plain
+      function -- the first version of this fix silently walked zero
+      methods on `Path` at all until static/classmethod descriptors
+      were explicitly unwrapped first.)
+    - **P1 ("Replace mapping proxies with intrinsically immutable
+      snapshots"), Codex**: round 54's own `types.MappingProxyType`
+      fix is only a VIEW over a real, separately-referenced backing
+      dict -- blocking `proxy[name] = x` says nothing about the
+      backing dict ITSELF, which remains an ordinary, live Python
+      object the proxy holds a strong reference to, discoverable via
+      `gc.get_referents(proxy)[0]` regardless of how carefully the
+      wrapping is authored (an INHERENT property of the type, not an
+      implementation oversight round 54 could have avoided by
+      wrapping more carefully). The reviewer reproduced the EXACT
+      round-54 attack one layer deeper: tamper
+      `RepositoryFacility.create_branch`, then use
+      `gc.get_referents` to reach and mutate
+      `_TRUSTED_FACILITY_CLASS_ATTRIBUTES`/
+      `_TRUSTED_FACILITY_CLASS_CODE_OBJECTS`'s own backing dicts
+      directly, bypassing `MappingProxyType`'s own guard entirely,
+      since nothing about that guard applies to the dict UNDERNEATH
+      it. Fixed by never persistently storing a dict (proxied or
+      otherwise) as a trust snapshot at all: a new
+      `_immutable_snapshot`/`_snapshot_as_dict` pair converts every
+      trust structure in this file (the six class-implementation
+      dicts, `_capture_transitive_authority_globals`'s own return
+      value, `_capture_collaborator_relied_upon_attributes`'s own
+      `relied_upon_methods`, `_SealedCollaboratorProxy`'s own
+      `data_snapshot`) to a `tuple` of `(key, value)` pairs -- which
+      has NO separate backing structure for `gc.get_referents` (or
+      any other introspection) to hand back, since a tuple IS its own
+      elements and supports no in-place mutation whatsoever --
+      restoring dict-style lookup only as a FRESH, LOCAL,
+      single-call-scoped value at each of the (roughly a dozen) call
+      sites that genuinely need it, never itself stored anywhere
+      persistent.
+
+      Both findings share the same shape as round 51's own genuine
+      lesson: a mechanism built to close one axis of tampering can
+      still leave a DIFFERENT axis open on the exact same subject --
+      round 53 pinned a class's own attribute values but not the
+      NAME that selects which concrete class gets used; round 54
+      pinned a dict's own entries but not the dict's own backing
+      reachability. Both required verifying the reviewer's EXACT
+      reproduction empirically before writing anything, and both
+      genuinely close what they claim to (confirmed via
+      `gc.get_referents` returning no mutable dict for any trust
+      snapshot, and via a real `pathlib.PosixPath`/`WindowsPath`
+      rebind now being caught) without over-claiming protection
+      against the SAME already-disclosed round-27/34 module-attribute
+      wholesale-rebinding limitation, which remains genuinely
+      unfixable and is re-verified, not merely re-asserted, by this
+      round's own updated disclosed-limitation test.
+
+      No new adjudicated residual-Gen1-dependency exceptions needed --
+      `_immutable_snapshot`/`_snapshot_as_dict` are pure utility
+      functions with no Gen1 dependency of their own, and every
+      existing mechanism name reached is unchanged; confirmed via a
+      clean residual-dependency scan after the fix.
+
+    Fixed with real mechanisms, both verified empirically before and
+    after. 3 changes to the test suite: one NEW test proves
+    `gc.get_referents` no longer yields a mutable backing dict for any
+    trust snapshot and that genuine class tampering is still caught;
+    one NEW test reproduces the reviewer's exact
+    `pathlib.PosixPath`/`WindowsPath` factory-selector rebind via a
+    real, fully-authorized `create_branch` dispatch (restored in a
+    `finally` block, followed by a sanity dispatch confirming no
+    over-rejection); the existing wholesale-rebind disclosed-
+    limitation test is updated to reflect the new tuple-based
+    mechanism rather than testing a `MappingProxyType` construction
+    this file no longer uses. Fixed in commit `<pending>`. Full local
+    re-verification: full test file (119/119), full mutation suite
+    (37/37), `test_g2_27_self_construction.py` (pending), and full
+    repository sweep (pending).
+
 ## Real, honest end-to-end result
 
 Running `execute_self_construction_gate()` for real against the live

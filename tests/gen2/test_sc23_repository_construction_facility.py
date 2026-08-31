@@ -2147,11 +2147,12 @@ def test_sc23_trust_dicts_reject_a_direct_entry_mutation() -> None:
     found both sides equal, since both were set to the identical
     malicious value, and a fully-authorized `create_branch` ran the
     injected method with no containment, authority, lease, or
-    request-binding validation at all. Fixed by wrapping every trust
-    dict in `types.MappingProxyType` -- a read-only VIEW whose
-    `__setitem__` unconditionally raises `TypeError`. This test proves
-    the ENTRY-mutation itself is now rejected, at the assignment,
-    before it could ever reach a comparison to defeat."""
+    request-binding validation at all. Fixed (round 54, then widened
+    round 55 -- see `_immutable_snapshot`'s own docstring) by storing
+    every trust structure as a `tuple` of `(key, value)` pairs, which
+    supports no item assignment whatsoever. This test proves the
+    ENTRY-mutation itself is still rejected, at the assignment, before
+    it could ever reach a comparison to defeat."""
     from tenfold.gen2.repository_construction_facility import _TRUSTED_FACILITY_CLASS_ATTRIBUTES, _TRUSTED_FACILITY_CLASS_CODE_OBJECTS
 
     with pytest.raises(TypeError):
@@ -2161,31 +2162,78 @@ def test_sc23_trust_dicts_reject_a_direct_entry_mutation() -> None:
         _TRUSTED_FACILITY_CLASS_CODE_OBJECTS["create_branch"] = None  # noqa: SLF001 -- test-only, same class of attack against the sibling trust dict
 
 
+def test_sc23_trust_dicts_reject_a_gc_referents_backing_dict_mutation() -> None:
+    """Review finding (PR #86, round 55, P1, Codex, reproduced by the
+    reviewer -- "Replace mapping proxies with intrinsically immutable
+    snapshots"): round 54's own `types.MappingProxyType` fix is only a
+    VIEW over a real, separately-referenced backing dict -- blocking
+    `proxy[name] = x` says nothing about the backing dict ITSELF,
+    which remains an ordinary, live Python object the proxy holds a
+    strong reference to, discoverable via
+    `gc.get_referents(proxy)[0]` regardless of how carefully the
+    wrapping is authored. The reviewer reproduced tampering
+    `RepositoryFacility.create_branch` AND, via
+    `gc.get_referents`, reaching and mutating
+    `_TRUSTED_FACILITY_CLASS_ATTRIBUTES`/
+    `_TRUSTED_FACILITY_CLASS_CODE_OBJECTS`'s own backing dicts
+    directly, bypassing `MappingProxyType`'s own guard entirely.
+    Fixed by storing every trust structure as a `tuple` of `(key,
+    value)` pairs instead -- which has NO separate backing container
+    for `gc.get_referents` to hand back at all. This test proves that
+    `gc.get_referents` on a trust snapshot never yields a mutable
+    dict, and that genuinely tampering `RepositoryFacility.create_branch`
+    (with no way left to make the trust snapshot "agree") is
+    correctly caught."""
+    import gc
+
+    from tenfold.gen2.repository_construction_facility import (
+        RepositoryConstructionQualificationError,
+        _reject_altered_class_implementation,
+        _TRUSTED_FACILITY_CLASS_ATTRIBUTES,
+        _TRUSTED_FACILITY_CLASS_CODE_OBJECTS,
+        _TRUSTED_FACILITY_CLASS_DEFAULTS,
+    )
+    from tenfold.repository_facility import RepositoryFacility
+
+    assert not any(isinstance(referent, dict) for referent in gc.get_referents(_TRUSTED_FACILITY_CLASS_ATTRIBUTES)), (
+        "a trust snapshot's own gc referents must never include a mutable backing dict"
+    )
+
+    original_create_branch = RepositoryFacility.create_branch
+
+    def malicious_create_branch(self, *args, **kwargs):
+        return "MALICIOUS-RESULT-NO-VALIDATION"
+
+    RepositoryFacility.create_branch = malicious_create_branch  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack
+    try:
+        with pytest.raises(RepositoryConstructionQualificationError):
+            _reject_altered_class_implementation(RepositoryFacility, _TRUSTED_FACILITY_CLASS_ATTRIBUTES, _TRUSTED_FACILITY_CLASS_CODE_OBJECTS, _TRUSTED_FACILITY_CLASS_DEFAULTS, "RepositoryFacility")
+    finally:
+        RepositoryFacility.create_branch = original_create_branch
+
+
 def test_sc23_wrapper_ignores_a_wholesale_reassigned_trust_dict() -> None:
-    """DISCLOSED LIMITATION (review finding, PR #86, round 54, P1,
-    Codex -- "Make class-integrity snapshots immutable"; see
-    `_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES`'s own module-level ROUND 54
-    WIDENING comment for the full account): `types.MappingProxyType`
-    protects a trust dict's own CONTENTS from mutation, but NOT the
+    """DISCLOSED LIMITATION (review finding, PR #86, rounds 54/55,
+    P1, Codex; see `_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES`'s own
+    module-level ROUND 54/55 WIDENING comments for the full account):
+    neither `types.MappingProxyType` (round 54) nor the `tuple`-based
+    `_immutable_snapshot` that replaced it (round 55) protects the
     MODULE-LEVEL NAME binding itself --
     `tenfold.gen2.repository_construction_facility._TRUSTED_FACILITY_CLASS_ATTRIBUTES
-    = a_different_mappingproxy_wrapping_a_malicious_dict` is an
-    ORDINARY module-attribute reassignment, exactly the same
-    already-disclosed round-27/34 reachability fact ("any code
-    holding a reference this module produces can reach anything
-    reachable from it," and importing the module IS such a reference)
-    applied one level further out to the trust store itself, not a
-    new category of gap. This is a genuinely unfixable limitation
-    within a single Python process without OS-level sandboxing --
-    documented here, executably, as a PERMANENT record that the
-    bypass succeeds (matching this campaign's own established
-    disclosed-limitation precedent, e.g. rounds 27/34/37/39), rather
-    than asserting false protection this file cannot actually
-    provide. Both trust dicts are restored to their ORIGINAL objects
-    in a `finally` block, since they are real, shared, process-global
-    module attributes."""
-    import types
-
+    = a_different_tuple` is an ORDINARY module-attribute reassignment,
+    exactly the same already-disclosed round-27/34 reachability fact
+    ("any code holding a reference this module produces can reach
+    anything reachable from it," and importing the module IS such a
+    reference) applied one level further out to the trust store
+    itself, not a new category of gap. This is a genuinely unfixable
+    limitation within a single Python process without OS-level
+    sandboxing -- documented here, executably, as a PERMANENT record
+    that the bypass succeeds (matching this campaign's own
+    established disclosed-limitation precedent, e.g. rounds
+    27/34/37/39), rather than asserting false protection this file
+    cannot actually provide. Both trust structures are restored to
+    their ORIGINAL objects in a `finally` block, since they are real,
+    shared, process-global module attributes."""
     import tenfold.gen2.repository_construction_facility as repository_construction_facility_module
     from tenfold.repository_facility import RepositoryFacility
 
@@ -2202,8 +2250,8 @@ def test_sc23_wrapper_ignores_a_wholesale_reassigned_trust_dict() -> None:
         replacement_trust["create_branch"] = malicious_create_branch
         replacement_code_trust = dict(original_code_trust)
         replacement_code_trust["create_branch"] = malicious_create_branch.__code__
-        repository_construction_facility_module._TRUSTED_FACILITY_CLASS_ATTRIBUTES = types.MappingProxyType(replacement_trust)  # noqa: SLF001 -- test-only, a WHOLESALE rebind, not a mutation
-        repository_construction_facility_module._TRUSTED_FACILITY_CLASS_CODE_OBJECTS = types.MappingProxyType(replacement_code_trust)  # noqa: SLF001
+        repository_construction_facility_module._TRUSTED_FACILITY_CLASS_ATTRIBUTES = repository_construction_facility_module._immutable_snapshot(replacement_trust)  # noqa: SLF001 -- test-only, a WHOLESALE rebind, not a mutation
+        repository_construction_facility_module._TRUSTED_FACILITY_CLASS_CODE_OBJECTS = repository_construction_facility_module._immutable_snapshot(replacement_code_trust)  # noqa: SLF001
 
         # DISCLOSED: this genuinely does NOT raise -- documenting the
         # bypass succeeding, not asserting protection this file cannot
@@ -2220,6 +2268,56 @@ def test_sc23_wrapper_ignores_a_wholesale_reassigned_trust_dict() -> None:
         RepositoryFacility.create_branch = original_create_branch
         repository_construction_facility_module._TRUSTED_FACILITY_CLASS_ATTRIBUTES = original_trust
         repository_construction_facility_module._TRUSTED_FACILITY_CLASS_CODE_OBJECTS = original_code_trust
+
+
+def test_sc23_wrapper_rejects_a_rebound_pathlib_concrete_class_factory_selector(rig) -> None:
+    """Review finding (PR #86, round 55, P1, Codex, reproduced by the
+    reviewer -- "Pin the Path factory's runtime concrete class"): the
+    round-53 fix enumerates CURRENTLY-loaded subclasses via
+    `Path.__subclasses__()` at capture time -- but `Path.__new__`
+    does not discover its concrete class that way at all: its own
+    body reads `cls = WindowsPath if os.name == 'nt' else PosixPath`,
+    an ordinary global lookup resolved fresh, via
+    `Path.__new__.__globals__` (`pathlib`'s own namespace), on EVERY
+    call. Round 53's own snapshot pins whatever concrete class OBJECT
+    was reachable via `__subclasses__()` at import time -- it says
+    nothing about whether the NAME `pathlib.PosixPath`/
+    `pathlib.WindowsPath` ITSELF was later rebound to an entirely
+    different class. The reviewer reproduced rebinding
+    `pathlib.PosixPath` (or `WindowsPath`, on this platform) to a
+    brand-new subclass overriding `is_symlink`: every FUTURE
+    `Path(...)` construction returns an instance of the NEW class,
+    which round 53's own pin -- still faithfully verifying the OLD
+    class object's own `is_symlink` -- has nothing to say about.
+    Fixed by tracing this module's own containment-scan functions one
+    level further: for every class visited in `_leaf_attribute_roots`'s
+    own subclass walk, every function directly defined on that class
+    (`Path.__new__`, in particular) is ALSO walked for its own
+    `__code__.co_names`, discovering `pathlib.PosixPath`/
+    `pathlib.WindowsPath` as additional roots automatically. The
+    concrete class name is restored in a `finally` block, since
+    `pathlib` is a real, shared, process-global module."""
+    import pathlib
+
+    concrete_name = "WindowsPath" if hasattr(pathlib, "WindowsPath") else "PosixPath"
+    original_concrete_class = getattr(pathlib, concrete_name)
+
+    triggered = {"called": False}
+
+    class _MaliciousConcretePath(original_concrete_class):
+        def is_symlink(self):
+            triggered["called"] = True
+            return False
+
+    setattr(pathlib, concrete_name, _MaliciousConcretePath)  # noqa: SLF001 -- test-only, reproducing the reviewer's exact attack: rebinding the factory selector NAME, not mutating the old class
+    try:
+        with pytest.raises(RepositoryConstructionQualificationError):
+            _real_create_branch_on_rig(rig, branch="sc23/rebound-pathlib-concrete-class-factory-selector", operation_id="op-rebound-pathlib-concrete-class-factory-selector")
+    finally:
+        setattr(pathlib, concrete_name, original_concrete_class)
+
+    receipt = _real_create_branch_on_rig(rig, branch="sc23/rebound-pathlib-concrete-class-factory-selector-sanity", operation_id="op-rebound-pathlib-concrete-class-factory-selector-sanity")
+    assert receipt is not None
 
 
 def test_sc23_wrapper_ignores_a_wholesale_replaced_inner_facility(rig) -> None:
