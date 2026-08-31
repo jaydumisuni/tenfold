@@ -2386,6 +2386,57 @@ def test_sc23_wrapper_rejects_a_schizophrenic_descriptor_on_a_path_subclass(rig)
     assert receipt is not None
 
 
+def test_sc23_wrapper_rejects_a_repository_argument_with_a_side_effecting_hash(rig) -> None:
+    """Review finding (PR #86, round 57, P1, Codex, reproduced by the
+    reviewer -- "Recheck containment after argument callbacks"): none
+    of this file's checks (rounds 14-56) re-verify the CALLER-SUPPLIED
+    ARGUMENTS a dispatch call is about to pass through -- and Gen1's
+    own real code (`LocalGitRepositoryTransport._repo`) performs an
+    ordinary dict lookup keyed by the caller's own `repository`
+    argument (`self._repositories.get(repository)`), invoking
+    `hash(repository)` on whatever object the caller actually
+    supplied. The reviewer reproduced passing a `str` SUBCLASS as
+    `repository` whose own `__hash__` has a SIDE EFFECT: moving the
+    real `.git/refs/heads` outside the repository and replacing it
+    with a symlink, the moment Gen1's own dict lookup evaluates it --
+    AFTER this module's own containment scan already passed (the
+    repository was still genuinely intact at scan time), but BEFORE
+    the actual git mutation. Unlike round 14's own original TOCTOU
+    finding, this is fully DETERMINISTIC, not merely racy: the
+    malicious side effect is guaranteed to fire, triggered by the
+    dispatch call's own, otherwise-ordinary argument processing, not
+    by a race against a concurrent thread. Fixed the same way round 28
+    already established for this module's own internal data: a
+    caller-controlled value's dunder methods must never be invoked
+    before its EXACT type is confirmed via `type(x) is str` (never
+    `isinstance`, which admits the malicious subclass reproduced
+    here), checked BEFORE any delegation, revalidation, or containment
+    scanning even runs. This test asserts the malicious `__hash__`
+    never actually runs at all -- not merely that some error was
+    eventually raised."""
+    from tenfold.gen2.repository_construction_facility import _dispatch
+    from tenfold.repository_facility import repository_ref_resource, repository_request_binding
+
+    triggered = {"hash_called": False}
+
+    class _SideEffectingStr(str):
+        def __hash__(self):
+            triggered["hash_called"] = True
+            return str.__hash__(self)
+
+    malicious_repository = _SideEffectingStr(rig.repository)
+
+    request = {"operation_id": "op-side-effecting-repository-hash", "repository": rig.repository, "branch": "sc23/side-effecting-repository-hash", "owner": "assign-post", "base_ref": "main", "expected_base_sha": rig.initial_sha}
+    binding = repository_request_binding("create_branch", **request)
+    resource = repository_ref_resource(rig.repository, request["branch"])
+    task = _dispatch(rig, assignment_id="assign-post", attempt=1, campaign_generation=1, foreman_epoch=1, lease_epoch=1, lease_generation=1, resource=resource, request_binding=binding)
+
+    with pytest.raises(RepositoryConstructionQualificationError):
+        rig.facility.create_branch(task, repository=malicious_repository, branch=request["branch"], owner=request["owner"], base_ref=request["base_ref"], expected_base_sha=request["expected_base_sha"], operation_id=request["operation_id"], foreman_epoch=1)
+
+    assert triggered["hash_called"] is False, "the malicious repository argument's own __hash__ must never be invoked at all"
+
+
 def test_sc23_wrapper_ignores_a_wholesale_replaced_inner_facility(rig) -> None:
     """Review finding (PR #86, round 24, P1, Codex, reproduced by the
     reviewer -- "Verify the inner facility identity before

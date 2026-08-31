@@ -3799,6 +3799,80 @@ Windows-only failures, zero regressions).
     sweep (1416 passed, 2 skipped, only the 9 known pre-existing
     Windows-only failures, zero regressions).
 
+57. A fresh Codex pass against the round-56 commit (`2f7321b`/`6cf6c4b`)
+    found 1 further genuine P1 finding -- a genuinely NEW class of
+    finding, distinct from every trust-store/transitive-closure
+    finding since round 47: not a gap in WHAT this module pins, but
+    in what it never checked about the CALLER's own arguments:
+    - **P1 ("Recheck containment after argument callbacks"), Codex**:
+      every check so far (rounds 14-56) re-verifies TRUST STATE this
+      module itself owns -- class implementations, module globals,
+      collaborator state -- immediately before delegating. NONE of
+      them re-verify the CALLER-SUPPLIED ARGUMENTS a dispatch call is
+      about to pass through, and Gen1's own real code
+      (`LocalGitRepositoryTransport._repo`) performs an ordinary DICT
+      LOOKUP keyed by the caller's own `repository` argument
+      (`self._repositories.get(repository)`), which invokes
+      `hash(repository)` on whatever object the caller actually
+      supplied. The reviewer reproduced passing a `str` SUBCLASS as
+      `repository` whose own `__hash__` has a SIDE EFFECT: moving the
+      real `.git/refs/heads` outside the repository and replacing it
+      with a symlink, the moment Gen1's own dict lookup evaluates it
+      -- AFTER this module's own containment scan already passed
+      (the repository was still genuinely intact at scan time), but
+      BEFORE the actual git mutation. Unlike round 14's own original
+      TOCTOU finding, this is fully DETERMINISTIC, not merely racy:
+      the malicious side effect is guaranteed to fire, triggered by
+      the dispatch call's own, otherwise-ordinary argument processing,
+      not by a race against a concurrent thread or process.
+
+      Fixed the same way round 28 already established for this
+      module's own internal data (`kwdefaults` keys/values): a
+      caller-controlled value's dunder methods must never be invoked
+      before its EXACT type is confirmed via `type(x) is str` (never
+      `isinstance`, which admits a malicious subclass exactly like the
+      one reproduced here). A new `_reject_non_exact_str_repository_argument`
+      is called FIRST, in all five of the wrapper's own dispatch
+      methods (`create_branch`/`commit`/`read`/`open_pr`/`merge_pr`),
+      before revalidation or delegation even runs -- the earliest
+      possible point, since the malicious side effect fires the
+      moment `repository` is ever used as a dict key anywhere
+      downstream, including inside Gen1's own real code this module
+      does not otherwise control. Confirmed by self-audit (via `grep`
+      against both `local_git_transport.py` and `repository_facility.py`)
+      that `repository` is the ONLY caller-supplied argument any of
+      the five dispatch methods accepts that Gen1's own real code ever
+      uses as a dict key anywhere -- `branch`/`owner`/`base_ref`/
+      `path`/etc. are only ever passed to `subprocess` as plain
+      command-line arguments or used in string formatting, neither of
+      which invokes `__hash__`/`__eq__` on the value at all.
+
+      Deliberately does nothing when `repository` is simply ABSENT
+      from the call's own keyword arguments -- a caller who forgot a
+      required keyword-only argument gets Python's own natural, more
+      informative `TypeError` from the real delegated call instead,
+      matching this file's own "detect presence, don't interpret"
+      discipline rather than judging a value that was never supplied
+      at all.
+
+      No new adjudicated residual-Gen1-dependency exceptions needed --
+      the new function is Gen2-owned and reached via the same
+      already-adjudicated `_ContainmentReCheckedRepositoryFacility`
+      dispatch methods; confirmed via a clean residual-dependency scan
+      after the fix.
+
+    Fixed with a real mechanism, reusing round 28's own established
+    exact-type discipline for a genuinely new attack surface (caller
+    arguments, not this module's own internal or trust-store data). 1
+    new permanent regression test reproduces the reviewer's exact
+    side-effecting-`__hash__` `repository` argument via a real,
+    fully-authorized `create_branch` dispatch, asserting the malicious
+    `__hash__` never actually runs at all -- not merely that some
+    error was eventually raised. Fixed in commit `<pending>`. Full
+    local re-verification: full test file (121/121), full mutation
+    suite (37/37), `test_g2_27_self_construction.py` (pending), and
+    full repository sweep (pending).
+
 ## Real, honest end-to-end result
 
 Running `execute_self_construction_gate()` for real against the live

@@ -3247,6 +3247,64 @@ def _current_transport(wrapper: "_ContainmentReCheckedRepositoryFacility") -> Lo
     return current
 
 
+#: Review finding (PR #86, round 57, P1, Codex, reproduced by the
+#: reviewer -- "Recheck containment after argument callbacks"): every
+#: check so far (rounds 14-56) re-verifies TRUST STATE this module
+#: itself owns -- class implementations, module globals, collaborator
+#: state -- immediately before delegating. NONE of them re-verify the
+#: CALLER-SUPPLIED ARGUMENTS the dispatch call is about to pass
+#: through, and Gen1's own real code (`LocalGitRepositoryTransport
+#: ._repo`) performs an ordinary DICT LOOKUP keyed by the caller's own
+#: `repository` argument (`self._repositories.get(repository)`) --
+#: which invokes `hash(repository)` (and potentially `__eq__`) on
+#: whatever object the caller actually supplied. The reviewer
+#: reproduced passing a `str` SUBCLASS as `repository` whose own
+#: `__hash__` has a SIDE EFFECT: moving the real `.git/refs/heads`
+#: outside the repository and replacing it with a symlink, the moment
+#: Gen1's own dict lookup evaluates it -- AFTER this module's own
+#: containment scan already passed (since, at scan time, the
+#: repository was still genuinely intact), but BEFORE the actual git
+#: mutation. Unlike round 14's own original TOCTOU finding, this is
+#: fully DETERMINISTIC, not merely racy: the malicious side effect is
+#: guaranteed to fire at exactly the right moment, since it is
+#: triggered by the dispatch call's own, otherwise-ordinary argument
+#: processing, not by a concurrent thread or process racing against a
+#: window of time.
+#:
+#: Fixed the same way round 28 already established for THIS module's
+#: own internal data (`kwdefaults` keys/values): a caller-controlled
+#: value's dunder methods (`__hash__`, `__eq__`, `__lt__`, ...) must
+#: never be invoked before its EXACT type is confirmed via `type(x) is
+#: str` (never `isinstance`, which admits a malicious subclass exactly
+#: like the one reproduced here). Confirmed by self-audit that
+#: `repository` is the ONLY caller-supplied argument to any of the
+#: five dispatch methods below that Gen1's own real code ever uses as
+#: a dict key anywhere (`grep` against both
+#: `local_git_transport.py`/`repository_facility.py` found no other
+#: site) -- `branch`/`owner`/`base_ref`/`path`/etc. are only ever
+#: passed to `subprocess` as plain command-line arguments or used in
+#: string formatting, neither of which invokes `__hash__`/`__eq__` on
+#: the value at all.
+def _reject_non_exact_str_repository_argument(kwargs: dict) -> None:
+    """See this function's own module-level comment for the round-57
+    finding this closes. Checked BEFORE any delegation, revalidation,
+    or containment scanning even runs -- the earliest possible point,
+    since the malicious side effect fires the moment `repository` is
+    ever used as a dict key ANYWHERE downstream, including inside
+    Gen1's own real code this module does not otherwise control.
+    Deliberately does nothing when `repository` is simply ABSENT from
+    `kwargs` (a caller who forgot a required keyword-only argument
+    gets Python's own natural, more informative `TypeError` from the
+    real delegated call instead) -- this check only ever judges a
+    value that is genuinely PRESENT, matching this file's own
+    "detect presence, don't interpret" discipline."""
+    if "repository" in kwargs and type(kwargs["repository"]) is not str:
+        raise RepositoryConstructionQualificationError(
+            f"_reject_non_exact_str_repository_argument: repository must be an exact str "
+            f"(got {type(kwargs['repository']).__name__}) -- refusing to dispatch"
+        )
+
+
 def _revalidate_transport_integrity(wrapper: "_ContainmentReCheckedRepositoryFacility") -> "_AdmittedTransportState":
     """Renamed from `_revalidate_before_mutation` (round 22, Codex --
     "Revalidate delegated reads before invoking transport"): `read` is
@@ -3606,23 +3664,32 @@ class _ContainmentReCheckedRepositoryFacility(metaclass=_FrozenClassMeta):
         # `_revalidate_transport_integrity`'s own docstring): all FIVE
         # dispatch methods now call the SAME, fully comprehensive
         # check, unifying what used to be a narrower check for
-        # `open_pr`/`merge_pr`.
+        # `open_pr`/`merge_pr`. Round 57 (see
+        # `_reject_non_exact_str_repository_argument`'s own docstring):
+        # checked FIRST, before revalidation even runs, since the
+        # finding it closes is about the CALLER's own argument, not
+        # this module's trust state.
+        _reject_non_exact_str_repository_argument(kwargs)
         admitted = _revalidate_transport_integrity(self)
         return admitted.facility.create_branch(*args, **kwargs)
 
     def commit(self, *args, **kwargs):
+        _reject_non_exact_str_repository_argument(kwargs)
         admitted = _revalidate_transport_integrity(self)
         return admitted.facility.commit(*args, **kwargs)
 
     def read(self, *args, **kwargs):
+        _reject_non_exact_str_repository_argument(kwargs)
         admitted = _revalidate_transport_integrity(self)
         return admitted.facility.read(*args, **kwargs)
 
     def open_pr(self, *args, **kwargs):
+        _reject_non_exact_str_repository_argument(kwargs)
         admitted = _revalidate_transport_integrity(self)
         return admitted.facility.open_pr(*args, **kwargs)
 
     def merge_pr(self, *args, **kwargs):
+        _reject_non_exact_str_repository_argument(kwargs)
         admitted = _revalidate_transport_integrity(self)
         return admitted.facility.merge_pr(*args, **kwargs)
 
