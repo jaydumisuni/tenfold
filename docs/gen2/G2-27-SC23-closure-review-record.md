@@ -4090,10 +4090,11 @@ Windows-only failures, zero regressions).
     via a real, fully-authorized `create_branch` dispatch, asserting
     the malicious `__eq__`/`__ne__` never actually runs at all, both
     followed by a sanity dispatch confirming no over-rejection. Fixed
-    in commit `<pending>`. Full local re-verification: full test file
+    in commit `85b805a`. Full local re-verification: full test file
     (126/126), full mutation suite (37/37),
-    `test_g2_27_self_construction.py` (pending), and full repository
-    sweep (pending).
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (1422 passed, 2 skipped, only the 9 known pre-existing
+    Windows-only subprocess failures).
 
 ## Real, honest end-to-end result
 
