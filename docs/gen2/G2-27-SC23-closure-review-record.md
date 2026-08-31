@@ -4012,10 +4012,11 @@ Windows-only failures, zero regressions).
     real, fully-authorized `create_branch` dispatch, asserting the
     malicious `__getattribute__` never actually runs at all, followed
     by a sanity dispatch confirming no over-rejection. Fixed in commit
-    `<pending>`. Full local re-verification: full test file
+    `2143d60`. Full local re-verification: full test file
     (124/124), full mutation suite (37/37),
-    `test_g2_27_self_construction.py` (pending), and full repository
-    sweep (pending).
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (1420 passed, 2 skipped, only the 9 known pre-existing
+    Windows-only subprocess failures).
 
 ## Real, honest end-to-end result
 
