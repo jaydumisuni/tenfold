@@ -99,7 +99,6 @@ from .recovery_takeover import ExternalAssuranceProof, SERGEANT_AUTHORITY_VERSIO
 from .repository_construction_facility import (
     DisposableRepositoryConstructionRig,
     gen1_wrap_repository_construction_facility,
-    list_branches,
     real_commit_parent,
 )
 from .verifier import independent_reconcile_external_assurance
@@ -360,9 +359,20 @@ def build_live_construction_dispatch(
     attempt: int,
     campaign_generation: int,
     foreman_epoch: int,
-    resource: str,
     request_binding: str,
 ) -> TaskPacket:
+    """Review finding (independent adversarial review, PR #87, P3,
+    reproduced): unlike `repository_construction_facility._dispatch`
+    (which this mirrors), this function is handed an already-acquired
+    REAL `lease` (built by `gen1_lease_acquire` in the caller, with its
+    own `surfaces`/`resources` already bound at acquisition time) rather
+    than building a `WriteLease` locally from a caller-supplied
+    `resource` string -- so, unlike `_dispatch`'s own version, there was
+    never anything here for a `resource` parameter to do. It was
+    declared but never read (confirmed: identical output regardless of
+    its value, including non-string values), misleadingly suggesting a
+    resource-binding responsibility this function does not have. Removed
+    rather than left dead."""
     task = TaskPacket(
         task_id=f"task-{assignment_id}",
         campaign_id=CAMPAIGN_ID,
@@ -403,10 +413,14 @@ def build_live_construction_dispatch(
 # Adapter C: real-commit effect pair. effect_census.probe_facility_for_
 # observed_effects expects a LocalSandboxFacility.enumerate(), which a
 # git-backed facility does not have -- intentionally bypassed here, built
-# directly from real `git` queries instead (parent-SHA match, branch-ref
-# resolution), reusing repository_construction_facility's own frozen
-# real_commit_parent/list_branches/tree_entries_at (which only ever read
-# `.repo_root` off their argument -- confirmed by source inspection).
+# directly from real `git` queries instead: parent-SHA match (reusing
+# repository_construction_facility's own frozen real_commit_parent, which
+# only ever reads `.repo_root` off its argument -- confirmed by source
+# inspection) and the target branch's own current head, resolved via the
+# real transport (round-2 review finding, PR #87, CodeRabbit: checking
+# only that the branch NAME exists proves nothing about what it points
+# at -- see build_observed_effect_for_construction_commit's own
+# docstring).
 # ============================================================================
 
 
@@ -417,9 +431,19 @@ def build_expected_effect_for_construction_commit(*, effect_id: str, repository_
 def build_observed_effect_for_construction_commit(
     rig: DisposableRepositoryConstructionRig, *, effect_id: str, repository_name: str, branch: str, landed_sha: str, expected_head: str,
 ) -> effect_census.ObservedEffect:
+    """Review finding (PR #87, CodeRabbit, reproduced): checking only that
+    `branch` EXISTS (via `list_branches`) proves nothing about what it
+    currently POINTS AT -- a genuine child-of-`expected_head` commit
+    landing on some OTHER ref while `branch` itself stayed unmoved (or
+    was moved elsewhere by something else entirely) would still report
+    `has_evidence=True`, letting the Effect Census attribute a mutation
+    to a branch that never actually received it. Now resolves the
+    branch's own real current head (`rig.transport.resolve_ref`) and
+    requires it to equal `landed_sha` exactly, in addition to the
+    existing parent-of-`expected_head` check."""
     parent = real_commit_parent(rig, landed_sha)
-    branches = list_branches(rig)
-    has_evidence = parent == expected_head and branch in branches
+    branch_head = rig.transport.resolve_ref(repository_name, branch)
+    has_evidence = parent == expected_head and branch_head == landed_sha
     return effect_census.ObservedEffect(
         effect_id=effect_id,
         target_resource_id=repository_ref_resource(repository_name, branch),
@@ -595,7 +619,7 @@ def execute_g2_28_first_construction_slice(*, work_dir: Path, repo_root: Path = 
     create_branch_binding = repository_request_binding("create_branch", **create_branch_request)
     task_for_branch = build_live_construction_dispatch(
         rig, lease=lease, assignment_id="gen2-g2-28", attempt=1, campaign_generation=1, foreman_epoch=1,
-        resource=resource, request_binding=create_branch_binding,
+        request_binding=create_branch_binding,
     )
     rig.facility.create_branch(
         task_for_branch, repository=repository_name, branch=branch, owner="gen2-g2-28", base_ref="main",
@@ -614,7 +638,7 @@ def execute_g2_28_first_construction_slice(*, work_dir: Path, repo_root: Path = 
     commit_binding = repository_request_binding("commit", **commit_request)
     task_for_commit = build_live_construction_dispatch(
         rig, lease=lease, assignment_id="gen2-g2-28", attempt=2, campaign_generation=1, foreman_epoch=1,
-        resource=resource, request_binding=commit_binding,
+        request_binding=commit_binding,
     )
     receipt = rig.facility.commit(
         task_for_commit, repository=repository_name, branch=branch, owner="gen2-g2-28", expected_head=rig.initial_sha,
@@ -708,10 +732,23 @@ def execute_g2_28_first_construction_slice(*, work_dir: Path, repo_root: Path = 
     )
     verdict = proof_graph.compute_proof_verdict(graph, required_assurance, assurance_bindings=(assurance_claim,))
 
+    # Review finding (PR #87, CodeRabbit, reproduced): the closure doc
+    # claimed the Owner-authorization disclosure lives in this record's
+    # own `observer_predicates` category, matching the policy's own
+    # `required_observer_predicates` text -- but the record itself never
+    # actually populated that category, only `real_operations`. Fixed by
+    # genuinely populating it, closing the gap rather than merely
+    # correcting the doc's prose.
     final_record = replace(
         record,
         stabilization_evidence={
             "real_operations": (f"branch={branch}", f"landed_sha={landed_sha}", f"lease_id={lease.lease_id}"),
+            "observer_predicates": (
+                f"owner_authorized_by={G2_28_OWNER_AUTHORIZATION.authorized_by}",
+                f"owner_authorized_on={G2_28_OWNER_AUTHORIZATION.authorized_on}",
+                f"deferred_condition={G2_28_OWNER_AUTHORIZATION.deferred_condition}",
+                f"deferred_condition_ref={G2_28_OWNER_AUTHORIZATION.deferred_condition_ref}",
+            ),
         },
     )
 

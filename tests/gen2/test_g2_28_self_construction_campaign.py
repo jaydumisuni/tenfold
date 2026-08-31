@@ -109,6 +109,49 @@ def test_g2_28_live_repository_rig_wraps_a_real_disposable_repo(tmp_path) -> Non
     assert list_branches(rig) == ("main",)
 
 
+def test_g2_28_observed_effect_rejects_a_landed_sha_that_never_reached_the_target_branch(tmp_path) -> None:
+    """Review finding (PR #87, CodeRabbit and an independent adversarial
+    review, both reproduced): the original check only proved the target
+    branch NAME existed somewhere (`branch in list_branches(rig)`), never
+    that it actually POINTED AT `landed_sha` -- a genuine child-of-
+    expected_head commit landing on some OTHER ref while the target
+    branch stayed unmoved (or was moved elsewhere) still reported
+    `has_evidence=True`, letting a clean Effect Census attribute a
+    mutation to a branch that never actually received it. This test
+    reproduces exactly that: a real commit lands on `branch-a`, while
+    the checked target `branch-b` is created pointing at the original
+    `expected_head`, never at the landed commit."""
+    repo_root = _disposable_repo_root(tmp_path)
+    rig = sc28.build_live_repository_construction_facility(
+        repo_root=repo_root, repository_name="disposable-repo", state_db_path=tmp_path / "state.db",
+        campaign_generation=1, foreman_epoch=1,
+    )
+    initial_sha = rig.initial_sha
+
+    subprocess.run(["git", "-C", str(repo_root), "checkout", "-qb", "branch-a"], check=True, capture_output=True)
+    (repo_root / "file.txt").write_text("y\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_root), "add", "file.txt"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "commit", "-qm", "real child commit on branch-a"], check=True, capture_output=True)
+    landed_sha = subprocess.run(["git", "-C", str(repo_root), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+
+    subprocess.run(["git", "-C", str(repo_root), "branch", "branch-b", initial_sha], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "checkout", "-q", "main"], check=True, capture_output=True)
+
+    observed = sc28.build_observed_effect_for_construction_commit(
+        rig, effect_id="test-effect", repository_name="disposable-repo", branch="branch-b",
+        landed_sha=landed_sha, expected_head=initial_sha,
+    )
+    assert observed.has_evidence is False, "branch-b never actually received landed_sha -- has_evidence must be False"
+
+    expected = sc28.build_expected_effect_for_construction_commit(effect_id="test-effect", repository_name="disposable-repo", branch="branch-b")
+    from tenfold.gen2 import effect_census as ec
+    from tenfold.repository_facility import repository_ref_resource
+
+    census = ec.classify_effect_census(expected=(expected,), observed=(observed,), authorized_mutation_domain=frozenset({repository_ref_resource("disposable-repo", "branch-b")}))
+    with pytest.raises(ec.EffectCensusError):
+        ec.check_effect_integrity(census)
+
+
 def test_g2_28_live_dispatch_builds_a_genuinely_sealed_task_bound_to_the_real_lease(tmp_path) -> None:
     from tenfold.ownership import LeaseRegistry
     from tenfold.repository_facility import repository_ref_resource
@@ -126,7 +169,7 @@ def test_g2_28_live_dispatch_builds_a_genuinely_sealed_task_bound_to_the_real_le
     )
     task = sc28.build_live_construction_dispatch(
         rig, lease=lease, assignment_id="test-assign", attempt=1, campaign_generation=1, foreman_epoch=1,
-        resource=resource, request_binding="irrelevant-for-this-test",
+        request_binding="irrelevant-for-this-test",
     )
     assert task.lease_id == lease.lease_id
     assert task.lease_epoch == lease.epoch
