@@ -678,6 +678,3681 @@ verdict (see below) rather than a hardcoded stale expectation.
     each. Full local re-verification: full test file (38/38), full
     mutation suite, `test_g2_27_self_construction.py`, and full
     repository sweep re-run clean.
+13. **Process gap, disclosed honestly**: 4 further genuine findings
+    (3 Codex, 1 CodeRabbit) landed against the round-12 commit
+    (`be7c8ae`) between 00:12 and 00:25 UTC on 2026-08-28 -- BEFORE
+    PR #84 was merged at 00:30:53 UTC -- but were not caught before
+    the merge check that reported zero unresolved threads; the merge
+    proceeded with these 4 threads genuinely still open. Discovered
+    afterward while preparing an unrelated cross-repository learning
+    contribution and cross-checking the PR's live thread state
+    directly rather than relying on memory. Fixed immediately in a
+    follow-up PR (round 13) against the already-merged code on `main`,
+    with the same rigor as every prior round:
+    - **P1 ("Enforce Git storage containment during every mutation"),
+      Codex**: the symlink/hard-link containment scan ran exactly ONCE
+      at admission -- nothing re-validated before each SUBSEQUENT
+      mutation. The reviewer reproduced admitting a clean repository,
+      then replacing `.git/refs/heads` with an external-directory
+      symlink AFTER admission, then a later `create_branch` following
+      that newly-planted symlink. **Fixed**: `gen1_wrap_repository_construction_facility`
+      now returns a `_ContainmentReCheckedRepositoryFacility` -- a
+      transparent wrapper (via `__getattr__` delegation) around the
+      real, unmodified `RepositoryFacility` that re-runs the same real
+      containment scan immediately before every `create_branch`/`commit`
+      call, closing the window between admission and each individual
+      mutation.
+    - **Major/CWE-59 ("Inspect symlinks before checking target
+      existence"), CodeRabbit**: `_find_symlink_beneath` checked
+      `root.exists()` BEFORE `root.is_symlink()` -- `Path.exists()`
+      follows a symlink and returns `False` for a DANGLING one (target
+      does not exist yet), so a dangling symlink was silently skipped
+      even though a later write through it would create the external
+      target. **Fixed**: `is_symlink()` is now checked first,
+      unconditionally, before any existence check.
+    - **P1 ("Reject hard-linked Git metadata before admission"),
+      Codex**: symlink detection alone misses a HARD-linked file --
+      `.git/logs/refs/heads/main` hard-linked to an external file is
+      not a symlink at all, yet writing through either path mutates
+      the same underlying data since both names reference the
+      identical inode. The reviewer reproduced `commit()`'s own real
+      reflog append landing in the external file through such a hard
+      link. **Fixed**: the renamed `_find_unsafe_git_storage_entry`
+      also rejects any regular file beneath the scanned paths whose
+      real link count (`st_nlink`) exceeds 1.
+    - **P1 ("Reject overridable local transport subclasses"),
+      Codex**: `isinstance(transport, LocalGitRepositoryTransport)`
+      accepts any SUBCLASS too -- the reviewer reproduced a subclass
+      overriding `commit_files`/`open_pull_request`/`merge_pull_request`
+      with real remote or out-of-domain effects, still passing the
+      `isinstance` check and receiving the local-commit-only admitted
+      identity. **Fixed**: the check now requires the exact class
+      (`type(transport) is LocalGitRepositoryTransport`).
+
+    Fixing the containment wrapper surfaced one more, self-caught
+    issue: the wrapper's own `__init__` parameter annotation
+    (`facility: RepositoryFacility`) was itself flagged as an
+    undisclosed live-Gen1-authority reference by
+    `derive_residual_gen1_dependency_report()` -- `__init__` carries no
+    disclosure marker and delegation happens entirely through the
+    stored `self._facility` reference, not the parameter's own type.
+    Fixed by leaving the parameter untyped, matching the same
+    established pattern `gen1_wrap_repository_construction_facility`
+    itself already uses for its own caller-injected parameters.
+
+    All 4 genuinely fixed in round 13, with 4 new permanent regression
+    tests. Full local re-verification: full test file (42/42), full
+    mutation suite (37/37), `test_g2_27_self_construction.py` (33/33,
+    confirming zero undisclosed findings after the annotation fix),
+    and full repository sweep (1338 passed, only the 9 known
+    pre-existing Windows-only failures) re-run clean.
+14. A fresh review pass against the round-13 commit found the
+    round-13 per-mutation re-check was real but incomplete -- 5 further
+    findings (3 Codex, 2 CodeRabbit), converging on the same theme:
+    - **P1 ("Revalidate the `.git` directory itself before
+      mutation"), Codex**: the per-mutation re-check scanned `.git`'s
+      internal paths but never re-checked `.git` itself -- if the
+      ENTIRE `.git` directory were replaced with a symlink AFTER
+      admission, `git_dir / "objects"` etc. resolve INTO the external
+      directory's own ordinary-looking subpaths, and the walk finds
+      nothing to object to. **Fixed**: `.git` itself is now checked
+      first, directly, in
+      `_reject_symlinked_git_storage_for_every_registered_repository`.
+    - **P1 ("Re-neutralize hooks before each repository mutation"),
+      Codex, and independently, CodeRabbit ("Reassert hook
+      neutralization before each mutation", CWE-78)**: the round-13
+      re-check only re-ran the containment scan, never re-applied hook
+      neutralization -- a `.git/config` change restoring
+      `core.hooksPath` to an external hook directory AFTER admission
+      would still fire on the next mutation. **Fixed**: hooks are now
+      also re-neutralized before every `create_branch`/`commit` call.
+      Doing this the OBVIOUS way (a fresh `mkdtemp` + `git config`
+      subprocess spawn on every single mutation) turned the ~80 second
+      test suite into a ~65 MINUTE one (subprocess spawn measured
+      ~280x the cost of the containment scan alone) -- fixed with a
+      new `_hooks_neutralization_still_intact` cheap check (reads
+      `.git/config`'s raw text directly, no subprocess, confirming the
+      established `no_hooks_dir` is still referenced, still exists,
+      and is still empty) that only pays for the expensive full
+      re-neutralization when something has genuinely changed. Fixing
+      this exposed one more self-caught bug: the cheap check's own
+      string comparison used Python's raw `str(Path(...))` rendering,
+      but git's own config writer ESCAPES backslashes when it writes a
+      Windows path value, so the comparison never matched and the
+      cheap path always reported "not intact," silently defeating its
+      own purpose (confirmed by measuring `0.21s` for 1000 calls after
+      the fix, versus the ~28ms EACH the full re-neutralization costs).
+    - **P1 ("Seal transport behavior instead of checking only its
+      exact type"), Codex**: an exact-type check only binds the
+      CLASS -- Python allows shadowing a real class method with a
+      plain function assigned directly onto an INSTANCE's own
+      `__dict__` (`transport.open_pull_request = malicious_fn`),
+      invisible to any class-identity check; the reviewer reproduced
+      `facility.open_pr(...)` still invoking the injected override.
+      **Fixed**: a new `_reject_instance_overridden_transport_methods`
+      check, run at admission and before every `open_pr`/`merge_pr`
+      call (and, more broadly, before every mutation), rejects
+      admission if the transport instance shadows `open_pull_request`
+      or `merge_pull_request`. Deliberately narrow -- NOT
+      `commit_files`/`create_branch`/`resolve_ref`/`read_file` -- since
+      this SAME harness already legitimately monkey-patches
+      `commit_files` (mirroring the established `state.put_receipt`
+      crash-injection pattern) to simulate a lost-ACK window for
+      RECONCILIATION qualification; sealing those names too would
+      reject that disclosed, intentional testing technique, not just
+      the attack this check exists to catch. Confirmed by first
+      implementing the broader set, discovering it broke that
+      legitimate test, and narrowing to exactly the two methods that
+      define the admitted identity's own "no remote push/PR/merge
+      effects" promise.
+    - **Major/CWE-367 ("Make containment validation atomic with the
+      Git mutation"), CodeRabbit**: the check and the Git mutation
+      remain two separate steps -- an attacker with concurrent local
+      filesystem write access to the exact registered repository could
+      still replace a checked entry between them. Investigated, not
+      fixed: true atomicity would require filesystem-descriptor-based
+      operations threaded through every `git` subprocess call
+      `LocalGitRepositoryTransport` makes, or OS-level sandboxing
+      (bind mounts, restricted namespaces) -- a materially larger,
+      different engineering effort than a wrapper-based re-check,
+      depends on platform-specific primitives not uniformly available
+      (this environment is Windows), and would require modifying
+      `LocalGitRepositoryTransport` itself, a Gen1-owned module out of
+      this closure's wrapper-only scope. CodeRabbit's own
+      `Exploitability: Difficult` rating reflects the real, narrowed
+      residual risk after round 14: a local-filesystem-write attacker
+      winning a race against a window now measured in low
+      milliseconds (dominated by git's own subprocess time, not the
+      Python-side check, which itself now costs roughly 0.1-1ms) --
+      categorically different from the unbounded, construction-time-
+      only window rounds 1-13 closed. Disclosed explicitly here as an
+      accepted limitation, matching the round-1 SECURITY NOTE
+      precedent for the identity-match check's own non-cryptographic
+      trust boundary, rather than either silently ignored or
+      papered over with an incomplete "fix." A genuine, deterministic
+      regression test for a real race condition is also not added for
+      the same reason: reliably WINNING a race in a test requires
+      artificially widening the window (e.g. an injected delay), which
+      would not test the actual, now-narrow production timing and
+      risks being flaky rather than meaningful.
+
+    4 of 5 genuinely fixed in round 14, with 4 new permanent regression
+    tests (git-itself symlink swap, hook re-neutralization after
+    admission, instance-overridden transport method at admission and
+    after); the 5th investigated and disclosed as an accepted
+    limitation, with reasoning replied into the review thread. Full
+    local re-verification: full test file (46/46), full mutation suite
+    (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep re-run clean.
+15. A fresh review pass against the round-14 commit found the
+    round-14 hook re-check and transport-sealing fixes were real but
+    still incomplete -- 3 findings (2 Codex, 1 CodeRabbit):
+    - **P1 ("Validate the effective hooksPath value"), Codex, and
+      independently, CodeRabbit ("Parse `core.hooksPath` as Git
+      configuration", CWE-78)**: the round-14 cheap check searched for
+      the trusted `no_hooks_dir` path as a SUBSTRING of `.git/config`'s
+      raw text. Codex reproduced `git config --add core.hooksPath
+      <malicious>` -- git's own `--add` APPENDS a second `hooksPath`
+      entry rather than replacing the first, and uses the LAST one, so
+      the trusted text remained present as a substring while the
+      ACTIVE value became malicious. CodeRabbit reproduced appending
+      the trusted path as a `# comment` line after setting a malicious
+      active value -- also "present" as a substring while never
+      actually used. **Fixed**: rather than trying to correctly
+      interpret git-config's own semantics (comments, duplicate keys,
+      last-value-wins, escaping) -- effectively re-deriving a real INI
+      parser, exactly the kind of re-derivation this codebase avoids
+      (G2-00 SS15) -- the cheap check now captures the COMPLETE, exact
+      byte content of `.git/config` immediately after establishing
+      neutralization (`_EstablishedHooksNeutralization.config_snapshot`)
+      and requires the current content to be BYTE-IDENTICAL to that
+      snapshot. Since identical bytes parse identically under any
+      config reader, this is airtight against every substring/partial-
+      parse trick without needing to correctly reimplement git's own
+      config grammar. Two new permanent tests reproduce both reviewers'
+      exact attacks.
+    - **P1 ("Seal local mutation methods as well"), Codex**: the
+      round-14 fix deliberately narrowed the sealed transport-method
+      set to exclude `commit_files`/`create_branch`, reasoning that
+      this harness's own legitimate `commit_files` monkey-patching
+      (for RECONCILIATION fault-injection testing) meant the mechanism
+      was safe to leave open. The reviewer correctly identified this
+      as backwards: the harness's own need to use that exact mechanism
+      was evidence it was genuinely exploitable, not evidence it was
+      safe -- a caller overriding `commit_files`/`create_branch` on the
+      admitted instance can perform arbitrary out-of-repository
+      effects while passing every other check. **Fixed properly this
+      time**: the full set Codex originally named is now sealed
+      (`resolve_ref`, `read_file`, `create_branch`, `commit_files`,
+      `open_pull_request`, `merge_pull_request`), and the harness's own
+      fault injection was moved to a dedicated, non-transport test seam
+      instead -- `run_reconciliation_and_ack_semantics_scenario` now
+      accepts an optional `post_crash_corruption` callback, invoked
+      with the REAL landed commit sha after the crash-injected mutation
+      genuinely lands, letting the test apply raw git manipulation
+      (never touching `self.rig.transport`'s own methods at all) to
+      simulate a corrupted/unrelated-history commit. The one test that
+      needed this (round 12's lineage-mismatch regression) was rewritten
+      to use it instead of monkey-patching `commit_files`.
+
+    All 3 genuinely fixed in round 15, with 3 new permanent regression
+    tests, plus one existing test rewritten to no longer depend on the
+    now-sealed mechanism. Full local re-verification: full test file
+    (49/49), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep re-run clean.
+16. A fresh Codex pass against the round-15 commit found 2 further P1
+    findings, both showing the round-15 fixes were each real but still
+    incomplete in a different, specific way:
+    - **"Reject hooksPath values supplied through included config"**:
+      the round-15 exact-byte-snapshot fix is airtight against
+      tampering WITHIN `.git/config` itself, but git's own config
+      resolution also reads `[include]`/`[includeIf "..."]`
+      directives and merges values from whatever file they point at
+      -- a LATER `core.hooksPath` from an included file overrides the
+      local one, entirely outside what `.git/config`'s own bytes
+      reveal. The reviewer reproduced (Git 2.43.0)
+      `_hooks_neutralization_still_intact` reporting `True` while the
+      next mutation executed a `reference-transaction` hook sourced
+      from an included file. **Fixed**: rather than attempting to
+      correctly resolve arbitrary include/includeIf semantics
+      (multiple files, conditional gitdir/onbranch matching,
+      precedence) -- effectively re-deriving a real git-config
+      resolution engine, a losing battle where every variation fixed
+      invites another -- a new `_reject_included_git_config` check
+      rejects admission (and every mutation) outright if `.git/config`
+      declares an include directive AT ALL, via a simple, reliable
+      section-header search. A genuinely admitted, from-scratch
+      local-commit-only repository has no legitimate reason to use
+      includes (a construct meant for sharing config across MULTIPLE
+      repositories). Two new permanent tests cover both admission-time
+      and post-admission planting; one caught a genuine bug in the fix
+      itself before it shipped -- the original regex's trailing `\b`
+      word-boundary anchor silently failed to match `[includeIf
+      "..."]` (no word boundary exists between "include" and "If",
+      both being word characters), fixed by dropping the anchor.
+    - **"Bind revalidation to the transport actually delegated to"**:
+      every prior round re-validated the wrapper's own REMEMBERED
+      `self._transport` reference from construction time -- but
+      `RepositoryFacility.create_branch`/`commit` internally use
+      `self.transport` (Gen1's own plain, mutable attribute on the
+      real, inner facility), not this wrapper's memory of it. The
+      reviewer reproduced reassigning `facility._facility.transport`
+      to an injected object AFTER admission: the wrapper kept
+      validating the original, no-longer-relevant transport while the
+      real facility silently delegated every mutation to the
+      replacement. **Fixed**: every mutating/delegating method now
+      reads `self._facility.transport` FRESH via a new
+      `_current_transport()` helper, which re-runs the exact-type
+      check against whatever is currently there -- so a swap to
+      anything that is not a genuine, unmodified
+      `LocalGitRepositoryTransport` is rejected outright at EVERY
+      call, `open_pr`/`merge_pr` included. `create_branch`/`commit`
+      additionally re-run the full containment/hooks/instance-override
+      check set (via `_revalidate_before_mutation`, which itself now
+      calls `_current_transport()`) against a swapped-but-genuine
+      instance, forcing a full, fresh re-verification of ITS OWN state
+      rather than silently reusing stale results. `open_pr`/`merge_pr`
+      do not re-run those additional checks -- they do not need to,
+      since `LocalGitRepositoryTransport`'s own real
+      `open_pull_request`/`merge_pull_request` unconditionally raise
+      by design; only an instance-level override could make them do
+      anything else, and that is exactly what the exact-type and
+      instance-override checks both catch. (CodeRabbit review finding,
+      round 17: this record originally described "every mutation" and
+      "the FULL admission-equivalent check set" without this
+      qualification -- corrected here to name precisely which checks
+      apply to which methods.) New permanent test reproduces the exact
+      reassignment.
+
+    Both genuinely fixed in round 16, with 3 new permanent regression
+    tests. Full local re-verification: full test file (52/52), full
+    mutation suite (37/37), `test_g2_27_self_construction.py` (33/33),
+    and full repository sweep (only the 9 known pre-existing
+    Windows-only failures, zero regressions) re-run clean.
+17. A fresh Codex + CodeRabbit pass against the round-16 commit found 3
+    findings: one further genuine P1 code gap (Codex), and two docs/
+    test-quality corrections (CodeRabbit, both Minor):
+    - **P1 ("Neutralize hooks from per-worktree configuration"),
+      Codex**: the round-16 include-directive fix covers `.git/config`
+      and its includes, but git ALSO reads a SEPARATE
+      `.git/config.worktree` file (when `extensions.worktreeConfig` is
+      enabled), which takes precedence over the local `[core]` section
+      for exactly this kind of setting -- entirely outside anything
+      `.git/config`'s own bytes reveal. The reviewer reproduced (Git
+      2.43.0) a malicious `core.hooksPath` in `.git/config.worktree`
+      firing despite `_hooks_neutralization_still_intact` correctly
+      reporting the LOCAL file unchanged; re-neutralization only ever
+      rewrote the lower-priority local value. **Fixed**: the renamed
+      `_reject_alternate_git_config_sources` (generalizing the round-16
+      `_reject_included_git_config`) now ALSO rejects admission and
+      every mutation outright if `.git/config.worktree` exists at all,
+      or if `.git/config`'s own text even mentions `worktreeConfig` --
+      same "detect presence, don't interpret" philosophy as the
+      include-directive fix, since a genuinely admitted, from-scratch,
+      single-worktree repository has no legitimate reason to reference
+      either. Fixing this surfaced a SEPARATE, self-caught bug: a
+      plain `git config core.hooksPath <value>` REFUSES to run at all
+      once the key already has multiple values (exactly the state a
+      round-15 `--add` attack leaves behind) -- `_neutralize_hooks_for_every_registered_repository`
+      now uses `git config --replace-all core.hooksPath <value>`,
+      which genuinely replaces every existing value regardless of how
+      many were already present. Two new permanent tests cover
+      admission-time and post-admission worktree-config planting.
+    - **Minor, CodeRabbit**: this record's own round-16 entry claimed
+      `open_pr`/`merge_pr` re-run "the FULL admission-equivalent check
+      set," when in fact only `create_branch`/`commit` do (via
+      `_revalidate_before_mutation`); `open_pr`/`merge_pr` re-run only
+      the transport instance-override check, which is all they need
+      since `LocalGitRepositoryTransport`'s own real
+      `open_pull_request`/`merge_pull_request` unconditionally raise
+      by design. **Fixed**: both this record's round-16 entry (above)
+      and the corresponding source docstring on `_current_transport`
+      were corrected to name precisely which checks apply to which
+      methods, rather than overclaiming uniform coverage.
+    - **Minor, CodeRabbit (Ruff S110/BLE001)**: the round-14/15 hook
+      re-neutralization tests passed a placeholder `task=None` wrapped
+      in a broad `try/except: pass` -- these can pass even if hook
+      re-neutralization itself regressed, as long as SOME OTHER
+      validation happens to reject the call first for an unrelated
+      reason, proving nothing about whether re-neutralization
+      genuinely ran. **Fixed**: rewrote all three affected tests (and
+      added a shared `_real_create_branch_on_rig` helper) to perform a
+      REAL, fully-authorized `create_branch` dispatch via the same
+      `_dispatch` machinery the harness's own scenarios use, and
+      assert the mutation genuinely SUCCEEDS (a real receipt) in
+      addition to the hook marker being absent -- catching the
+      `--replace-all` bug above in the process, since the naive fix
+      would have made the REAL create_branch call fail outright rather
+      than merely "pass by accident."
+
+    1 of 1 code finding genuinely fixed in round 17 (plus one
+    self-caught bug it surfaced), both docs/test-quality corrections
+    applied, with 2 new permanent regression tests and 3 existing
+    tests strengthened. Full local re-verification: full test file
+    (54/54), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (only the 9 known pre-existing Windows-only failures, zero
+    regressions) re-run clean. (CodeRabbit review finding, round 18:
+    this entry and the round-16 entry above both originally said
+    "re-run clean" without naming the known, pre-existing, unrelated
+    failure count -- corrected here and there for precision.)
+18. A fresh Codex pass against the round-17 commit found 1 further P1
+    finding:
+    - **P1 ("Seal transport helper overrides before mutation"),
+      Codex**: rounds 14-15 sealed a growing list of specific PUBLIC
+      method names (`resolve_ref`, `read_file`, `create_branch`,
+      `commit_files`, `open_pull_request`, `merge_pull_request`) one at
+      a time. The reviewer reproduced assigning `transport._run`
+      instead -- the PRIVATE helper every one of those public methods
+      actually delegates its real subprocess work through -- passing
+      every named-method check while still performing an
+      out-of-repository write before ever reaching git. **Fixed**:
+      replaced the growing method-name allowlist entirely with the
+      inverse, comprehensive check: a genuinely unmodified
+      `LocalGitRepositoryTransport` instance's own `__dict__` contains
+      EXACTLY the four data attributes its real `__init__` sets (`_git`,
+      `_author_name`, `_author_email`, `_repositories`, confirmed
+      empirically) and nothing else; any additional instance attribute
+      at all -- a shadowed public method, a shadowed private helper, or
+      anything else -- is now rejected outright, without needing to
+      name it in advance (`_EXPECTED_TRANSPORT_INSTANCE_ATTRIBUTES`,
+      replacing the prior `_SEALED_TRANSPORT_METHOD_NAMES` tuple). New
+      permanent test reproduces the exact `_run` shadow.
+
+    Fixed in commit `bb02dce`, with 1 new permanent regression test.
+    Full local re-verification: full test file (55/55), full mutation
+    suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1351 passed, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
+19. A fresh Codex + CodeRabbit pass against the round-18 commit
+    (`bb02dce`) found 1 further genuine finding (CodeRabbit, Major):
+    - **Major ("Pin registered repository identities at admission"),
+      CodeRabbit**: the round-18 instance-attribute allowlist validates
+      attribute NAMES only -- `_repositories` is itself one of the four
+      expected names, so reassigning what it POINTS AT (a different,
+      independently clean `_RegisteredRepository`) after admission was
+      invisible to that check. `LocalGitRepositoryTransport._repo` only
+      validates a registration's internal self-consistency against
+      ITSELF, not against what was actually admitted, so a swapped
+      registration passed every existing check and a later
+      `create_branch`/`commit` would silently operate on a repository
+      that was never scanned for symlinked git storage or hook
+      neutralization. **Fixed**: every registration is now snapshotted
+      at admission time (`established_repositories`, captured in
+      `gen1_wrap_repository_construction_facility` before the identity
+      is ever handed back to a caller) and re-verified, exactly, before
+      every mutation via a new `_reject_altered_registered_repositories`
+      check inside `_revalidate_before_mutation` -- any added, removed,
+      or reassigned registration is rejected outright, the same
+      treatment as a symlinked git directory. New permanent regression
+      test (`test_sc23_wrapper_rejects_a_reassigned_repository_registration`)
+      reproduces the swap using a second, independently-registered real
+      transport rather than the private dataclass constructor.
+
+    Fixed in commit `49c6059`, with 1 new permanent regression test.
+    Full local re-verification: full test file (56/56), full mutation
+    suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1352 passed, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
+
+    PROCESS NOTE (self-caught): Codex's own pass against the round-18
+    commit landed 2 further genuine P1 findings a few minutes after
+    CodeRabbit's finding above, both timestamped after this round's
+    fix/reply cycle had already begun. The background poll used to
+    detect new review activity exits as soon as ANY unresolved thread
+    appears, so it fired on CodeRabbit's finding alone and this round
+    was closed out (committed, replied, resolved, fresh review
+    requested) before Codex's two findings were ever read -- an echo
+    of the same class of gap that caused the PR #84 incident this
+    entire closure record exists to remediate, just caught this time
+    by discovering the still-unresolved threads immediately on the
+    NEXT poll rather than after a merge. Both findings are genuine and
+    are fixed below as round 20, against the SAME round-18 commit
+    (`bb02dce`) CodeRabbit's finding was also against -- not a
+    regression introduced by the round-19 fix itself.
+20. The 2 Codex findings described in the round-19 process note above,
+    both P1, both reproduced by the reviewer, both against commit
+    `bb02dce`:
+    - **P1 ("Reject Git common-directory redirection"), Codex**: git's
+      own repository layout lets a `.git/commondir` file (normally used
+      for linked worktrees) redirect where the EFFECTIVE
+      objects/refs/logs/hooks storage actually lives, entirely
+      independent of whether the literal `objects`/`refs`/`logs`/
+      `config` paths under THIS `.git` are themselves clean. The
+      reviewer reproduced the containment scan and hooks-integrity
+      check both passing, followed by a real `create_branch` writing
+      the new ref into the external directory `commondir` pointed at.
+      **Fixed**: mere presence of `.git/commondir` is now rejected
+      outright inside
+      `_reject_symlinked_git_storage_for_every_registered_repository`
+      -- the same "detect presence, don't interpret" philosophy as the
+      round-16/17 include/`config.worktree` checks, since a genuinely
+      admitted, from-scratch, single-worktree repository has no
+      legitimate reason to carry one. New permanent regression test
+      plants a `commondir` file pointing at an external directory
+      after admission.
+    - **P1 ("Bind allowed transport attribute values"), Codex**: the
+      round-19 fix pinned `_repositories`' VALUES but left `_git`,
+      `_author_name`, and `_author_email` covered by NAME only -- all
+      four are among the round-18 allowlist's expected names, so
+      reassigning `transport._git` to a different executable after
+      admission stayed invisible to every existing check. The reviewer
+      reproduced the injected executable running (in place of the real
+      `git` binary) during a fully-authorized `create_branch`. **Fixed**:
+      generalized once, covering all four attributes uniformly --
+      `_reject_altered_registered_repositories` (round 19) is replaced
+      by `_reject_altered_transport_instance_state`, which snapshots
+      `vars(transport)` (names AND values) at admission
+      (`established_instance_state`, replacing `established_repositories`)
+      and re-verifies the EXACT snapshot before every mutation; any
+      attribute added, removed, or reassigned to a different value is
+      rejected, whatever its name. This also makes the round-18
+      `_reject_instance_overridden_transport_methods` call inside
+      `_revalidate_before_mutation` redundant (the new check's key-set
+      comparison is a strict superset, since the established snapshot's
+      own keys are always exactly what that function checks), so
+      `_revalidate_before_mutation` now calls only the one, more
+      comprehensive check there; `_reject_instance_overridden_transport_methods`
+      itself is unchanged and still used at admission time and by
+      `open_pr`/`merge_pr`, where no full instance-state snapshot exists
+      or is needed. New permanent regression test reassigns `transport._git`
+      to a non-git executable.
+
+      SELF-CAUGHT BUG while re-verifying this fix: the first version of
+      `established_instance_state` was built as `dict(vars(transport))`
+      -- a shallow copy of the OUTER `__dict__` only, so the value at
+      `_repositories` was still the SAME mutable dict object as
+      `transport._repositories` itself. The round-19 regression test
+      (`test_sc23_wrapper_rejects_a_reassigned_repository_registration`)
+      failed under this version -- not because the finding was
+      unfixed, but because mutating `transport._repositories` in place
+      silently mutated the "established" snapshot right along with it,
+      so the comparison trivially still matched. Fixed by copying
+      `_repositories` independently
+      (`established_instance_state["_repositories"] = dict(...)`)
+      before storing the snapshot; `_git`/`_author_name`/`_author_email`
+      need no such copy since they are plain immutable strings.
+
+    Fixed in commit `914cbdc`, with 2 new permanent regression tests.
+    Full local re-verification: full test file (58/58), full mutation
+    suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1354 passed, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
+21. A fresh Codex pass against the round-20 commit (`914cbdc`) found 1
+    further genuine P1 finding:
+    - **P1 ("Bind the transport class implementation before
+      mutation"), Codex**: every instance-level check through round 20
+      validates `vars(transport)` -- the INSTANCE's own `__dict__` --
+      but `LocalGitRepositoryTransport._run = malicious_fn` assigned
+      on the CLASS itself leaves every instance's own `__dict__`
+      completely untouched; Python's attribute lookup falls through to
+      the class for anything the instance doesn't shadow itself, so
+      the malicious `_run` is what the admitted instance actually
+      calls too. The reviewer reproduced this passing every existing
+      check, then a fully-authorized `create_branch` invoking the
+      replacement before ever reaching real git. **Fixed**:
+      `LocalGitRepositoryTransport`'s own `__dict__` is now snapshotted
+      once (`_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES`), at THIS module's
+      own import time -- necessarily before any admission call in
+      every legitimate call path, since a caller must import this
+      module to reach `gen1_wrap_repository_construction_facility` at
+      all -- and re-verified via a new
+      `_reject_altered_transport_class_implementation` check at
+      admission, before every `create_branch`/`commit` revalidation,
+      AND inside `open_pr`/`merge_pr`. The last of these matters
+      specifically: a class-level replacement of
+      `open_pull_request`/`merge_pull_request` would otherwise defeat
+      the very reasoning those two methods' own instance-only checks
+      rely on -- that the real, unmodified class methods
+      unconditionally raise by design. DISCLOSED LIMITATION (same
+      trust model as every other check in this file, not a new
+      category of gap): this does not defend against an attacker who
+      already has code execution BEFORE this module is ever imported
+      -- the snapshot can only be as trustworthy as the process state
+      at the moment it is taken. New permanent regression test
+      reproduces the exact class-level `_run` replacement, restoring
+      the class in a `finally` block since (unlike every earlier
+      instance-level attack) this snapshot is process-wide shared
+      state, not confined to one test's own transport instance.
+
+    Fixed in commit `0afe296`, with 1 new permanent regression test.
+    Full local re-verification: full test file (59/59), full mutation
+    suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1355 passed, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
+22. A fresh Codex pass against the round-21 commit (`f04def8`) found 2
+    further genuine P1 findings:
+    - **P1 ("Revalidate delegated reads before invoking transport"),
+      Codex**: `_ContainmentReCheckedRepositoryFacility`'s plain
+      `__getattr__` delegated `read` straight through to the real
+      facility -- `read` was never one of the four explicitly wrapped
+      methods, so it ran NONE of the class- or instance-level
+      transport-integrity checks the others do. The reviewer
+      reproduced a class-level `_run` replacement performing an
+      out-of-repository write during a fully-authorized `read`, with
+      the observation scenario remaining `QUALIFIED`. **Fixed**: `read`
+      is now wrapped with the same revalidation as `create_branch`/
+      `commit`. The revalidation method itself is renamed from
+      `_revalidate_before_mutation` to `_revalidate_transport_integrity`,
+      since it is no longer mutation-only. New permanent regression
+      test reproduces the exact class-level `_run` replacement against
+      `read`.
+    - **P1 ("Keep the admission snapshot caller-independent"),
+      Codex**: the round 19/20 trusted baseline
+      (`established_instance_state`/`established_no_hooks_dirs`) was
+      stored as a plain attribute on the WRAPPER
+      (`self._established_instance_state`/
+      `self._established_no_hooks_dirs`), reachable and mutable by any
+      caller holding the returned `facility`. The reviewer reproduced
+      reassigning `transport._git` AND
+      `facility._established_instance_state["_git"]` to the SAME
+      value, defeating the round-20 comparison entirely while the
+      qualification scenario remained `QUALIFIED` -- the same applies
+      to `established_no_hooks_dirs`, where a poisoned baseline would
+      make `_hooks_neutralization_still_intact` report a malicious
+      `.git/config` as unchanged, silently skipping re-neutralization.
+      **Fixed**: both pieces of trusted state moved OUT of any
+      attribute reachable through the `facility` object graph
+      entirely, into a new private, module-level, identity-keyed
+      `weakref.WeakKeyDictionary` (`_ADMITTED_TRANSPORT_STATE`),
+      populated only inside `gen1_wrap_repository_construction_facility`
+      before the wrapper is ever constructed, and read only via
+      `_admitted_state_for(transport)`. A caller holding only the
+      `facility` object has no attribute path to reach or overwrite
+      this state -- doing so now requires importing this module
+      directly and reaching into its own private globals, the same
+      disclosed trust model as the round-21 "attacker with code
+      execution before this module is imported" limitation, not a new
+      category of gap. Incidental benefit: a transport that was never
+      admitted (or was swapped for a different instance -- the
+      round-16 finding) now correctly finds no registry entry at all,
+      giving the lookup implicit transport-identity enforcement too.
+      New permanent regression test reproduces the reviewer's exact
+      poisoning move and confirms it is now inert; the existing
+      round-15 hooks-comment test (which introspected
+      `facility._established_no_hooks_dirs` directly) was updated to
+      read the same state via `_admitted_state_for` instead.
+
+    Fixed in commit `ff984b2`, with 2 new permanent regression tests
+    (plus 1 existing test updated to use the new lookup). Full local
+    re-verification: full test file (61/61), full mutation suite
+    (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1357 passed, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
+23. A fresh Codex pass against the round-22 commit (`e88717a`) found 2
+    further genuine P1 findings:
+    - **P1 ("Check the transport class before the weak-key lookup"),
+      Codex**: `_admitted_state_for`'s `WeakKeyDictionary.get()` call
+      internally hashes the transport, invoking its own (potentially
+      rebound) `__hash__` -- and `_revalidate_transport_integrity`
+      reached that lookup BEFORE the class-implementation check had a
+      chance to reject a rebound `__hash__`. The reviewer reproduced a
+      replacement `__hash__` performing an out-of-repository write:
+      the call correctly raised `RepositoryConstructionQualificationError`
+      moments later, but only AFTER the side effect had already
+      occurred -- the check was correct, but too late. **Fixed**:
+      every call site now runs the class-implementation check FIRST,
+      before touching the transport in any way that could invoke a
+      class dunder method on it (the registry lookup included). New
+      permanent regression test reproduces a marker-writing `__hash__`
+      replacement and asserts the marker was never created, not merely
+      that the call eventually raised. SELF-CAUGHT BUG while writing
+      that test: `LocalGitRepositoryTransport` does not itself OWN a
+      `__hash__` entry (confirmed empirically -- it inherits
+      `object.__hash__`), so restoring it via reassignment after the
+      test would have left an explicit `__hash__` entry in the class's
+      own `__dict__` where none existed before, permanently diverging
+      from `_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES`'s own snapshot and
+      breaking every subsequent test in the process (10 failures and 9
+      errors were observed on the first run before this was caught and
+      fixed with `del` instead of reassignment).
+    - **P1 ("Seal the delegated RepositoryFacility operations"),
+      Codex**: every check through round 22 seals
+      `LocalGitRepositoryTransport` (the object doing the actual git
+      subprocess work), but `create_branch`/`commit`/`read`/`open_pr`/
+      `merge_pr` all ultimately call `self._facility.<method>(...)` --
+      and nothing validated `self._facility`'s (Gen1's real
+      `RepositoryFacility`) OWN instance state at all. The reviewer
+      reproduced shadowing `facility._facility.create_branch` at the
+      instance level: every transport check passed (the replacement
+      never touches the transport at all), and the injected method ran
+      instead of the real one, skipping Gen1's own authority, lease,
+      and request-binding checks entirely while returning a fabricated
+      success. **Fixed**: `RepositoryFacility` gets the SAME two-layer
+      defense `LocalGitRepositoryTransport` already has -- an
+      instance-attribute allowlist (`_EXPECTED_FACILITY_INSTANCE_ATTRIBUTES`,
+      matching its real `__init__`'s three data attributes:
+      `transport`, `state`, `authority_store`) and a class-
+      implementation pin (`_TRUSTED_FACILITY_CLASS_ATTRIBUTES`),
+      applied PRE-EMPTIVELY at the class level rather than waiting for
+      a predictable next-round rediscovery of the round-21 pattern one
+      layer deeper (the round-18-to-21 escalation on the transport
+      made this variant highly foreseeable). Deliberately NOT pinning
+      `.transport`'s VALUE the way the transport's own four attributes
+      are pinned -- a transport swap is legitimate and independently,
+      more thoroughly re-verified by `_current_transport`/
+      `_admitted_state_for` already. Both new checks (`_reject_altered_class_implementation`,
+      generalized from the round-21 transport-only version;
+      `_reject_instance_overridden_attributes`, generalized from the
+      round-14/18 transport-only version) now run in
+      `create_branch`/`commit`/`read` (via `_revalidate_transport_integrity`),
+      `open_pr`/`merge_pr`, and defensively at admission. New permanent
+      regression tests reproduce both the instance-level shadow the
+      reviewer found AND the class-level counterpart built pre-emptively.
+
+    Fixed in commit `0af9fdf`, with 3 new permanent regression tests.
+    Also disclosed the new `_reject_altered_facility_class_implementation`
+    function's genuine, defensive reference to `RepositoryFacility` as
+    an adjudicated residual-dependency-scan exception in
+    `self_construction.py` -- a real, expected finding from adding the
+    module's first NON-`gen1_`-prefixed function to directly reference
+    `RepositoryFacility` by name, not a defect. Full local
+    re-verification: full test file (64/64), full mutation suite
+    (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1360 passed, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
+24. A fresh Codex pass against the round-23 commit (`f3c5b21`) found 2
+    further genuine P1 findings, both about `_current_transport`'s own
+    core read:
+    - **P1 ("Verify the inner facility identity before delegation"),
+      Codex**: the round-23 instance-attribute allowlist checks NAMES
+      only -- the reviewer reproduced replacing `self._facility`
+      WHOLESALE with a different, non-`RepositoryFacility` object
+      whose `__dict__` merely matched the allowlist's shape
+      (`transport`, `state`, `authority_store`), which the name-only
+      check accepted since it never verified the object's actual
+      type. The injected object's own `create_branch` then ran
+      instead of Gen1's real one, skipping every authority/lease/
+      request-binding check while returning a fabricated success and
+      writing outside the repository. **Fixed**, with two
+      complementary changes: (1) `_current_transport` now
+      exact-type-checks `self._facility` itself
+      (`type(self._facility) is not RepositoryFacility`) before
+      reading anything off it; (2) more fundamentally,
+      `_AdmittedTransportState` now ALSO carries `facility` -- the
+      genuine, originally-constructed `RepositoryFacility` instance --
+      and every dispatch method (`create_branch`/`commit`/`read`/
+      `open_pr`/`merge_pr`) delegates to this immutable,
+      registry-sourced reference instead of `self._facility` directly.
+      Even a same-typed, cleverly-constructed impersonator (right
+      class, wrong `state`/`authority_store`) now achieves nothing:
+      dispatch never touches `self._facility` for anything
+      security-sensitive. `self._facility` remains in use only for
+      `__getattr__`'s non-security-sensitive delegation
+      (`state`/`authority_store`/`acquire_writer`/`release_writer`)
+      and as the bootstrap read `_current_transport` uses to discover
+      the current transport (now itself safe -- see the sibling
+      finding below).
+    - **P1 ("Check the facility class before reading transport"),
+      Codex**: `_current_transport`'s own core job is reading
+      `self._facility.transport` -- and it reached that read BEFORE
+      the facility-class-implementation check had a chance to reject a
+      rebound `RepositoryFacility.__getattribute__`, the exact same
+      ordering lesson as round 23's transport-`__hash__` finding,
+      replaying on a second dunder. The reviewer reproduced a
+      replacement `__getattribute__` performing an out-of-repository
+      write during exactly this read; the call correctly raised
+      moments later, but only after the side effect had already
+      occurred. **Fixed**: both class-implementation checks (transport
+      and facility) now run first inside `_current_transport` itself,
+      before `self._facility.transport` (or any other attribute) is
+      ever read off it -- and this ordering invariant is now
+      centralized in `_current_transport`, which every OTHER call site
+      goes through, rather than being duplicated (and potentially
+      re-broken) at each one separately.
+
+    Also disclosed `_current_transport`'s own new, genuine, defensive
+    reference to `RepositoryFacility` (the exact-type check above) as
+    a second adjudicated residual-dependency-scan exception, same
+    pattern as round 23's. New permanent regression tests reproduce
+    both findings exactly.
+
+    Fixed in commit `6bb379d`, with 2 new permanent regression
+    tests. Full local re-verification: full test file (66/66), full
+    mutation suite (37/37), `test_g2_27_self_construction.py`
+    (33/33), and full repository sweep (1362 passed, only the 9 known
+    pre-existing Windows-only failures, zero regressions).
+25. A fresh Codex + CodeRabbit pass against the round-24 commit
+    (`4e43e23`) found 3 further genuine findings (2 P1, Codex; 1
+    Minor, CodeRabbit):
+    - **P1 ("Seal the returned wrapper's own dispatch methods"),
+      Codex**: every check through round 24 protects the DELEGATED
+      transport and inner facility -- but nothing protected the
+      WRAPPER's own dispatch methods. The reviewer reproduced
+      `facility.create_branch = malicious_fn`, an INSTANCE-level
+      shadow directly on the returned wrapper: Python resolves that
+      override without ever calling the wrapper's real `create_branch`
+      at all, so NONE of this module's checks ever run -- there is no
+      hook point from WITHIN the wrapper's own code to catch an attack
+      that bypasses the wrapper's own code entirely. **Fixed**:
+      `_ContainmentReCheckedRepositoryFacility` now uses `__slots__`
+      (`_facility`, `_transport`, plus `__weakref__` -- see below) --
+      with no per-instance `__dict__`, such an assignment now raises
+      `AttributeError` outright at the language level, closing the
+      ENTIRE class of instance-attribute-shadowing on the wrapper at
+      once, the same kind of comprehensive fix round 18 applied to the
+      transport. New permanent regression test reproduces the exact
+      shadow attempt and confirms it now raises `AttributeError`.
+    - **P1 ("Snapshot registered repository records by value"),
+      Codex**: `@dataclass(frozen=True)` only blocks NORMAL attribute
+      assignment -- it does not stop `object.__setattr__`, a
+      well-known way to bypass a frozen dataclass's own immutability.
+      The round-19/20 snapshot correctly copied the OUTER
+      `_repositories` dict, but its VALUES were still the SAME
+      `_RegisteredRepository` object references as the live
+      transport's own `_repositories`. The reviewer reproduced
+      mutating a shared record's `root`/`device`/`inode` fields in
+      place via `object.__setattr__`, which changed both the live view
+      AND the admission snapshot simultaneously (the same object), so
+      the equality check still trivially passed -- comparing the
+      mutated object to itself -- while a subsequent `create_branch`
+      wrote into the now-different, unadmitted repository the fields
+      pointed at. **Fixed**: every `_RegisteredRepository` is now
+      snapshotted as a BRAND NEW object holding copies of the
+      primitive field values (`Path`/`int`/`int`, all themselves
+      immutable), genuinely independent of the live record. New
+      permanent regression test reproduces the exact
+      `object.__setattr__` attack.
+    - **Minor ("Bind admission state to each wrapper"), CodeRabbit**:
+      the recovery/takeover scenario legitimately re-admits the SAME
+      transport object with a DIFFERENT `RepositoryStateStore` --
+      keying `_ADMITTED_TRANSPORT_STATE` by `transport` meant the
+      SECOND admission silently OVERWROTE the FIRST admission's
+      registry entry, so a later call on the FIRST, still-held wrapper
+      would use the SECOND admission's facility and state. **Fixed**:
+      the registry is now keyed by the WRAPPER instance itself,
+      unique per admission call by construction, so two admissions of
+      the same transport can never collide. This also let
+      `_current_transport` drop its round-24 exact-type check on
+      `self._facility` entirely -- with wrapper-keying,
+      `_admitted_state_for(self)` needs no bootstrap read off
+      `self._facility` at all; `admitted.facility.transport` is read
+      directly instead, closing the round-24 "wholesale-swap" class of
+      attack MORE thoroughly than the type-check alone did (that
+      disclosure entry in `self_construction.py` was removed as
+      genuinely stale, not merely superseded). New permanent
+      regression test admits the same transport twice and confirms
+      each wrapper keeps independent admission state.
+
+    SELF-CAUGHT BUG while implementing the `__slots__` fix: the first
+    version (`__slots__ = ("_facility", "_transport")`, without
+    `__weakref__`) failed EVERY admission with `TypeError: cannot
+    create weak reference to '_ContainmentReCheckedRepositoryFacility'
+    object` -- `__slots__` disables weak-referenceability by default
+    unless explicitly included, and the wrapper-keying fix (above)
+    made this class the `WeakKeyDictionary`'s own key type. Fixed by
+    adding `__weakref__` to the slot set.
+
+    Two existing tests needed updating for the new architecture: the
+    round-15 hooks-comment test's `_admitted_state_for(rig.transport)`
+    call became `_admitted_state_for(rig.facility)` (wrapper-keying);
+    the round-24 wholesale-replacement test was rewritten from
+    expecting REJECTION to expecting genuine SUCCESS via a real,
+    fully-authorized dispatch -- with dispatch now delegating
+    exclusively to the registry-sourced `admitted.facility`, a
+    same-shaped impersonator installed on `self._facility` is not
+    rejected, it is simply never consulted, which the rewritten test
+    now proves directly rather than relying on an incidental
+    `AttributeError` from Gen1's own code.
+
+    Fixed in commit `7fb5099`, with 3 new permanent regression
+    tests (plus 2 existing tests updated). Full local re-verification:
+    full test file (69/69), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (1365 passed, only the 9 known pre-existing Windows-only
+    failures, zero regressions).
+26. A fresh Codex pass against the round-25 commit (`f585a94`) found 1
+    further genuine P1 finding:
+    - **P1 ("Seal the wrapper class dispatch surface"), Codex**:
+      round 25's `__slots__` fix blocks INSTANCE-level shadowing, but
+      does nothing to stop CLASS-level rebinding --
+      `type(facility).create_branch = malicious_fn` rebinds the method
+      on the CLASS itself, which every instance shares, and Python
+      classes are fully mutable from the outside by default. The
+      reviewer reproduced this class-level replacement writing outside
+      the repository and returning an injected success result without
+      running any containment, transport-integrity, authority, or
+      lease check at all. Critically, the reviewer ALSO disproved this
+      closure record's own earlier reasoning: prior rounds treated
+      class-level tampering of a class this module owns as requiring
+      "importing this module directly and reaching into its own
+      private globals" (the same disclosed-limitation boundary used
+      for the Gen1-owned `LocalGitRepositoryTransport`/`RepositoryFacility`
+      class checks) -- but `type(facility)` hands ANY caller merely
+      holding the returned `facility` object a direct class reference,
+      no import required at all. That reasoning was WRONG for a
+      Gen2-owned class, even though it correctly describes the
+      Gen1-owned classes' own, different threat boundary. **Fixed**:
+      since `_ContainmentReCheckedRepositoryFacility` is THIS module's
+      OWN class (unlike the Gen1-owned ones, where a REACTIVE
+      snapshot-comparison check is the best available option), a
+      PROACTIVE, structural fix is possible instead -- a new metaclass
+      (`_FrozenClassMeta`) makes the class object itself reject any
+      attribute assignment or deletion after it is defined, closing
+      the entire class of attack at the language level, the same kind
+      of guarantee `__slots__` already gives at the instance level
+      (and the only kind of fix that COULD have worked here: a
+      reactive check inside `create_branch` could never catch its own
+      replacement, since if that replacement succeeded, the real
+      method's own code -- including any check inside it -- would
+      simply never run). New permanent regression test reproduces the
+      exact class-level reassignment (and the equivalent deletion) and
+      confirms both now raise `AttributeError`.
+
+    Fixed in commit `27b794e`, with 1 new permanent regression
+    test. Full local re-verification: full test file (70/70), full
+    mutation suite (37/37), `test_g2_27_self_construction.py`
+    (33/33), and full repository sweep (1366 passed, only the 9
+    known pre-existing Windows-only failures, zero regressions).
+
+    PROCESS NOTE (self-caught, same class of gap the PR #84 incident
+    that started this closure record exists to remediate): CodeRabbit's
+    OWN response to this same round-26 review request landed 2 further
+    genuine Minor findings a few minutes after Codex's finding above,
+    both timestamped after the round-26 fix/reply/resolve cycle had
+    already completed and CI had gone green. The settle-window poll
+    (adopted starting round 22, waiting for a quiet period after first
+    detection rather than stopping at the very first thread) still
+    exited too early this time -- the gap between Codex's and
+    CodeRabbit's responses exceeded the 3-minute settle window used.
+    Both findings are genuine and are fixed below as the round-26
+    follow-up, against the SAME round-25 commit (`f585a94`) Codex's
+    finding was also against -- not a regression introduced by the
+    round-26 fix itself. Caught on the VERY NEXT poll (checking
+    unresolved-thread count before requesting round-27's review),
+    before any further work was built on top of an incomplete round.
+    - **Minor ("Sort `__slots__` to satisfy Ruff RUF023"), CodeRabbit**:
+      `__slots__ = ("_facility", "_transport", "__weakref__")` is not
+      naturally sorted, which fails Ruff's RUF023 lint rule if enabled
+      in this project's configuration. **Fixed**: reordered to
+      `("__weakref__", "_facility", "_transport")`, applying
+      CodeRabbit's own suggested diff verbatim -- slot order carries
+      no behavioral meaning here.
+    - **Minor ("Use an authorized task for this rejection test"),
+      CodeRabbit**: the round-25 `object.__setattr__` regression test
+      passed a placeholder `task=None` -- the SAME "test could pass
+      for the wrong reason" pattern already fixed in rounds 15/17/22
+      elsewhere in this file. With `task=None`,
+      `RepositoryFacility.create_branch`'s own unrelated
+      `task.assignment_id` access would ALSO raise, independently of
+      whether the round-25 value-snapshot fix (the thing this test
+      actually exists to verify) still worked at all. **Fixed**:
+      rewritten to use a REAL, fully-authorized `create_branch`
+      dispatch (`_real_create_branch_on_rig`, converting the test to
+      use the `rig` fixture rather than manually constructing a
+      transport/facility pair) and confirm the SPECIFIC
+      `RepositoryConstructionQualificationError` fires from the
+      registration comparison.
+
+    Fixed in commit `bbfe60e`, with 0 new regression tests (both are
+    fixes to existing round-25/26 code, not new findings requiring new
+    coverage). Full local re-verification: full test file (70/70),
+    full mutation suite (37/37), `test_g2_27_self_construction.py`
+    (33/33), and full repository sweep (1366 passed, only the 9 known
+    pre-existing Windows-only failures, zero regressions).
+27. A fresh Codex + CodeRabbit pass against the round-26 commit
+    (`e8f9e37`) found the SAME genuine finding independently from both
+    reviewers (P1, Codex; Major, CodeRabbit), and it is the first
+    finding in this closure record's entire 27-round history that is
+    NOT fixed with a code change -- it is genuinely, empirically
+    unfixable inside a single Python process, and is instead disclosed
+    honestly, matching the round-14 TOCTOU precedent:
+    - **"Prevent direct base-metaclass rebinding" / "Do not rely on
+      `_FrozenClassMeta` as a security boundary"**: round 26's
+      metaclass blocks NORMAL attribute-assignment syntax
+      (`type(facility).create_branch = malicious_fn`), but both
+      reviewers independently reproduced
+      `type.__setattr__(type(facility), "create_branch", malicious_fn)`
+      -- explicitly invoking `type`'s ROOT `__setattr__` implementation
+      by name, sidestepping virtual dispatch through the metaclass's
+      own MRO entirely. The replacement then genuinely ran on the next
+      `create_branch` call, with no containment, transport-integrity,
+      authority, or lease check firing at all. **Verified empirically,
+      independently of the reviewers' own reproductions**: this is a
+      FUNDAMENTAL property of Python's object model, not a fixable
+      defect in this metaclass or a gap a cleverer metaclass could
+      close -- `type.__setattr__` is the root implementation every
+      class ultimately inherits, it is always a publicly reachable
+      builtin, and no override anywhere in an MRO can prevent a caller
+      from invoking a LESS-derived implementation of the same dunder
+      directly by name. This is structurally the SAME bypass round
+      25's `object.__setattr__`-defeats-`@dataclass(frozen=True)`
+      finding already demonstrated for INSTANCE-level freezing,
+      replaying here for CLASS-level freezing. Also verified
+      empirically: the REACTIVE snapshot-comparison approach that
+      protects the Gen1-owned `LocalGitRepositoryTransport`/
+      `RepositoryFacility` classes (`_reject_altered_class_implementation`,
+      rounds 21/23) remains fully sound against this exact technique
+      -- it detects the CURRENT class state regardless of HOW it was
+      mutated, so the bypass changes nothing about whether it gets
+      caught THERE. But that same reactive pattern could never have
+      protected THIS wrapper's own dispatch methods, with or without
+      round 26's metaclass: if `create_branch` itself is successfully
+      replaced, by ANY technique, no code inside it -- including a
+      hypothetical check -- would ever run to notice. There is
+      consequently no further code-level fix available inside this
+      single Python process; the only genuine defense would be
+      enforcing this boundary OUTSIDE the interpreter entirely (OS-level
+      process isolation, a capability-sandboxed subprocess), a
+      materially different, separately-deliberated undertaking, not a
+      rewrite of this module -- matching CodeRabbit's own explicit
+      framing of the choice ("protect this boundary outside the
+      interpreter, or narrow the documented attacker model").
+      **Disclosed, not fixed**: `_FrozenClassMeta`'s own docstring now
+      states this limitation explicitly, narrowing the admitted
+      local-commit-only identity's attacker model to a caller using
+      Python's NORMAL attribute-access surface (ordinary syntax,
+      `getattr`/`setattr` builtins) rather than one deliberately
+      invoking a base dunder implementation by name to route around
+      virtual dispatch -- the SAME category of trust boundary this
+      module's own top-level docstring already discloses for the
+      admitted identity generally (construction-time review discipline,
+      not runtime cryptographic/interpreter-level tamper-proofing), not
+      a new kind of gap. A new permanent regression test
+      (`test_sc23_wrapper_class_freeze_cannot_defend_against_a_direct_type_setattr_bypass`)
+      deliberately does NOT assert protection -- it documents the
+      bypass succeeding, executing the reviewers' own reproduction, so
+      the disclosed boundary stays a verified, executable fact rather
+      than an assumption that could silently drift.
+
+    Fixed (via disclosure, not code) in commit `d0ca049`, with 1 new
+    permanent regression test that documents the limitation rather
+    than defending against it. Full local re-verification: full test
+    file (71/71), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (1367 passed, only the 9 known pre-existing Windows-only
+    failures, zero regressions).
+28. A fresh Codex pass against the round-27 commit (`a9691c1`) found 1
+    further genuine P1 finding, back to a real code fix after round
+    27's disclosure:
+    - **P1 ("Reject transport values with overloaded equality"),
+      Codex**: `current[name] != established_instance_state[name]`
+      (rounds 19/20) dispatches through WHICHEVER operand's TYPE
+      implements `__ne__`/`__eq__` -- and `current[name]` is exactly
+      the value a caller may have just reassigned. The reviewer
+      reproduced assigning `transport._git` a `str` SUBCLASS (a
+      genuine, distinct type with its own `__ne__` defined in its
+      class body -- Python's special-method dispatch for operators
+      always goes through the TYPE, never an instance `__dict__`, so
+      this is a real subclass, not an instance-level monkeypatch of
+      `__ne__`, which would not participate in `!=` dispatch at all)
+      that always claims `!= -> False` regardless of its actual
+      content, while holding a malicious executable path: the
+      comparison "passed" while the value had genuinely changed, and
+      the injected executable ran during a fully-authorized
+      `create_branch`. Confirmed empirically (a minimal reproduction
+      outside the codebase showed the identical behavior). **Fixed**:
+      every comparison in `_reject_altered_transport_instance_state`
+      is now preceded by an EXACT-type check (`type(x) is str`, never
+      `isinstance`, which also accepts subclasses) on the CURRENT
+      value before trusting ANY comparison operator on it -- a
+      genuine, unmodified `str`'s own `__eq__`/`__ne__` are fixed,
+      C-implemented, non-overridable-per-instance methods, so once the
+      exact type is confirmed the comparison is safe
+      (`_trusted_transport_value_matches`). Applied SYSTEMICALLY
+      rather than narrowly to `_git` alone: `_repositories`' own
+      comparison previously relied on `dict.__eq__`, which itself
+      compares each VALUE via `==` -- the exact same
+      attacker-controlled-equality risk one level deeper, this time
+      via `_RegisteredRepository`'s own dataclass-generated `__eq__`
+      or a malicious non-`_RegisteredRepository` object entirely.
+      Every field of every registration (`root`/`device`/`inode`) is
+      now manually, exact-type-checked before being compared at all
+      (`_registered_repositories_match`), rather than trusting any
+      dict or dataclass equality machinery to dispatch safely on its
+      own. New permanent regression test reproduces the exact
+      `str`-subclass attack (a genuine class with its own
+      `__ne__`/`__eq__` always claiming "unchanged").
+
+    Fixed in commit `fe2cf92`, with 1 new permanent regression test.
+    Full local re-verification: full test file (72/72), full mutation
+    suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1368 passed, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
+29. A fresh Codex pass against the round-28 commit (`e22604e`) found 1
+    further genuine P1 finding:
+    - **P1 ("Pin the delegated facility's collaborator values"),
+      Codex**: `_reject_instance_overridden_facility_methods` (round
+      23) validates attribute NAMES only -- `state`/`authority_store`
+      are two of the three expected names, so reassigning what they
+      POINT AT after admission was invisible to that check, the SAME
+      underlying gap round 19 already closed for the transport's
+      `_repositories`, one collaborator over. The reviewer's exploit
+      was sharper than a simple swap-and-read, though, and genuinely
+      distinct from the DISCLOSED round-14 TOCTOU limitation: Gen1's
+      real `RepositoryFacility.create_branch` calls
+      `self.authority_store.read(...)` (via `_live_mutable` ->
+      `validate_live_task`) AFTER `_revalidate_transport_integrity`'s
+      own containment scan has already run and returned, but BEFORE
+      the actual git mutation. The reviewer reproduced replacing
+      `facility._facility.authority_store` with a delegating object
+      whose `read()` has a SIDE EFFECT -- moving `.git/refs/heads`
+      outside the repository and installing a symlink -- which fires
+      DETERMINISTICALLY in that window (a synchronous part of the SAME
+      `create_branch` call), not merely as a probabilistic race
+      against a background process the way round 14's finding was: by
+      the time the actual git write happened, the symlink was already
+      in place, even though the EARLIER scan found nothing wrong.
+      **Fixed, completely -- unlike round 14's genuinely-unfixable
+      race, this deterministic window has a concrete, complete fix**:
+      `state`/`authority_store` are set exactly ONCE by
+      `RepositoryFacility.__init__` and never legitimately reassigned
+      anywhere in Gen1's own code afterward (unlike `.transport`,
+      which round 16 established CAN be legitimately swapped and is
+      independently, more thoroughly re-verified elsewhere), so
+      pinning them by IDENTITY (never by equality, which would reopen
+      round 28's attacker-controlled-equality risk -- `is` never
+      dispatches to `__eq__`/`__ne__` at all) and checking BEFORE every
+      delegating call (`create_branch`/`commit`/`read` via
+      `_revalidate_transport_integrity`, and `open_pr`/`merge_pr`,
+      since their own authority-validation phase reaches the SAME
+      callback point even though `LocalGitRepositoryTransport`'s real
+      methods always raise afterward) closes this completely: the swap
+      is caught and rejected BEFORE the malicious collaborator's own
+      callback ever gets a chance to run, not merely detected after
+      the fact. New permanent regression test reproduces the exact
+      attack AND additionally asserts the callback itself never fires
+      (not just that the call eventually raised), proving prevention
+      rather than after-the-fact detection.
+
+    Fixed in commit `6790a8d`, with 1 new permanent regression test.
+    Full local re-verification: full test file (73/73), full mutation
+    suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1369 passed, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
+30. A fresh Codex pass against the round-29 commit (`c3df528`) found 1
+    further genuine P1 finding -- the simplest, most fundamental gap
+    of the whole 30-round history, found this late precisely because
+    every prior round was busy hardening the CHECKED methods, not
+    questioning whether an UNCHECKED path was reachable at all:
+    - **P1 ("Hide the raw transport from wrapper callers"), Codex**:
+      `_transport` (round 25's own `__slots__` declaration) was itself
+      a declared slot -- meaning `facility._transport` was directly,
+      PUBLICLY readable by ANY caller holding the wrapper, handing them
+      the RAW, unguarded `LocalGitRepositoryTransport` instance. The
+      reviewer reproduced calling `facility._transport.create_branch(...)`
+      directly: since this bypasses the wrapper's own dispatch methods
+      entirely, NONE of the class's containment, hooks,
+      class-implementation, instance-state, or facility-collaborator
+      checks (rounds 13-29) ever ran -- there was nothing clever to
+      bypass in the technical sense; the raw object was simply handed
+      out, unguarded, alongside the checked ones. **Investigated WHY
+      `_transport` was a slot at all**: it was PURE write-only leftover
+      bookkeeping from BEFORE round 25's redesign (`_current_transport`
+      caching its own return value onto `self._transport`) -- confirmed
+      empirically via a full grep of every `._transport` reference in
+      this module that NOTHING ever reads it back. Once round 25 moved
+      the actual trust source into the wrapper-keyed registry, the
+      caching became genuinely dead code that happened to ALSO be a
+      live security liability. **Fixed**: removed entirely, from
+      `__slots__` and from every assignment (`__init__`,
+      `_current_transport`) -- rather than trying to hide the value
+      better, there is simply nothing left to hide, so
+      `facility._transport` now raises `AttributeError` outright, the
+      same comprehensive closure round 25's `__slots__` fix already
+      gave instance-level method shadowing. New permanent regression
+      test reproduces the exact `facility._transport.create_branch(...)`
+      call and confirms it now raises `AttributeError`.
+
+    Fixed in commit `ff68cf7`, with 1 new permanent regression test.
+    Full local re-verification: full test file (74/74), full mutation
+    suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1370 passed, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
+31. A fresh Codex pass against the round-30 commit (`c7b0bdb`) found 1
+    further genuine P1 finding, revealing that round 30's own fix
+    (removing `_transport`) had been narrower than it needed to be:
+    - **P1 ("Block delegated access to the raw transport"), Codex**:
+      `_facility` was ITSELF still a declared slot -- directly
+      readable via `facility._facility`, since slots are never
+      "private," underscore naming is purely convention, not
+      enforcement. This is, notably, the EXACT mechanism every one of
+      this closure record's OWN round 22-30 regression tests already
+      used to plant its attacks (`facility._facility.xxx = malicious`)
+      -- six straight rounds relied on this access path as a
+      test-only introspection tool without ever connecting it to also
+      being a live, unprivileged caller's escape hatch. Reaching
+      `facility._facility` handed out the WHOLE inner
+      `RepositoryFacility`, its own real, entirely unguarded
+      `create_branch`/`commit`/`read`/`open_pr`/`merge_pr` methods
+      included, none of which carry ANY of this module's
+      containment/hooks/authority checks. And even without
+      `_facility` directly, `__getattr__`'s blanket delegation exposed
+      `facility.transport` too, since `RepositoryFacility` (Gen1's own
+      class) itself exposes `transport` as a PUBLIC, unprefixed
+      attribute -- the reviewer reproduced calling
+      `facility.transport.create_branch(...)` directly, identical in
+      effect to round 30's `facility._transport` leak, just reached
+      through the surviving `_facility` slot instead of the removed
+      `_transport` one. **Fixed, comprehensively rather than by naming
+      individual leaks**: `_facility` is removed from `__slots__`
+      entirely (mirroring round 30's own `_transport` removal) -- the
+      wrapper instance now carries NO attribute at all beyond
+      `__weakref__`, with EVERY piece of real state living only in the
+      module-private, wrapper-keyed `_ADMITTED_TRANSPORT_STATE`
+      registry. `__getattr__` now reads
+      `_admitted_state_for(self).facility` for its delegation target
+      (never a `self.` attribute), AND explicitly denies `"transport"`
+      outright. `state`/`authority_store` remain delegated -- their
+      own methods stay non-git-mutating, the same already-disclosed
+      scope every prior round accepted. This also retired the
+      underlying attack surface for FOUR existing regression tests
+      (rounds 16, 23, 24, 29), which all used `facility._facility`
+      directly as their own setup mechanism -- updated to reach the
+      inner facility via `_admitted_state_for`, the same module-private
+      function the code itself now uses; round 24's own test was
+      further rewritten to assert the wholesale-swap ATTEMPT is now
+      structurally IMPOSSIBLE (an `AttributeError` at the assignment
+      itself), not merely ineffective as round 25 had already
+      established. New permanent regression test reproduces the exact
+      `facility.transport` and `facility._facility` calls and confirms
+      both now raise `AttributeError`.
+
+    Fixed in commit `b1e63c6`, with 1 new permanent regression test
+    (plus 4 existing tests updated to use the module-private lookup
+    the code itself now relies on). Full local re-verification: full
+    test file (75/75), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (1371 passed, only the 9 known pre-existing Windows-only
+    failures, zero regressions).
+32. A fresh Codex pass against the round-31 commit (`8810ead`) found 1
+    further genuine P1 finding, distinguishing IDENTITY from
+    MUTABILITY for the first time in this closure record's history:
+    - **P1 ("Seal admitted collaborators instead of checking
+      identity"), Codex**: round 29's identity pin
+      (`_reject_altered_facility_collaborators`) only detects a
+      SWAPPED `state`/`authority_store` REFERENCE -- it says nothing
+      about the SAME, genuinely admitted object having ITS OWN methods
+      reassigned IN PLACE. The reviewer reproduced
+      `facility.authority_store.read = malicious_fn`: since
+      `admitted.facility.authority_store IS established_authority_store`
+      never actually changes when a method is mutated on the SAME
+      object, round 29's `is` check kept passing while the malicious
+      callback ran mid-`create_branch` (the exact method Gen1's real
+      `validate_live_task` calls), moving `.git/refs/heads` externally
+      and installing a symlink before the actual git mutation, with an
+      authorized `create_branch` then returning a successful receipt.
+      **Fixed**: rather than attempting to structurally SEAL an
+      ARBITRARY, caller-supplied collaborator class (which this module
+      does not own or control -- `gen1_wrap_repository_construction_facility`'s
+      own documented scope explicitly allows a future G2-28+
+      orchestrator to supply its OWN `CampaignAuthorityStore`
+      implementation, so the same `__slots__`/metaclass treatment
+      applied to this module's OWN wrapper class in rounds 25/26
+      cannot apply here), the fix instead STOPS EXPOSING the raw
+      collaborator at all -- matching the reviewer's own alternative
+      framing ("move the final containment check past all
+      caller-controlled callbacks," achieved here by simply never
+      handing the callback surface out in the first place).
+      `state`/`authority_store` are now denied via `__getattr__` the
+      SAME way `transport` already is (round 31), following a
+      codebase-wide audit FIRST: `authority_store` had NO legitimate
+      call site anywhere in this repository, and `state` was used only
+      inside THIS MODULE's own qualification harness
+      (`RepositoryConstructionPropertyQualificationHarness`), which was
+      redirected to read the registry directly
+      (`_admitted_state_for(...).facility.state`) rather than through
+      the now-denied public delegation path -- 11 internal call sites
+      across the harness and 1 test file usage updated.
+      `acquire_writer`/`release_writer` remain delegated (unaffected):
+      they are METHODS on `RepositoryFacility` itself, never exposing
+      a raw collaborator object, and touch only lock bookkeeping, never
+      the transport. New permanent regression test reproduces the
+      exact `facility.authority_store.read = malicious_fn` attempt
+      (plus the equivalent for `facility.state`) and confirms both now
+      raise `AttributeError` outright.
+
+    Fixed in commit `566d099`, with 1 new permanent regression test
+    (plus 11 internal call sites and 1 test call site redirected to the
+    module-private registry lookup). Full local re-verification: full
+    test file (76/76), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (1372 passed, only the 9 known pre-existing Windows-only
+    failures, zero regressions).
+33. A fresh Codex + CodeRabbit pass against the round-32 commit
+    (`f8880cf`) found 3 further genuine findings (2 P1, Codex; 1
+    Major, CodeRabbit) -- the deepest single round of this closure
+    record's history, converging on a comprehensive restructure of the
+    wrapper's own dispatch surface:
+    - **P1 ("Stop returning the raw transport from the wrapper"),
+      Codex**: `_current_transport`/`_revalidate_transport_integrity`
+      were INSTANCE METHODS -- a leading underscore restricts access to
+      a METHOD exactly as little as it does to an ATTRIBUTE (rounds
+      30/31's own lesson, replaying here for the first time on
+      METHODS rather than attributes/slots). The reviewer reproduced
+      calling `facility._current_transport()` directly, obtaining the
+      RAW transport with NONE of `_revalidate_transport_integrity`'s
+      own further checks ever running, then invoking `create_branch`
+      on it directly -- external write, zero revalidation. **Fixed**:
+      both moved OUT of the class entirely, into MODULE-LEVEL
+      functions taking the wrapper as an explicit parameter. There is
+      no attribute named `_current_transport`/
+      `_revalidate_transport_integrity` on the wrapper AT ALL anymore,
+      so calling either now falls through to `__getattr__`'s allowlist
+      (this round's third finding, below), which correctly denies
+      both.
+    - **P1 ("Fully revalidate transport state before open_pr"),
+      Codex**: `open_pr`/`merge_pr` ran only the NAME-only override
+      check, reasoning that `LocalGitRepositoryTransport`'s own real
+      `open_pull_request`/`merge_pull_request` unconditionally raise
+      by design, so nothing further could matter. That reasoning was
+      INCOMPLETE: `RepositoryFacility.open_pr`/`merge_pr` call
+      `self.transport.resolve_ref(...)` BEFORE ever reaching the
+      transport's own `open_pull_request`/`merge_pull_request` -- and
+      `resolve_ref` itself uses `_run`/`self._git`, which a `_git`
+      VALUE change (round 20/28's finding) can compromise regardless
+      of what the eventual transport call does. The reviewer
+      reproduced a fully authorized `open_pr` invoking a replacement
+      executable during `resolve_ref`, an external side effect
+      occurring BEFORE the real local transport eventually rejected PR
+      creation. **Fixed**: rather than adding yet another
+      special-cased partial check, all FIVE dispatch methods
+      (`create_branch`/`commit`/`read`/`open_pr`/`merge_pr`) are now
+      UNIFIED onto the SAME, fully comprehensive
+      `_revalidate_transport_integrity` check -- closing the entire
+      CLASS of "we assumed a narrower risk profile for
+      open_pr/merge_pr" mistakes at once, since that assumption had
+      now been disproven twice in the SAME round (this finding and the
+      one above).
+    - **Major ("Restrict delegated attributes to an explicit
+      allowlist"), CodeRabbit**: rounds 31/32 built a DENY-list
+      (`transport`/`state`/`authority_store` -- the specific names
+      those rounds' own reviewers happened to reproduce). The
+      reviewer's own reproduction script proved a deny-list is
+      STRUCTURALLY THE WRONG SHAPE, the SAME lesson round 18 already
+      learned for the transport's own instance-attribute check
+      ("enumerating specific... names... is a losing, ever-growing
+      battle"), now replaying for `__getattr__` itself:
+      `wrapper.__dict__` was NOT on the deny list, so
+      `getattr(self, "__dict__")` fell through to `__getattr__` and
+      returned `admitted.facility.__dict__` -- the REAL
+      `RepositoryFacility`'s OWN instance dict, containing
+      `transport`/`state`/`authority_store` UNFILTERED, completely
+      bypassing the deny-list without naming any denied attribute at
+      all. **Fixed**: `__getattr__` is now an ALLOW-list
+      (`_ALLOWED_DELEGATED_ATTRIBUTES = frozenset({"acquire_writer",
+      "release_writer"})`) -- the only two names with any genuine,
+      in-codebase reason to be delegated at all (methods on
+      `RepositoryFacility` itself that never expose a raw collaborator
+      object, touching only lock bookkeeping, never the transport).
+      Every OTHER name, known or not yet discovered, is rejected by
+      default -- closing the entire class of "we forgot to deny this
+      one name" bugs at once, rather than growing the deny-list by one
+      more entry.
+
+    New permanent regression tests reproduce all three findings
+    exactly, including the `wrapper.__dict__` reproduction and an
+    arbitrary, never-imagined attribute name. Fixed in commit
+    `39e3ea0`, with 3 new permanent regression tests. Full local
+    re-verification: full test file (79/79), full mutation suite
+    (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1375 passed, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
+34. A fresh Codex pass against the round-33 commit (`60eb629`) found 1
+    further genuine P1 finding -- the SECOND finding in this closure
+    record's history (after round 27) that is disclosed rather than
+    fixed with code, this time reached from a different angle:
+    - **P1 ("Stop module helpers from returning the raw transport"),
+      Codex**: round 33 moved `_current_transport`/
+      `_revalidate_transport_integrity` to MODULE scope, closing the
+      ORDINARY-ATTRIBUTE-LOOKUP path a caller previously had via
+      `facility._current_transport()`. But a leading underscore on a
+      MODULE-LEVEL name is, exactly like everywhere else in Python,
+      convention ONLY: `from module import _private_name` has ALWAYS
+      worked, with no way to disable it. The reviewer reproduced
+      exactly that -- importing `_current_transport` by name and
+      calling it directly on the returned `facility` object, obtaining
+      the RAW transport with none of `_revalidate_transport_integrity`'s
+      further checks ever running. **Verified this is WORSE than even
+      the reviewer's own reproduction, independently**: a caller
+      holding ONLY the returned `facility` object, with NO explicit
+      import of ANYTHING from this module at all, can STILL reach the
+      SAME function purely through standard-library introspection
+      every Python object exposes by construction --
+      `sys.modules[type(facility).__module__]._current_transport(facility)`
+      -- confirmed empirically. `type(obj).__module__` is a builtin,
+      unavoidable property; `sys.modules` is the standard,
+      always-populated registry of every module Python has ever
+      loaded (which this one necessarily has been, for `facility` to
+      exist at all); once the MODULE object is in hand, every one of
+      its top-level names -- function or otherwise, underscore-
+      prefixed or not -- is an ordinary, reachable attribute. **This
+      is NOT a new category of gap**: it is the SAME fundamental
+      property of Python's object model already disclosed in round 27
+      (`type.__setattr__` bypassing a metaclass's own `__setattr__`)
+      -- no interpreter-level mechanism can make a name defined in
+      this module genuinely unreachable from code that already holds
+      ANY object this module produced, short of enforcing the boundary
+      OUTSIDE the interpreter entirely (OS-level process isolation, a
+      capability-sandboxed subprocess), the same materially different,
+      separately-deliberated undertaking round 27's own disclosure
+      named. **Also verified**: replacing the module-level function
+      with a CLOSURE captured at admission time would not help either
+      -- the closure itself would need to live somewhere reachable by
+      the wrapper's own methods, which reduces to either an instance
+      attribute (rounds 30/31's own, structurally analogous, already-
+      closed battle) or the SAME module-level reachability this
+      finding just demonstrated. There is consequently no further
+      code-level fix available. **Disclosed, not fixed**: extended
+      round 27's `_FrozenClassMeta` disclosure precedent to
+      `_current_transport`'s own docstring. A new permanent regression
+      test does NOT assert protection -- it documents the bypass
+      succeeding via the `sys.modules` introspection path specifically
+      (a STRONGER reproduction than the reviewer's own explicit-import
+      one), so the disclosed boundary stays a verified, executable fact
+      rather than an assumption.
+
+    Fixed (via disclosure, not code) in commit `609fcb7`, with 1 new
+    permanent regression test that documents the limitation rather
+    than defending against it. Full local re-verification: full test
+    file (80/80), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (1376 passed, 2 skipped, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
+35. A fresh Codex pass against the round-34 commit (`609fcb7`/`c1fb756`)
+    found 1 further genuine P1 finding:
+    - **P1 ("Revalidate allowlisted writer methods before
+      delegation"), Codex**: `__getattr__`'s allowlisted delegation
+      for `acquire_writer`/`release_writer` (round 33's
+      `_ALLOWED_DELEGATED_ATTRIBUTES`) used a bare
+      `getattr(admitted.facility, name)`, never calling
+      `_revalidate_transport_integrity` the way all five dispatch
+      methods (`create_branch`/`commit`/`read`/`open_pr`/`merge_pr`)
+      do. The reviewer reproduced rebinding
+      `RepositoryFacility.acquire_writer` at the CLASS level, then
+      calling `facility.acquire_writer(...)` -- the injected method
+      ran and returned successfully without recording the writer,
+      entirely bypassing `_reject_altered_facility_class_implementation`,
+      even though that exact same class tampering is rejected by
+      every one of the other five delegated methods. This traces back
+      to an original design assumption from round 32 (see
+      `_ALLOWED_DELEGATED_ATTRIBUTES`'s own docstring): these two were
+      reasoned to be safe because they "never expose a raw
+      collaborator object and touch only lock bookkeeping" -- true of
+      their RETURN VALUE, but that reasoning never considered that the
+      METHOD ITSELF, reached via delegation, could be a tampered
+      implementation.
+
+      Fixed by running the same full `_revalidate_transport_integrity`
+      check in `__getattr__` before returning either bound method,
+      matching every other delegation path in this class rather than
+      special-casing these two -- closing the same class of "we
+      assumed a narrower risk profile" mistake round 33 already closed
+      once for `open_pr`/`merge_pr`, now replaying for the allowlisted
+      delegation path itself. A new permanent regression test
+      reproduces the reviewer's exact class-level rebind for both
+      `acquire_writer` and `release_writer`, and also confirms
+      untampered delegation still works unchanged (this revalidates,
+      it does not deny).
+
+    Fixed in commit `ee3e980`, with 1 new permanent regression test.
+    Full local re-verification: full test file (81/81), full mutation
+    suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1377 passed, 2 skipped, only the 9 known
+    pre-existing Windows-only failures, zero regressions).
+36. A fresh Codex pass against the round-35 commit (`ee3e980`/`704b5d1`)
+    found 2 further genuine P1 findings, both attacking the TRUST
+    boundary at admission time rather than the delegation surface
+    rounds 30-35 had been hardening:
+    - **P1 ("Validate transport values before snapshotting them"),
+      Codex**: every prior `_git` finding (rounds 18-28) protected
+      against a POST-admission reassignment, pinning `_git`'s value
+      into `established_instance_state` at admission time and
+      rejecting any later deviation from THAT baseline. None of them
+      asked whether the baseline itself was trustworthy. The reviewer
+      reproduced assigning `transport._git` to a shell shim BEFORE
+      ever calling `gen1_wrap_repository_construction_facility` --
+      admission blessed the tampered value as the trusted baseline
+      (the shim even ran during admission's own hook-neutralization
+      step), and every later comparison correctly found it
+      "unchanged" from that already-poisoned baseline.
+
+      Unlike `_author_name`/`_author_email` (free-form strings with
+      no independently-derivable "correct" value) or `_repositories`
+      (legitimately varies per admission, caller-supplied), `_git`
+      DOES have a genuine ground truth: `LocalGitRepositoryTransport.__init__`
+      only ever resolves it via an explicit `git_executable`
+      constructor argument (confirmed, by a full-codebase search,
+      never used anywhere in this repository today) or
+      `shutil.which("git")`. Fixed by
+      `_reject_untrusted_transport_git_executable`, called before
+      `established_instance_state` is ever captured and before hook
+      neutralization can execute `_git`: independently re-resolves
+      `shutil.which("git")` and rejects admission outright if
+      `transport._git` doesn't match, with the same round-28
+      exact-type check (`type(x) is str`) so an attacker-controlled
+      `str` subclass with a lying `__eq__` can't bypass this either.
+    - **P1 ("Seal caller-retained collaborators before mutation"),
+      Codex**: round 29's identity pin
+      (`_reject_altered_facility_collaborators`) and round 32's
+      delegation denial (`__getattr__`) both address paths that go
+      THROUGH the wrapper -- neither addresses a caller who never
+      needed the wrapper to reach `authority_store` in the first
+      place: whoever calls `gen1_wrap_repository_construction_facility`
+      genuinely constructed `authority_store` and, by the ordinary
+      rules of passing a mutable Python object as an argument, still
+      holds their OWN reference to it afterward. The reviewer
+      reproduced reassigning THAT retained reference's `read` method
+      in place (`rig.authority_store.read = malicious_fn`) -- the
+      object's identity never changed, so round 29's `is` check kept
+      passing, while `RepositoryFacility`'s real dispatch invoked the
+      malicious replacement mid-`create_branch`, moving
+      `.git/refs/heads` externally and installing a symlink before
+      the actual git mutation, with an authorized `create_branch`
+      still returning a successful receipt -- a deterministic sibling
+      of the round-29 finding, reached without ever touching the
+      wrapper at all.
+
+      Unlike round 27/34's genuinely unfixable "any code holding ANY
+      object this module produced can reach anything reachable from
+      it" limitation, this one has a real, complete fix: a Python
+      bound method captures its underlying function AT THE MOMENT it
+      is read off an instance -- reassigning an attribute on the
+      ORIGINAL object afterward has zero effect on an already-captured
+      bound method. Fixed by `_SealedCollaboratorProxy`:
+      `RepositoryFacility` is now handed a proxy that captures
+      `authority_store.read` at THIS admission, and only ever calls
+      that captured, tamper-immune reference; the proxy is never
+      returned to any caller (it lives only as `RepositoryFacility`'s
+      own `.authority_store` attribute, and the wrapper's `__getattr__`
+      already denies delegating that name -- round 32), so nothing
+      external ever gets a chance to tamper with the proxy itself.
+      Verified empirically that a legitimate DATA mutation on the
+      original object (`rig.authority_store.snapshot = ...`, the
+      harness's own real usage pattern) is still correctly reflected,
+      since the captured bound method still reads `self.snapshot`
+      dynamically at call time.
+
+      `state_store` is DELIBERATELY NOT sealed the same way, despite
+      the identical caller-retained-reference reasoning applying to it
+      in principle: this module's own
+      `RepositoryConstructionPropertyQualificationHarness` genuinely,
+      legitimately reassigns
+      `_admitted_state_for(...).facility.state.put_receipt` mid-scenario
+      to simulate a crash-before-persist for required idempotency/
+      recovery test coverage -- sealing `state` would break that real,
+      existing coverage. `authority_store` also carries the sharper
+      risk regardless: it is the access-control DECISION source
+      (tampering bypasses authorization outright), while `state` is
+      idempotency/lock bookkeeping (tampering risks double-execution
+      or a stuck lock, not an unauthorized mutation). This asymmetry
+      is named explicitly in the fix's own docstring rather than left
+      undocumented; a caller-retained-reference mutation of `state`
+      specifically remains an accepted, narrower residual risk, the
+      same class this closure's own plan already named for
+      `FacilityContract` identity-matching generally.
+
+    Both fixed with real mechanisms, not disclosures. New permanent
+    regression tests reproduce each reviewer finding exactly,
+    including a REAL, fully-authorized `create_branch` (not a
+    placeholder `task=None`) proving the malicious `authority_store`
+    replacement genuinely never runs, not merely that some other check
+    happens to reject the call first. Fixed in commit `d662fd5`,
+    with 2 new permanent regression tests. Full local re-verification:
+    full test file (83/83), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (1379 passed, 2 skipped, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
+37. A fresh Codex pass against the round-36 commit (`d662fd5`/`03c19e4`)
+    found 3 further genuine P1 findings, ALL attacking the same
+    underlying fact -- a Python `function` object's `__code__`
+    attribute is itself ordinary, mutable state, no different in kind
+    from any instance attribute rounds 14-20 already learned not to
+    trust by identity alone -- reached from three different angles:
+    - **P1 ("Protect wrapper methods' mutable code objects"), Codex**:
+      `type(facility).create_branch.__code__ = malicious.__code__`
+      needs NEITHER `type.__setattr__` (round 27's bypass) NOR any
+      dunder trick at all -- it is ORDINARY attribute assignment,
+      using NORMAL syntax, on a plain `function` object. This falls
+      squarely INSIDE the trust model round 27's own disclosure
+      already narrowed to ("ordinary syntax... not a new kind of
+      gap"), unlike round 27's own bypass, which needed an explicit
+      low-level dunder invocation to fall outside it. Checked whether
+      the SAME defense this round's OTHER fix uses (below) could
+      apply here too, and confirmed it structurally cannot: that
+      defense works because a SEPARATE, EARLIER function
+      (`_revalidate_transport_integrity`) exists and can
+      snapshot-compare code objects BEFORE ever delegating to
+      `RepositoryFacility`. This wrapper's own dispatch methods have
+      no such earlier checkpoint -- `create_branch` IS the function
+      whose code gets replaced, so by the time it starts running, the
+      malicious bytecode is already what is executing -- the same
+      "no hook point from within" structural fact rounds 25/26 already
+      established, replaying a third time for a third kind of mutable
+      state (instance `__dict__` shadowing, class-attribute rebinding,
+      now a function object's own `__code__`).
+
+      **Disclosed, not fixed**: `_FrozenClassMeta`'s docstring gained a
+      "SECURITY NOTE -- DISCLOSED LIMITATION, WIDENED" section, further
+      narrowing the admitted identity's attacker model to also exclude
+      mutating `__code__`/`__defaults__`/`__closure__`/`__globals__` of
+      any function reachable from the wrapper. A new permanent
+      regression test documents the bypass succeeding rather than
+      asserting false protection, matching the round-14/27/34
+      precedent exactly.
+    - **P1 ("Snapshot method implementations rather than function
+      identities"), Codex**: unlike the finding above, THIS one has a
+      real, complete fix, because it targets `LocalGitRepositoryTransport`/
+      `RepositoryFacility` (Gen1-owned classes a SEPARATE, EARLIER
+      function genuinely re-checks before every delegation), not the
+      wrapper's own methods. `_reject_altered_class_implementation`'s
+      `current[name] is trusted_snapshot[name]` check pins the
+      FUNCTION OBJECT's identity -- the reviewer reproduced
+      `LocalGitRepositoryTransport._run.__code__ = malicious.__code__`:
+      the function object was never replaced, only its bytecode, so
+      the identity check kept passing while a fully-authorized
+      `create_branch` executed the injected body.
+
+      Fixed by `_TRUSTED_TRANSPORT_CLASS_CODE_OBJECTS`/
+      `_TRUSTED_FACILITY_CLASS_CODE_OBJECTS`: each trusted function's
+      `__code__` is separately captured, at this module's own import
+      time, into its own dict -- the SAME "capture a reference before
+      any tampering is possible" technique round 36's
+      `_SealedCollaboratorProxy` already used for a bound method, now
+      applied to a code object. A later `func.__code__ = other`
+      reassignment cannot retroactively change what this
+      separately-held reference points to, so comparing
+      `current[name].__code__` against it now catches the mutation.
+      Applied symmetrically to BOTH `LocalGitRepositoryTransport` and
+      `RepositoryFacility` -- the reviewer only demonstrated the
+      transport, but the identical exposure exists for the facility's
+      own methods.
+    - **P1 ("Resolve Git independently of caller-controlled PATH"),
+      Codex**: round 36's `_reject_untrusted_transport_git_executable`
+      re-resolved `shutil.which("git")` FRESH, at admission time, as
+      its "independent" ground truth -- but `shutil.which` walks
+      `PATH`, itself ordinary, caller-controlled process environment
+      state, no more independent than `transport._git` itself. The
+      reviewer reproduced prepending a shell shim's directory to
+      `PATH` AFTER importing this module but BEFORE constructing the
+      transport: `LocalGitRepositoryTransport.__init__`'s own
+      `shutil.which("git")` call and round 36's validation call both
+      resolved the SAME poisoned `PATH` to the SAME malicious path, so
+      the "independent" check just compared the tampered value against
+      itself and passed.
+
+      Fixed by `_TRUSTED_GIT_EXECUTABLE`, resolved exactly ONCE, at
+      THIS module's own import time -- the same trust boundary
+      `_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES` and every other import-time
+      snapshot in this file already relies on. A caller must import
+      this module to reach `gen1_wrap_repository_construction_facility`
+      at all, so `PATH` tampering that happens (as the reviewer's own
+      reproduction does) AFTER import but before construction/admission
+      no longer has any effect on this already-captured value.
+      Verified empirically with the reviewer's exact reproduction
+      (prepend a shim directory to `PATH`, construct a transport,
+      validate) -- now rejected. Does not defend against an attacker
+      who already controls `PATH` before this module is ever
+      imported -- the same disclosed, construction-time-review trust
+      model `_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES`'s own docstring
+      already names, not a new category of gap.
+
+    2 of 3 findings fixed with real mechanisms; 1 disclosed (matching
+    round 27/34 precedent, confirmed genuinely unfixable in-process,
+    not merely difficult). Fixed in commit `a00752c`, with 4 new
+    permanent regression tests. Full local re-verification: full test
+    file (87/87), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (1383 passed, 2 skipped, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
+38. A fresh Codex pass against the round-37 commit (`a00752c`/`8f8d48a`)
+    found 2 further genuine P1 findings:
+    - **P1 ("Seal the caller-retained state store"), Codex**: this
+      DIRECTLY OVERTURNS a deliberate decision made two rounds ago.
+      Round 36's own docstring reasoned `state_store` should stay
+      unsealed because this module's own
+      `RepositoryConstructionPropertyQualificationHarness` legitimately
+      monkeypatches `state.put_receipt` for crash-recovery testing --
+      sealing would have broken that real, required coverage. The
+      reviewer proved that reasoning insufficient: `state.claim_writer`/
+      `state.receipt` (methods the harness never touches at all) are
+      EQUALLY reachable via a caller-retained reference, and
+      `RepositoryFacility.create_branch` calls
+      `self.state.claim_writer(...)` in the SAME post-containment-scan,
+      pre-git-mutation window `self.authority_store.read(...)` (round
+      36) already demonstrated. The reviewer reproduced replacing
+      `claim_writer` with a callback planting an external symlink
+      before the real git mutation, with an authorized `create_branch`
+      still returning a successful receipt -- the round-29/36 pattern
+      replayed for a third collaborator method.
+
+      Fixed properly this time, rather than re-asserting the same
+      incomplete asymmetry: `state` is now sealed identically to
+      `authority_store`, via the same `_SealedCollaboratorProxy`,
+      capturing all six of `RepositoryStateStore`'s public methods
+      (`receipt`/`put_receipt`/`acquire_writer`/`release_writer`/
+      `claim_writer`, confirmed by grep to be the exact set
+      `RepositoryFacility` itself calls, plus `writer`, which only
+      this module's own harness calls for read-back verification).
+      The harness's legitimate crash-simulation need -- the ORIGINAL
+      justification for leaving `state` unsealed -- is now met through
+      a new, explicit, narrowly-scoped seam,
+      `_SealedCollaboratorProxy._inject_fault_for_qualification_harness`,
+      reachable ONLY via `_admitted_state_for`'s module-private
+      registry lookup (the same trust boundary this module's own
+      internal code already relies on everywhere else, not a
+      general-purpose unsealing mechanism) -- never by directly
+      reassigning an attribute on the caller-retained original object,
+      which is precisely the pattern this fix closes. The harness's
+      existing `put_receipt` crash-simulation test was updated to use
+      this seam instead of a plain attribute reassignment, which the
+      sealed proxy now correctly refuses.
+    - **P1 ("Verify the Git executable rather than only its path"),
+      Codex**: round 37's `_TRUSTED_GIT_EXECUTABLE` closed
+      PATH-resolution tampering by pinning the resolved PATHNAME at
+      import time -- but pinning the pathname is not the same as
+      verifying the FILE. When that path resolves to a caller-writable
+      location (an ordinary case: a user-local git install, a
+      venv-bundled binary, many CI images), a caller can leave `_git`'s
+      STRING value completely untouched while replacing the file's own
+      CONTENT at that same path, in place, at any point after import
+      or admission. The reviewer reproduced importing and admitting
+      through a real, delegating git shim, then overwriting that SAME
+      file afterward with a side-effecting replacement -- every
+      existing check (pathname pinning, exact-type, instance-value
+      pinning) kept passing, since none of them ever read the file's
+      own bytes.
+
+      Fixed by `_TRUSTED_GIT_EXECUTABLE_DIGEST`: the trusted
+      executable's content is hashed (`sha256`) at this module's own
+      import time, and `_reject_untrusted_transport_git_executable`
+      now re-hashes and compares on EVERY call -- critically, it is
+      now ALSO invoked from `_revalidate_transport_integrity`, not
+      merely once at admission, since a content check (unlike a
+      pathname check) must be repeated every time the underlying file
+      could have been replaced again. This does still leave a narrow
+      TOCTOU window between the hash check and the actual subprocess
+      invocation -- the same disclosed, accepted race class round 14
+      already established for a structurally different check, not a
+      new kind of gap; re-hashing on every revalidation narrows what
+      was an indefinitely-open door into that same narrow race, the
+      honest, achievable bound here.
+
+    Both fixed with real mechanisms, not disclosures. New permanent
+    regression tests reproduce each reviewer finding exactly, including
+    a REAL, fully-authorized `create_branch` dispatch proving the
+    malicious `state.claim_writer` replacement genuinely never runs.
+    Fixed in commit `7001c2b`, with 2 new permanent regression tests.
+    Full local re-verification: full test file (89/89), full mutation
+    suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1385 passed, 2 skipped, only the 9 known
+    pre-existing Windows-only failures, zero regressions).
+39. PROCESS NOTE: when round-39 review was requested against the
+    round-38 commit (`7001c2b`/`c41e005`), Codex responded that its
+    review usage quota was exhausted ("You have reached your Codex
+    usage limits for code reviews") -- a genuinely external, third-
+    party constraint, not a code defect. CodeRabbit's invocation was
+    logged but produced no fresh verdict for this round either. Per
+    this closure's own standing discipline ("no simulated Review --
+    a PASS claim must come from real machinery"), an absent review is
+    NOT treated as a clean pass; the round was instead filled by
+    launching an independent, genuinely adversarial review Agent (not
+    Codex, not CodeRabbit, but held to the identical bar: every
+    finding requires a real, executable reproduction, and an empty
+    result is reported honestly rather than manufactured) -- the same
+    kind of substitute reviewing method this closure has drawn on
+    before whenever the primary bots were unavailable.
+
+    That review found 1 genuine, new P1-class finding:
+    - **"Instance `__class__` reassignment bypasses the wrapper's own
+      class freeze entirely"**: every existing check protects this
+      class's OWN class object (`_FrozenClassMeta`, round 26) and
+      instance `__dict__` shadowing (`__slots__`, round 25) -- but
+      neither protects the instance's `__class__` SLOT itself.
+      `facility.__class__ = _MaliciousFacility` is ORDINARY Python
+      syntax -- no dunder tricks, no `__code__` mutation (round 37's
+      disclosed limitation does not apply here -- this needed
+      neither mechanism), no module-private introspection (round
+      34's disclosed limitation likewise does not apply) -- that
+      CPython permits whenever the target class has a structurally
+      compatible memory layout, trivially satisfied by an attacker
+      replicating this class's own `__slots__ = ("__weakref__",)`
+      layout. Reproduced: the wrapper's own `create_branch` genuinely
+      became the attacker's replacement, with the real class and its
+      methods entirely untouched -- `_FrozenClassMeta.__setattr__`
+      never fires, since it only intercepts assignment ON the class
+      object, not on an instance's `__class__` attribute.
+
+      Unlike rounds 27/34/37's genuinely unfixable disclosed
+      limitations, this one IS fixable: `__class__` reassignment
+      dispatches through `type(obj).__setattr__` exactly like any
+      other instance attribute set, so a plain instance-level
+      `__setattr__`/`__delattr__` override on
+      `_ContainmentReCheckedRepositoryFacility` itself -- the SAME
+      "always raise" pattern `_FrozenClassMeta` already uses one
+      level up for the class object, now also applied one level down
+      for the instance -- intercepts and rejects it outright. `__init__`'s
+      body is `pass` (see its own docstring, round 30/31), so this
+      override introduces no construction-time conflict. Verified
+      empirically that the exact reproduction above is now blocked.
+
+    Fixed with a real mechanism, with 1 new permanent regression test.
+    Because this finding did not arrive through the GitHub PR review
+    API (no review thread exists for it), it is recorded here and via
+    a plain PR comment on #86 with the commit SHA, rather than the
+    usual thread-reply-and-resolve cycle. Fixed in commit `494ca34`.
+    Full local re-verification: full test file (90/90), full mutation
+    suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1386 passed, 2 skipped, only the 9 known
+    pre-existing Windows-only failures, zero regressions).
+40. Codex's review quota recovered for this round -- a fresh, genuine
+    pass against the round-39 commit (`494ca34`/`3fec336`) found 1
+    further genuine P1 finding:
+    - **P1 ("Snapshot collaborator code objects before delegation"),
+      Codex**: round 36's own reasoning for why sealing
+      `authority_store`/`state_store` (via `_SealedCollaboratorProxy`)
+      closes a caller-retained-reference attack -- "a bound method
+      captures its underlying function at the moment it is read off
+      an instance, so a later reassignment on the caller's own
+      retained reference has zero effect on the already-captured
+      bound method" -- is TRUE for INSTANCE-level reassignment
+      (`source.method = malicious_fn`, which only shadows the
+      descriptor for FUTURE lookups on that instance), but was never
+      checked against the underlying FUNCTION OBJECT itself being
+      mutable state: `state_store.claim_writer.__func__` IS
+      `type(state_store).claim_writer`, the CLASS-level function
+      object SHARED by every bound method obtained from every
+      instance of that class -- including the one already captured
+      inside the sealed proxy. The reviewer reproduced
+      `state_store.claim_writer.__func__.__code__ = malicious.__code__`
+      on the caller's own retained reference: since that mutates the
+      SAME shared function object the sealed proxy's captured bound
+      method also delegates through, a fully-authorized `create_branch`
+      would invoke the altered `claim_writer` mid-dispatch -- the
+      round-14/29/36/38 deterministic-TOCTOU pattern replaying inside
+      the very mechanism (round 36's sealing) built to close it.
+
+      This is structurally the SAME exposure round 37 already found
+      and fixed for `LocalGitRepositoryTransport`/`RepositoryFacility`'s
+      OWN class methods -- just not yet extended to
+      `_SealedCollaboratorProxy`'s captured collaborator methods.
+      Fixed identically: each captured bound method's
+      `__func__.__code__` is now separately pinned, at the proxy's
+      own construction time, into `_captured_code` -- a later
+      `func.__code__ = other` reassignment cannot retroactively
+      change what that separately-held reference points to.
+      `__getattr__` re-verifies the CURRENT `__func__.__code__`
+      against the pinned reference on EVERY access, not merely once
+      at construction, since Gen1's own dispatch always reaches this
+      proxy via a fresh attribute lookup each call. The harness's own
+      `_inject_fault_for_qualification_harness` seam (round 38) was
+      updated to also clear the code-pin for whatever name it
+      replaces, since a harness-supplied replacement is a
+      deliberately different implementation, not a tampered original.
+
+    Fixed with a real mechanism, with 1 new permanent regression test
+    that reproduces the reviewer's exact `__func__.__code__` mutation
+    and confirms the sealed proxy rejects it, that access still works
+    normally once restored, and that the fault-injection seam remains
+    functional. Fixed in commit `5cde00e`. Full local
+    re-verification: full test file (91/91), full mutation suite
+    (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1387 passed, 2 skipped, only the 9 known
+    pre-existing Windows-only failures, zero regressions).
+41. Codex's review quota was exhausted again for this round
+    (requested against `5cde00e`/`4aa23b0`), and CodeRabbit's
+    incremental review had nothing new since its last automatic pass.
+    Per this closure's own standing discipline, the round was filled
+    by another independent, genuinely adversarial review Agent,
+    matching round 39's approach -- deliberately pointed at
+    `_SealedCollaboratorProxy` (round 36/40's collaborator-sealing
+    mechanism) and the round-39 instance `__class__` freeze, the two
+    most recently hardened surfaces. It found 2 genuine findings:
+    - **"`object.__setattr__` bypasses the round-39 instance
+      `__class__` freeze"**: round 39's own text originally claimed
+      this fix was "genuinely fixable, unlike rounds 27/34/37's
+      disclosed bypasses" -- that claim was WRONG, and this round
+      corrects it.
+      `object.__setattr__(facility, "__class__", _MaliciousFacility)`
+      sidesteps the round-39 instance-level `__setattr__` override
+      entirely by invoking `object`'s ROOT implementation directly,
+      bypassing virtual dispatch through the instance's own class's
+      MRO -- the IDENTICAL structural bypass round 27 already
+      disclosed for `_FrozenClassMeta` one level up (the class-level
+      freeze), now confirmed to apply equally to this instance-level
+      one. Reproduced: `type(facility)` becomes the attacker's class
+      and `create_branch` is fully replaced, with none of
+      `_revalidate_transport_integrity`'s checks ever running.
+      `object.__setattr__` is the root implementation every class
+      ultimately inherits, always publicly reachable as a builtin,
+      and no override anywhere in the MRO can prevent a caller from
+      invoking a LESS-derived implementation of the same dunder by
+      name -- round 27's own reasoning, unchanged one level down.
+
+      **Disclosed, not fixed**: the round-39 docstring's overclaim
+      was corrected, and a "SECURITY NOTE -- DISCLOSED LIMITATION"
+      section was added matching round 27's own precedent exactly,
+      further narrowing the admitted identity's attacker model to a
+      caller using Python's NORMAL attribute-access surface, not one
+      deliberately invoking a base dunder implementation by name. A
+      new permanent regression test documents the bypass succeeding
+      rather than asserting false protection.
+    - **"`_SealedCollaboratorProxy`'s captured state was reachable via
+      ordinary attribute access, bypassing the round-40 code-pinning
+      check entirely"**: `_captured`/`_captured_code` (round 36/40)
+      were declared `__slots__` members -- ordinary, directly-named
+      instance attributes. `getattr(proxy, "_captured")` resolves via
+      the slot descriptor and NEVER reaches `__getattr__` at all
+      (`__getattr__` only fires when normal lookup FAILS), so the
+      round-40 code-pinning check, which lives inside `__getattr__`,
+      never ran for direct access to the backing dict. Once reached,
+      the dict was directly mutable in place
+      (`proxy._captured["read"] = other_bound_method`, taken from a
+      SECOND, attacker-constructed instance of the same collaborator
+      class -- trivially satisfying round 40's `func.__code__ is
+      captured_code[name]` pin, since both instances share the
+      identical class-level function object) without ever calling the
+      proxy's own `__setattr__` -- a complete defeat of this class's
+      own "Immutable after construction" guarantee, via a mechanism
+      none of rounds 36/38/40 tested. This is the same lesson round 31
+      already learned for the OUTER wrapper: a `__getattr__`-based
+      allowlist is only as sealed as the set of REAL instance
+      attributes is empty.
+
+      **Fixed with a real mechanism**, identically to round 31's own
+      fix: `_SealedCollaboratorProxy` now carries NO instance
+      attribute beyond `__weakref__` -- the captured
+      callables/code-objects live only in a module-private,
+      proxy-keyed `_SEALED_PROXY_CAPTURED_STATE` registry (mirroring
+      `_ADMITTED_TRANSPORT_STATE`'s own established pattern), so
+      `proxy._captured` now correctly raises `AttributeError` via
+      `__getattr__`'s own allowlist -- the ONLY path to any state this
+      proxy exposes. Reaching this registry at all still requires the
+      SAME already-disclosed round-34 `sys.modules`-introspection
+      boundary every other module-private name in this file already
+      accepts -- this fix closes the TRIVIAL, one-line
+      `proxy._captured` access, not that underlying, structurally
+      unfixable reachability fact. A new permanent regression test
+      reproduces the exact attack and confirms it is now rejected.
+
+    1 of 2 findings fixed with a real mechanism; 1 disclosed (matching
+    round 27's precedent exactly, one level down). Because these
+    findings did not arrive through the GitHub PR review API (no
+    review thread exists for them), they are recorded here and via a
+    plain PR comment on #86 with the commit SHA. Fixed in commit
+    `737f159`, with 2 new permanent regression tests. Full local
+    re-verification: full test file (93/93), full mutation suite
+    (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1389 passed, 2 skipped, only the 9 known
+    pre-existing Windows-only failures, zero regressions).
+42. Codex's review quota was exhausted again for this round (three
+    rounds running now, requested against `737f159`/`ec8a342`), and
+    CodeRabbit's incremental review had nothing new. Per this
+    closure's own standing discipline, the round was filled by
+    another independent, genuinely adversarial review Agent,
+    deliberately pointed at `_SEALED_PROXY_CAPTURED_STATE` and
+    `_AdmittedTransportState` -- looking for a sibling gap to round
+    41's fix (a fix closing one instance of a pattern but missing a
+    structurally identical one elsewhere is the SAME class of gap
+    round 36->38's state-sealing reversal and round 40's proxy-code-
+    pinning both already demonstrated). It found one genuinely
+    significant finding:
+    - **"Cross-admission (cross-identity) confinement break via
+      WeakKeyDictionary enumeration"**: both `_ADMITTED_TRANSPORT_STATE`
+      and `_SEALED_PROXY_CAPTURED_STATE` are single, PROCESS-GLOBAL
+      registries holding every LIVE admission -- a real, anticipated
+      coexistence (round 25's own recovery/takeover scenario
+      legitimately keeps two admissions of the same transport alive
+      simultaneously). The reviewer reproduced admitting TWO
+      independent facilities, then -- holding only the FIRST --
+      reaching the module via the already-disclosed round-34
+      `sys.modules` boundary and ENUMERATING the registry's keys to
+      reach the SECOND, completely UNRELATED admission's own entry,
+      never handed to the attacker at all. `_AdmittedTransportState`
+      was previously a PLAIN (non-frozen) dataclass, so
+      `other_admitted.facility = attacker_facility` genuinely
+      redirected the VICTIM's own, perfectly ordinary `create_branch`
+      calls to attacker-controlled output -- a complete cross-identity
+      compromise reached without the attacker ever holding a
+      reference to the victim's wrapper. The identical enumeration
+      path also reached `_SEALED_PROXY_CAPTURED_STATE`, letting the
+      attacker invoke round 41's own harness-only
+      `_inject_fault_for_qualification_harness` escape hatch against
+      the VICTIM's sealed `authority_store` proxy -- whose docstring
+      had explicitly, and (it turns out) incorrectly, claimed it was
+      reachable "ONLY by code that already holds a direct reference
+      to THIS proxy object."
+
+      Split into what's genuinely new and what isn't: the
+      REACHABILITY half (enumerating the registry at all) is NOT a
+      new gap -- it is the SAME already-disclosed round-34 fact ("no
+      interpreter-level mechanism can make a name defined in this
+      module genuinely unreachable from code that already holds a
+      reference to ANY object this module produced"), now
+      demonstrated with a materially stronger, previously
+      undemonstrated CONSEQUENCE (cross-identity compromise, not
+      merely self-inspection). The MUTABILITY half -- that a reached
+      entry's fields were reassignable via ORDINARY syntax with zero
+      further effort -- IS a genuine, fixable gap.
+
+      **Fixed**: `_AdmittedTransportState` is now `@dataclass(frozen=True)`,
+      closing the ordinary-syntax field reassignment this round
+      demonstrated -- the same defensive posture already used
+      elsewhere in this file for advertised-immutable state. The ONE
+      legitimate internal mutation site
+      (`_revalidate_transport_integrity` refreshing `no_hooks_dirs`
+      after hook re-neutralization) now uses `object.__setattr__`
+      explicitly, the established, narrowly-scoped escape hatch for
+      module-private code that needs to mutate what an external
+      caller must not. `object.__setattr__` bypassing `frozen=True`
+      for an attacker who ALSO reaches an unrelated entry remains the
+      SAME disclosed, unfixable low-level-bypass class rounds
+      25/27/39/41 already established -- narrowing the EASY,
+      ordinary-syntax attack this round demonstrated, not claiming to
+      close every conceivable path.
+
+      **Disclosed, not fixed**: `_inject_fault_for_qualification_harness`'s
+      docstring overclaim was corrected -- it is callable against ANY
+      LIVE proxy reached via enumeration, not only one the caller was
+      legitimately handed. There is no code-level way to distinguish
+      "the trusted harness calling this on its own proxy" from "any
+      other code that enumerated its way here" without a fragile
+      caller-identity heuristic this codebase deliberately avoids (see
+      this file's own "detect presence, don't interpret" philosophy).
+
+    Fixed with a real mechanism (closing the demonstrated ordinary-
+    syntax attack); the underlying enumeration reachability and the
+    resulting `_inject_fault_for_qualification_harness` reach are both
+    disclosed, matching round 27/34's precedent. Because this finding
+    did not arrive through the GitHub PR review API (no review thread
+    exists for it), it is recorded here and via a plain PR comment on
+    #86 with the commit SHA. 2 new permanent regression tests
+    reproduce the fix (frozen-dataclass rejection) and document the
+    disclosed residual (`_inject_fault_for_qualification_harness`
+    cross-admission reach) respectively. Fixed in commit `582c918`.
+    Full local re-verification: full test file (95/95), full mutation
+    suite (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1391 passed, 2 skipped, only the 9 known
+    pre-existing Windows-only failures, zero regressions).
+43. Codex's review quota recovered for this round -- a fresh, genuine
+    pass against the round-42 commit (`582c918`/`c2a80f0`) found 1
+    further genuine P1 finding, a direct follow-up to round 42's own
+    fix:
+    - **P1 ("Make admission snapshots deeply immutable"), Codex**:
+      round 42's `frozen=True` fix on `_AdmittedTransportState` blocks
+      `admitted.instance_state = new_dict` -- but freezing a
+      dataclass only seals its OWN field REFERENCES, never the
+      CONTENTS of a plain, mutable `dict` a field happens to point
+      at. The reviewer reproduced enumerating the registry (the same
+      already-disclosed round-34/42 reachability) to reach an
+      unrelated VICTIM admission, then mutating
+      `victim_admitted.instance_state["_repositories"]` IN PLACE -- a
+      dict-item assignment, not an attribute assignment on the
+      dataclass, so the outer freeze never fired -- to redirect BOTH
+      the victim's live transport registration AND this "established"
+      snapshot to the SAME external clone, consistently poisoning
+      both sides of `_reject_altered_transport_instance_state`'s
+      comparison at once. A fully authorized `create_branch` then
+      passed every revalidation, created the branch in the attacker's
+      clone, and left the genuinely admitted repository unchanged.
+
+      **Fixed with a real mechanism**: both the nested `_repositories`
+      dict and the outer `established_instance_state` dict are now
+      wrapped in `types.MappingProxyType` -- a genuinely read-only
+      VIEW, not a copy that could itself be discarded; since no other
+      reference to the underlying mutable dicts is ever retained past
+      construction, this is the only handle anyone (attacker or
+      legitimate code) ever has to this state again, and every write
+      through it now raises `TypeError` outright. Verified this
+      doesn't break any legitimate usage: every existing read site
+      (`_reject_altered_transport_instance_state`,
+      `_registered_repositories_match`) only ever iterates/reads/
+      indexes into this state, never writes to it, and
+      `MappingProxyType` supports all of those transparently.
+
+    Fixed with a real mechanism, with 1 new permanent regression test
+    that reproduces the exact nested-dict-mutation attack against an
+    unrelated admission and confirms it is now rejected. Fixed in
+    commit `0f1efb5`. Full local re-verification: full test file
+    (96/96), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (1392 passed, 2 skipped, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
+44. A fresh Codex pass against the round-43 commit (`0f1efb5`/`9cf8410`)
+    found 2 further genuine P1 findings:
+    - **P1 ("Pin function keyword defaults during class checks"),
+      Codex**: round 37's `__code__` pin closes bytecode mutation, but
+      a function's `__kwdefaults__` (the dict backing keyword-only
+      parameter DEFAULT VALUES) is its OWN separate, genuinely mutable
+      dict attribute -- identical in kind to `__code__` being
+      ordinary, mutable state, just one level further out, and
+      NEITHER existing check (function identity, `__code__` identity)
+      touches it at all. The reviewer reproduced
+      `LocalGitRepositoryTransport._run.__kwdefaults__["extra_env"] =
+      {malicious GIT_CONFIG_* overrides}`: neither the function
+      object's identity nor its `__code__` ever changed, so both
+      existing checks kept passing, while every FUTURE call to `_run`
+      omitting an explicit `extra_env=` argument (the overwhelming
+      majority of real call sites) silently picked up the poisoned
+      default, injecting a malicious `core.hooksPath` override via
+      Git's own `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/
+      `GIT_CONFIG_VALUE_n` environment-variable config mechanism
+      during a fully-authorized `create_branch`.
+
+      **Fixed the SAME way round 37 fixed `__code__`**: each trusted
+      function's `__defaults__`/`__kwdefaults__` are now captured as
+      an immutable snapshot at this module's own import time (a
+      copied tuple for `__defaults__`; `__kwdefaults__`'s dict
+      converted to a sorted tuple of items), immune to later in-place
+      dict mutation for the same reason a captured code-object
+      reference is immune to later `__code__` reassignment. New
+      `_function_defaults_snapshot`/`_function_defaults_match` helpers
+      apply the same round-28 exact-type-check discipline before
+      trusting any comparison. Applied symmetrically to both
+      `LocalGitRepositoryTransport` and `RepositoryFacility`, wired
+      into the existing `_reject_altered_class_implementation` check
+      alongside the round-37 code-object pin.
+    - **P1 ("Freeze the hook-neutralization snapshot"), Codex**: round
+      43 wrapped `instance_state` in `types.MappingProxyType` but left
+      this SIBLING `_AdmittedTransportState` field -- `no_hooks_dirs`
+      -- as a plain, mutable dict. Each individual
+      `_EstablishedHooksNeutralization` record is already
+      `frozen=True`, so its own fields can't be reassigned via
+      ordinary syntax -- but the OUTER dict entry could still be
+      REPLACED WHOLESALE (`no_hooks_dirs[name] =
+      _EstablishedHooksNeutralization(unrelated_dir, malicious_config_text)`),
+      a dict-item assignment, never an attribute assignment on the
+      frozen record, so nothing about ITS OWN freeze applied. The
+      reviewer reproduced this against an enumerated, unrelated
+      admission (the same already-disclosed round-34/42
+      reachability), poisoning `_hooks_neutralization_still_intact`'s
+      own baseline so it accepted an attacker's `core.hooksPath` as
+      unchanged, letting an external `reference-transaction` hook fire
+      during a fully-authorized `create_branch`.
+
+      **Fixed identically to round 43's own fix**: `no_hooks_dirs` is
+      now wrapped in `types.MappingProxyType` at the ONE place it is
+      ever constructed
+      (`_neutralize_hooks_for_every_registered_repository`'s own
+      return value), so every caller -- both the admission-time call
+      site and the per-mutation re-neutralization call site inside
+      `_revalidate_transport_integrity` -- gets the same genuinely
+      read-only view automatically, without needing to remember to
+      wrap it at each individual call site.
+
+    Both fixed with real mechanisms, matching the same "a fix closes
+    one instance of a pattern but misses a structurally identical
+    sibling elsewhere" class this campaign has now demonstrated
+    several times (round 36->38's state-sealing reversal, round 40->41's
+    proxy-code-pinning extension, round 42->43's deep-immutability
+    follow-up). 2 new permanent regression tests reproduce each
+    reviewer finding exactly. Fixed in commit `e376651`. Full local
+    re-verification: full test file (98/98), full mutation suite
+    (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1394 passed, 2 skipped, only the 9 known
+    pre-existing Windows-only failures, zero regressions).
+45. A fresh Codex pass against the round-44 commit (`e376651`/`e00ec80`)
+    found 2 further genuine P1 findings -- one a real bug SELF-CAUGHT
+    IN this closure's own round-44 fix, the other a genuinely NEW axis
+    of the trust model this campaign had not yet checked:
+    - **P1 ("Validate keyword-default keys before sorting"), Codex**:
+      round 44's own `_function_defaults_snapshot`/`_function_defaults_match`
+      sorted `__kwdefaults__.items()` by KEY before any exact-type
+      check on those keys ever ran -- `sorted()` invokes `__lt__` on
+      the keys themselves to determine order, and Python never
+      validates `__kwdefaults__`'s keys against the function's real
+      parameter names, so an attacker-controlled key TYPE with an
+      overloaded `__lt__` carrying a malicious SIDE EFFECT (not merely
+      a lying comparison RESULT, the round-28 pattern round 44 already
+      guarded against -- an ACTUAL side effect that fires the moment
+      `sorted()` calls it) would already have run by the time the
+      exact-type checks could reject it. The reviewer reproduced two
+      `str` subclasses whose `__lt__` performed a real, observable
+      side effect (writing outside the repository); a facility call
+      eventually raised, but only AFTER that side effect had already
+      occurred.
+
+      **Fixed**: every key's exact type is now verified BEFORE
+      `sorted()` is ever called in both helper functions --
+      `all(type(k) is str for k in kwdefaults)` calls only the builtin
+      `type()`, never `<`/`==` on a potentially untrusted key, so this
+      guard itself cannot be subverted the same way.
+    - **P1 ("Pin delegated methods' global dependencies"), Codex**:
+      every check so far (rounds 21/23/37/44) pins `RepositoryFacility`/
+      `LocalGitRepositoryTransport`'s OWN class attributes, code
+      objects, and keyword defaults -- but says nothing about the
+      GLOBAL NAMESPACE those classes' methods actually execute WITHIN.
+      `RepositoryFacility._live_mutable` calls `validate_live_task(...)`
+      as an ordinary global-scope name lookup, resolved via
+      `tenfold.repository_facility`'s own module namespace -- an
+      ORDINARY, PUBLICLY importable Gen1 module, no special
+      reachability trick needed at all (unlike round 27/34's disclosed
+      bypasses, which needed SOME cleverness -- this needs none). The
+      reviewer reproduced rebinding
+      `tenfold.repository_facility.validate_live_task`, then calling
+      `create_branch` with a bare `SimpleNamespace(assignment_id="attacker")`
+      -- no real seal, capability, permission, epoch, or lease at all
+      -- and the malicious replacement ran, skipping EVERY real
+      authority check, with the branch still created.
+
+      **Fixed the SAME way rounds 21/23/37/44 pin `RepositoryFacility`'s
+      OWN methods**: `validate_live_task`'s reference, `__code__`, and
+      `__defaults__`/`__kwdefaults__` are now captured at THIS
+      module's own import time, from EXACTLY the binding
+      `_live_mutable`'s bytecode will actually resolve
+      (`RepositoryFacility.create_branch.__globals__`), and
+      re-verified on every check via a new
+      `_reject_altered_authority_validation_globals`, wired into both
+      admission and every per-mutation revalidation.
+
+      Also closed PRE-EMPTIVELY, one layer deeper, without waiting for
+      a separate reviewer demonstration (the same discipline round 23
+      already established pre-empting a predictable round-24
+      rediscovery): `validate_live_task` itself calls `validate_task`
+      internally, resolved via a DIFFERENT module's namespace
+      (`tenfold.facility`, not `tenfold.repository_facility`) -- the
+      SAME class of dependency one level deeper. Pinned identically.
+
+      **Disclosed scope, deliberately NOT recursing further**:
+      `RepositoryFacility`'s methods reference several OTHER
+      module-level names too (`FacilityError`, `FacilityEvidence`,
+      `FacilityKind`, `stable_digest`), none of which are pinned.
+      `validate_live_task`/`validate_task` are the ONLY names whose
+      replacement directly grants an UNAUTHORIZED CAPABILITY; the
+      others affect correctness/idempotency, not authorization, and
+      recursing into every transitively-referenced name would have no
+      natural stopping point short of the Python standard library
+      itself -- named this boundary explicitly rather than leaving it
+      silently assumed.
+
+      Required a new adjudicated residual-Gen1-dependency exception
+      (`_reject_altered_authority_validation_globals` in
+      `self_construction.py`, matching round 23's precedent for the
+      identically-shaped `_reject_altered_facility_class_implementation`
+      entry), since this new function genuinely references
+      `RepositoryFacility` by name to locate the module namespace its
+      own real methods execute within.
+
+    Both fixed with real mechanisms. 3 new permanent regression tests
+    reproduce each finding exactly (the sort-safety fix, the
+    `validate_live_task` rebinding, and the pre-emptive `validate_task`
+    sibling). Fixed in commit `b9a204f`. Full local re-verification:
+    full test file (101/101), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (1397 passed, 2 skipped, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
+46. A fresh Codex pass against the round-45 commit (`b9a204f`/`7e33457`)
+    found 1 further genuine P1 finding, which self-auditing widened
+    into 5 more of the identical class before considering the round
+    closed:
+    - **P1 ("Pin the repository scope predicate before delegation"),
+      Codex**: round 45's own scoping pass only ever scanned
+      `repository_facility.py`'s IMPORTED names for candidates
+      meeting its OWN stated criterion ("functions whose replacement
+      directly grants unauthorized capability") -- never its
+      LOCALLY-DEFINED module-level helper functions. `_path_in_scope`
+      -- defined IN `repository_facility.py` itself, called by BOTH
+      `read` and `commit` to enforce the EFFECT-REACH boundary --
+      meets that same criterion exactly, just as directly as
+      `validate_live_task` does. The reviewer reproduced rebinding it
+      to `lambda path, scope: True`, then using a legitimately sealed
+      task scoped to `allowed/` to commit `not-allowed/escape.txt` --
+      every existing check (round 45's `validate_live_task`/
+      `validate_task` pins included) passed, and the out-of-scope
+      file landed in Git. A genuine oversight in round 45's own
+      scoping pass, not a newly-discovered category.
+
+      **Self-audited widening (not requested by any reviewer,
+      completed before considering this round closed)**: rather than
+      fix only the ONE instance demonstrated, the REST of
+      `repository_facility.py`'s locally-defined helpers were audited
+      for the SAME class of oversight. Found FOUR more genuine gaps
+      in the IDENTICAL causal chain, each individually confirmed
+      exploitable via a standalone repro before fixing:
+      `repository_ref_resource`/`repository_pr_resource` (compute the
+      `resource=` argument `validate_live_task`'s own lease-fencing
+      check uses -- a rebind could let a lease held for one resource
+      authorize a write to an entirely different one),
+      `repository_request_binding` (recomputes the EXPECTED request
+      binding from the actual request fields, compared against the
+      task's SEALED binding -- a rebind ignoring its arguments would
+      let ANY request "match" any sealed task, defeating
+      request-binding fencing entirely), and `_file_digests` (feeds
+      `commit`'s file contents into that same request-binding
+      computation -- a rebind returning constant digests regardless
+      of actual content would let substituted file contents still
+      "match" a binding sealed for different ones). Also pinned
+      `_path_in_scope`'s OWN internal helper, `_path_parts`, since
+      pinning `_path_in_scope` alone does not protect what it calls
+      internally -- the same "one level deeper" concern round 45
+      already handled for `validate_live_task`/`validate_task`.
+
+      **Fixed the SAME way rounds 21/23/37/44/45 pin `RepositoryFacility`'s
+      OWN methods, generalized into a single, DATA-DRIVEN check**
+      rather than one hand-written comparison per name -- exactly the
+      shape that let round 45's own pass stay incomplete. Every
+      trusted global's reference, `__code__`, and `__defaults__`/
+      `__kwdefaults__` are captured once, at THIS module's own import
+      time, into `_TRUSTED_AUTHORITY_VALIDATION_GLOBALS`/
+      `_TRUSTED_AUTHORITY_VALIDATION_FACILITY_MODULE_GLOBALS` (keyed
+      by which REAL module namespace each name resolves from, since
+      `validate_task` lives in a different module than the rest), and
+      `_reject_altered_authority_validation_globals` loops over both
+      -- adding a new name to either dict is now the entire cost of
+      covering it. All eight names (the original two plus the six
+      found this round) individually verified caught when rebound.
+
+      Required a new adjudicated residual-Gen1-dependency exception
+      update (the refactored `_reject_altered_authority_validation_globals`
+      keeps the SAME function name round 45's adjudication entry
+      already covers, so no NEW entry was needed -- confirmed via a
+      clean residual-dependency scan after the refactor).
+
+    Fixed with a real mechanism. 2 new permanent regression tests
+    reproduce the reviewer's exact `_path_in_scope` finding and
+    confirm all seven pinned globals (the original plus the six found
+    via self-audit) are individually, correctly caught when rebound.
+    Fixed in commit `1da3b00`. Full local re-verification: full test
+    file (103/103), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (1399 passed, 2 skipped, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
+
+47. A fresh Codex pass against the round-46 commit (`1da3b00`/`30da846`)
+    found 3 further genuine findings -- two the same recurring "one
+    level deeper" pattern for a THIRD and FOURTH time, and one a
+    self-inflicted bug in this closure's OWN defensive helper code:
+    - **P1 ("Pin stable_digest behind request binding"), Codex**:
+      round 46's own pass pinned `repository_request_binding`/
+      `_file_digests` THEMSELVES but not `stable_digest`, which THOSE
+      functions call internally to compute the digest baked into a
+      task's request binding. The reviewer reproduced rebinding
+      `stable_digest` to a function that always returns a task's
+      EXISTING, already-sealed binding regardless of its actual
+      argument, then committing DIFFERENT file contents and a
+      DIFFERENT message under that same legitimately sealed task --
+      the recomputed binding still "matched" the sealed one, and Git
+      stored the substituted bytes.
+    - **P1 ("Pin canonical_digest behind task validation"), Codex**:
+      `validate_task` (pinned since round 45) itself calls
+      `canonical_digest` internally as the cryptographic check that a
+      task genuinely IS what it claims to be (`canonical_digest(raw)
+      != claimed`) -- more foundational than any single call site. The
+      reviewer reproduced rebinding `canonical_digest` to a function
+      that always matches, then cloning a legitimately narrow-scope
+      task with an EXPANDED scope and a NEW request binding while
+      keeping its ORIGINAL `dispatch_digest` -- the seal check still
+      "passed," and an out-of-scope file was committed.
+    - **P2 ("Avoid truthiness check on `__kwdefaults__` before type
+      validation"), Codex**: `_function_defaults_snapshot`/
+      `_function_defaults_match` (this closure's OWN round-44/45
+      defensive helpers) both wrote `func.__kwdefaults__ or {}` --
+      `or` invokes `bool()` on the left operand, dispatching to an
+      attacker-controlled `__bool__` with a malicious side effect,
+      BEFORE either function's own exact-type check on the next line
+      ever ran. The SAME class of lesson as round 45's own
+      sort-before-type-check finding in this SAME pair of functions,
+      now for the `or` operator's implicit truthiness dispatch instead
+      of `sorted()`'s implicit ordering dispatch -- and, unlike the
+      other two findings this round, not a Gen1 dependency at all but
+      a bug in code this closure itself wrote.
+
+      This round's two "one level deeper" findings mark the pattern's
+      THIRD and FOURTH recurrence (round 45: `validate_live_task`->
+      `validate_task`; round 46: `_path_in_scope`->`_path_parts`;
+      round 47: `repository_request_binding`/`_file_digests`->
+      `stable_digest`, `validate_task`->`canonical_digest`) --
+      confirming round 46's own self-audit, while more thorough than
+      round 45's, still was not exhaustive: it checked which
+      LOCALLY-DEFINED functions existed in the causal chain but not
+      what THOSE (and already-pinned) functions call internally via
+      their own imports. Recorded here explicitly, rather than only
+      in the module's own docstring, so a future round rediscovering
+      the same class of gap treats it as the pattern's confirmation,
+      not a surprise.
+
+      Fixed the two Gen1-dependency findings with the SAME data-driven
+      mechanism round 46 built for exactly this purpose: `stable_digest`
+      added to `_TRUSTED_AUTHORITY_VALIDATION_GLOBALS`'s tuple of
+      names (eight names now, resolved from
+      `tenfold.repository_facility`'s own namespace) and
+      `canonical_digest` added to
+      `_TRUSTED_AUTHORITY_VALIDATION_FACILITY_MODULE_GLOBALS`'s tuple
+      (two names now, resolved from `tenfold.facility`'s own
+      namespace) -- a two-name addition, not a new mechanism, exactly
+      validating the refactor's stated purpose. Fixed the self-inflicted
+      P2 by extracting a new `_coerce_defaults_attr(raw, expected_type,
+      empty_value)` helper that checks only `is None` (identity, never
+      overridable) and `type(raw) is expected_type` (the same
+      exact-type discipline used everywhere else in this file) --
+      never `bool()`, `len()`, or any other implicit-dispatch check --
+      before trusting `__defaults__`/`__kwdefaults__`; used by both
+      `_function_defaults_snapshot` (raises `TypeError`) and
+      `_function_defaults_match` (returns `False`), replacing all four
+      prior `x or default` call sites (both attributes, both
+      functions). No new adjudicated residual-Gen1-dependency
+      exception needed -- `stable_digest`/`canonical_digest` are
+      pinned via the SAME already-adjudicated
+      `_reject_altered_authority_validation_globals` function name;
+      confirmed via a clean residual-dependency scan after the fix.
+
+    Fixed with a real mechanism. 3 new permanent regression tests
+    reproduce the reviewer's exact `stable_digest`, `canonical_digest`,
+    and `__kwdefaults__`-truthiness findings; the existing causal-chain
+    test was also widened to cover `stable_digest` directly. Fixed in
+    commit `bb0f6e5`. Full local re-verification: full test file
+    (106/106), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (1402 passed, 2 skipped, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
+
+48. A fresh Codex pass against the round-47 commit (`bb0f6e5`/`4ae5f94`)
+    found 2 further genuine P1 findings -- the FIFTH recurrence of the
+    "one level deeper" pattern, and its first appearance outside the
+    module-globals-pinning mechanism:
+    - **P1 ("Pin the digest functions' transitive globals"), Codex**:
+      round 47 pinned `stable_digest`/`canonical_digest` THEMSELVES,
+      but not what THEY call internally -- both call `sha256` (a
+      plain `from hashlib import sha256` in their own respective
+      modules) to actually compute the digest. The reviewer reproduced
+      rebinding `tenfold.facility.sha256` to a constructor that always
+      returns a task's EXISTING request binding, leaving
+      `stable_digest` itself untouched (so round 47's own pin kept
+      passing) while `stable_digest`'s own call to `sha256` resolved
+      the replacement -- a fully-authorized `commit` then landed
+      attacker-substituted file contents and message under a sealed
+      task, the recomputed binding still "matching."
+    - **P1 ("Seal transitive state-store method lookups"), Codex**:
+      rounds 36/40 capture `state_store`'s bound methods and pin their
+      `__func__.__code__`, but every one of `RepositoryStateStore`'s
+      captured methods internally calls `self._connect()` -- an
+      ordinary instance-attribute lookup resolved FRESH, on the live,
+      caller-retained `state_store` object, every time a captured
+      method actually runs. The reviewer reproduced assigning a
+      malicious `_connect` directly onto the retained `state_store`
+      instance after admission; since this shadows the class method in
+      the instance's OWN `__dict__` (checked before the class in
+      ordinary attribute resolution), the next real dispatch through
+      the sealed proxy's already-captured, code-pinned `claim_writer`
+      still executed the malicious `_connect`, planting an external
+      symlink before the real git mutation, with an authorized
+      `create_branch` still returning a successful receipt.
+
+      Given this is the FIFTH time a reviewer (or self-audit) found
+      "we pinned function X, but not what X calls internally" --
+      rounds 45 (`validate_live_task`->`validate_task`), 46
+      (`_path_in_scope`->`_path_parts`), 47 (twice:
+      `repository_request_binding`/`_file_digests`->`stable_digest`,
+      `validate_task`->`canonical_digest`), and now round 48 (twice
+      more) -- this round's fix is a change in KIND, not another name
+      added to a tuple. `_capture_transitive_authority_globals`
+      (module-globals mechanism) and
+      `_collaborator_relied_upon_attribute_names` (collaborator-
+      instance-method mechanism) both now genuinely WALK a trusted
+      function's own referenced names -- `__code__.co_names` filtered
+      to what actually resolves in its `__globals__`, or a class's own
+      attribute namespace for instance methods -- recursing further
+      only while the referenced value is still first-party, local code
+      (`_tenfold_owned_function`; the class equivalent), and capturing
+      everything else by identity alone. Bounded the same way this
+      closure's own DISCLOSED SCOPE sections have always drawn the
+      line: the standard library itself has no natural recursion
+      stopping point, so recursion never crosses into it, but every
+      name actually REFERENCED by trusted code, at any depth of
+      first-party code, is now covered automatically -- not merely the
+      one instance a reviewer happens to demonstrate.
+
+      This automatically closed the reviewer's exact `stable_digest`
+      finding AND its self-audited sibling, `canonical_digest`'s own
+      `tenfold.contracts.sha256` (not separately demonstrated by the
+      reviewer, found before considering this round closed, per this
+      closure's own established self-auditing discipline). For the
+      collaborator-instance mechanism, `_SealedCollaboratorProxy` now
+      also rejects any access once the retained source's own instance
+      `__dict__` has gained an entry for a name a captured method
+      relies on internally -- deliberately NOT flagging an instance
+      shadow of one of the TOP-LEVEL captured names themselves (e.g.
+      `claim_writer`), since those remain fully protected by the
+      existing bound-method-capture/code-pin mechanism (rounds 36/40)
+      and rounds 36/38's own regression tests deliberately reproduce
+      exactly that case as the now-safe one those fixes already close.
+
+      No new adjudicated residual-Gen1-dependency exception needed --
+      both mechanisms are reached via the SAME already-adjudicated
+      function names (`_reject_altered_authority_validation_globals`,
+      `_SealedCollaboratorProxy`); confirmed via a clean residual-
+      dependency scan after the fix.
+
+    Fixed with a real mechanism, generalized rather than patched. 2
+    new permanent regression tests reproduce the reviewer's exact
+    `tenfold.facility.sha256` and state-store `_connect`-shadow
+    findings (the sha256 test also covers the self-audited
+    `tenfold.contracts.sha256` sibling). Fixed in commit `42b3d0e`.
+    Full local re-verification: full test file (108/108), full
+    mutation suite (37/37), `test_g2_27_self_construction.py`
+    (33/33), and full repository sweep (1404 passed, 2 skipped, only
+    the 9 known pre-existing Windows-only failures, zero
+    regressions).
+
+49. A fresh Codex pass against the round-48 commit (`42b3d0e`/`7bece13`)
+    found 1 further genuine P1 finding -- the SIXTH recurrence of the
+    "one level deeper" pattern, this time within this closure's own
+    round-48 fix itself:
+    - **P1 ("Pin transitive collaborator class methods"), Codex**:
+      round 48's own fix only ever checked `state_store`'s INSTANCE
+      `__dict__` for a shadowing entry -- it never revalidated the
+      CLASS-level binding of a transitively-relied-upon name at all.
+      The reviewer reproduced rebinding `RepositoryStateStore._connect`
+      directly on the CLASS (not the instance): no instance shadow
+      exists, so round 48's own check found nothing wrong, while the
+      already-captured, code-pinned `claim_writer` still resolved
+      `self._connect` fresh on every call -- straight to the tampered
+      class attribute, planting an external symlink before the real
+      git mutation with an authorized `create_branch` still returning
+      a successful receipt.
+
+      This is a genuinely different lesson than the prior five
+      recurrences: those were all "we pinned function X, but not what
+      X calls" -- an INCOMPLETENESS of WHICH names get pinned. This
+      one is "we pinned the right name, but only checked ONE of the
+      two ways it can be tampered with" -- an incompleteness of HOW a
+      pinned name gets verified. Round 48's own transitive-closure
+      mechanism correctly identified `_connect` as relied-upon, but
+      then verified its safety only via an instance-`__dict__`
+      absence check, never via the identity/code/defaults check every
+      OTHER pinned name in this file already receives. Recorded here
+      explicitly as its own category, distinct from the module-globals
+      "one level deeper" recurrences, since a future transitive-
+      closure mechanism added to this file should apply BOTH axes from
+      the start rather than needing its own round-49-shaped correction
+      later.
+
+      Fixed by widening `_capture_collaborator_relied_upon_attributes`
+      (renamed from `_collaborator_relied_upon_attribute_names`, since
+      it now captures values, not just names) to ALSO capture each
+      transitively-relied-upon name's `(value, __code__, defaults
+      snapshot)` read directly off the class at construction time;
+      `_SealedCollaboratorProxy.__getattr__` now revalidates the
+      CURRENT class-level binding against that capture on every
+      access, exactly mirroring how the top-level captured names are
+      already protected via `captured_code` -- one level further out,
+      and on both axes (instance shadow AND class rebind) at once.
+
+      No new adjudicated residual-Gen1-dependency exception needed --
+      reached via the same already-adjudicated `_SealedCollaboratorProxy`
+      name; confirmed via a clean residual-dependency scan after the
+      fix.
+
+    Fixed with a real mechanism. 1 new permanent regression test
+    reproduces the reviewer's exact `RepositoryStateStore._connect`
+    class-level rebind (restored in a `finally` block, since
+    `RepositoryStateStore` is a real, shared, process-global class,
+    not a disposable per-test object); rounds 36/38/48's own
+    regression tests for the instance-level cases remain valid and
+    pass unmodified. Fixed in commit `75ed991`. Full local
+    re-verification: full test file (109/109), full mutation suite
+    (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1405 passed, 2 skipped, only the 9 known
+    pre-existing Windows-only failures, zero regressions).
+
+50. A fresh Codex pass against the round-49 commit (`75ed991`/`22f7fa2`)
+    found 1 further genuine P1 finding -- the SEVENTH recurrence of
+    the "one level deeper" pattern, closing the third and final axis
+    of the collaborator-instance mechanism rounds 48/49 built:
+    - **P1 ("Pin collaborator methods' module dependencies"), Codex**:
+      rounds 48/49 together protect a relied-upon method against being
+      shadowed on the instance (round 48) or rebound on the class
+      (round 49) -- but a relied-upon method's own body can ALSO
+      reference an ordinary MODULE-level global.
+      `RepositoryStateStore._connect` calls `sqlite3.connect(...)`,
+      where `sqlite3` is resolved via `_connect.__globals__` -- a
+      THIRD namespace entirely, distinct from both the instance and
+      the class. The reviewer reproduced rebinding
+      `tenfold.repository_facility.sqlite3` itself: `_connect` remains
+      byte-for-byte untouched, so rounds 48/49's own checks find
+      nothing wrong, while `_connect`'s own body resolves the tampered
+      `sqlite3` name the moment it runs, planting an external symlink
+      before the real git mutation with an authorized `create_branch`
+      still returning a successful receipt.
+
+      This is a genuinely different axis than either prior fix on
+      this same mechanism: round 48 checked the INSTANCE, round 49
+      checked the CLASS, and this closes the METHOD'S OWN MODULE
+      NAMESPACE -- the third and, given `self.<name>`/class-attribute
+      lookup and module-global lookup are Python's only two ways a
+      function resolves a bare name, LAST axis a captured method can
+      be tampered through without its own identity/code changing.
+      Rather than re-implementing a module-globals walk a third time,
+      the fix reuses `_capture_transitive_authority_globals` itself --
+      the EXACT mechanism already built in round 48 for
+      `RepositoryFacility`'s own authority-validation chain --
+      collecting every module-global name a relied-upon method's code
+      references as additional roots, and verifying them with a newly
+      extracted, SHARED `_transitive_global_entry_matches` helper both
+      `_reject_altered_authority_validation_globals` and
+      `_SealedCollaboratorProxy.__getattr__` now call, rather than two
+      independently maintained copies of the same check.
+
+      With this fix, `_capture_collaborator_relied_upon_attributes`
+      (the collaborator-instance mechanism) and
+      `_capture_transitive_authority_globals` (the module-globals
+      mechanism) now compose directly -- the former delegates to the
+      latter for its own module-dependency coverage -- rather than
+      remaining two structurally similar but independently-maintained
+      walks, closing the risk that a future finding against ONE would
+      need its OWN fix replayed against the other.
+
+      No new adjudicated residual-Gen1-dependency exception needed --
+      reached via the same already-adjudicated `_SealedCollaboratorProxy`
+      name; confirmed via a clean residual-dependency scan after the
+      fix.
+
+    Fixed with a real mechanism, reusing an existing one rather than
+    building a third. 1 new permanent regression test reproduces the
+    reviewer's exact `tenfold.repository_facility.sqlite3` rebind
+    (restored in a `finally` block, since the module is real, shared,
+    and process-global); rounds 36/38/48/49's own regression tests for
+    the instance- and class-level cases remain valid and pass
+    unmodified. Fixed in commit `db4b1e6`. Full local
+    re-verification: full test file (110/110), full mutation suite
+    (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1406 passed, 2 skipped, only the 9 known
+    pre-existing Windows-only failures, zero regressions).
+
+51. A fresh Codex pass against the round-50 commit (`db4b1e6`/`26945ec`)
+    found 3 further genuine P1 findings -- the largest single round
+    since the transitive-closure work began, spanning a general
+    module gap, a general mutable-attribute gap, and a genuinely new
+    class of finding (data, not code):
+    - **P1 ("Pin transport methods' module globals"), Codex**: unlike
+      `RepositoryFacility` (whose effect-bearing module dependencies
+      are already covered transitively via
+      `_TRUSTED_AUTHORITY_VALIDATION_GLOBALS` -- confirmed by
+      self-audit before fixing anything, finding no gap there),
+      `LocalGitRepositoryTransport`'s class-implementation pin (rounds
+      21/37/44) never had ANY module-globals coverage at all. The
+      reviewer reproduced rebinding
+      `tenfold.local_git_transport.subprocess` after admission: every
+      existing transport check kept passing, since `subprocess` was
+      never a class attribute. Fixed via a new
+      `_TRUSTED_TRANSPORT_CLASS_MODULE_GLOBALS`, seeded from EVERY
+      function `LocalGitRepositoryTransport` itself defines (there is
+      no narrower "authority validation" subset here -- the
+      transport's methods ARE the effect-bearing surface) and reusing
+      `_capture_transitive_authority_globals` directly, verified via a
+      newly extracted, shared `_reject_altered_transitive_globals`
+      helper alongside the existing class-implementation check.
+    - **P1 ("Snapshot mutable attributes of captured modules"),
+      Codex**: every module captured as an identity-only leaf
+      (`sqlite3`, `json`, ...) was verified by OBJECT identity alone
+      -- `current is trusted_value` says nothing about whether one of
+      that module's OWN attributes was mutated in place afterward.
+      The reviewer reproduced `sqlite3.connect = malicious` directly
+      (the `sqlite3` module reference itself untouched, so the
+      round-50 fix's own identity check kept passing) while
+      `_connect`'s own body -- unchanged, still code-pinned --
+      resolved the tampered `.connect` attribute the moment it ran.
+      Fixed via a new `_module_attribute_roots` helper: for one
+      function's `__code__.co_names`, finds every name resolving to a
+      MODULE, pairs it with every OTHER co_name that is a genuine
+      attribute of that module, and feeds those pairs back into
+      `_capture_transitive_authority_globals` as additional roots -- a
+      module's own `__dict__` is an ordinary globals-shaped namespace,
+      so this needed no new verification mechanism, only a new way of
+      discovering roots. Wired into BOTH the module-globals mechanism
+      (closing this finding, and proactively closing the identical,
+      not-yet-demonstrated `json.dumps` gap via self-audit) AND the
+      collaborator-instance mechanism (round 50's own `sqlite3`
+      coverage) AND the new round-51 transport mechanism above, since
+      all three now build on the SAME underlying walk.
+    - **P1 ("Pin the admitted state store's storage identity"),
+      Codex**: a genuinely different KIND of finding than every prior
+      one this campaign -- not a code-identity gap at all.
+      `RepositoryStateStore.path`, an ordinary DATA attribute set once
+      in `__init__` and never reassigned by any of this class's own
+      methods, determines which physical durable SQLite file every
+      captured method actually reads/writes -- and was never checked
+      by ANY of rounds 36-50's own mechanisms, since reassigning it is
+      neither a method shadow, a class rebind, nor a module-global
+      rebind. The reviewer reproduced acquiring a branch writer as one
+      owner, reassigning `state_store.path` to a second,
+      independently-initialized database, then acquiring the SAME
+      branch as a second owner through the sealed proxy -- the
+      mutable-writer ownership record was silently bypassed. Fixed via
+      a NEW, deliberately narrow mechanism rather than widening any
+      existing one: `_SealedCollaboratorProxy` gained an
+      `immutable_data_attributes` parameter, an EXPLICITLY curated
+      allowlist (mirroring `_STATE_STORE_CAPTURED_METHODS` itself, not
+      a blanket "pin every instance attribute" default) -- a blanket
+      default would have incorrectly broken `_MutableAuthorityStore`'s
+      own legitimate `.snapshot` reassignment, a real, load-bearing
+      capability this module's own qualification harness depends on
+      to simulate campaign progression between scenarios. Only
+      `state_store`'s `path` is pinned; `authority_store`'s own proxy
+      construction passes none, confirmed via a clean full test-file
+      run (no regression in any scenario relying on `.snapshot`
+      reassignment).
+
+      All three findings, together, mark this round as the point
+      where the transitive-closure mechanisms built across rounds
+      47-50 finally converge into a genuinely uniform, composable
+      set: `_capture_transitive_authority_globals` (module globals,
+      now covering BOTH module-name rebinds and module-attribute
+      mutations), `_capture_collaborator_relied_upon_attributes`
+      (collaborator instance/class/module axes, reusing the globals
+      mechanism directly), and the new
+      `_TRUSTED_TRANSPORT_CLASS_MODULE_GLOBALS` (also reusing it) all
+      now share the SAME underlying walk and the SAME verification
+      helpers, rather than three structurally similar but
+      independently-drifting copies -- closing the risk that a future
+      finding against any ONE of them would need its own fix replayed
+      against the other two, exactly the concern round 50's own
+      closure entry named explicitly.
+
+      No new adjudicated residual-Gen1-dependency exceptions needed --
+      every new/widened function is reached via an already-adjudicated
+      name (`_reject_altered_transport_class_implementation`,
+      `_reject_altered_authority_validation_globals`,
+      `_SealedCollaboratorProxy`); confirmed via a clean
+      residual-dependency scan after the fix.
+
+    Fixed with real mechanisms, generalizing rather than patching. 4
+    new permanent regression tests reproduce the reviewer's exact
+    `tenfold.local_git_transport.subprocess` rebind, the self-audited
+    `subprocess.run` attribute-mutation sibling, and the
+    `state_store.path` storage-identity redirect; rounds 36-50's own
+    regression tests for every prior axis remain valid and pass
+    unmodified. Fixed in commit `7fe79c6`. Full local
+    re-verification: full test file (113/113), full mutation suite
+    (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1409 passed, 2 skipped, only the 9 known
+    pre-existing Windows-only failures, zero regressions).
+
+52. A fresh Codex pass against the round-51 commit (`7fe79c6`/`41f7d07`)
+    found 1 further genuine P1 finding -- round 51's own mutable-
+    attribute fix, widened to a second leaf type:
+    - **P1 ("Pin mutable attributes on captured classes"), Codex**:
+      the round-51 module-attribute walk (`_module_attribute_roots`)
+      only ever checked `inspect.ismodule(candidate)` -- a CLASS
+      captured as an identity-only leaf (`pathlib.Path`) has the
+      IDENTICAL exposure a module does, and was skipped by that
+      branch entirely. The reviewer reproduced `Path.is_symlink =
+      lambda self: False` after admission: `Path` itself was never
+      rebound, so an identity check on `Path` alone would keep
+      passing regardless, while every `git_dir.is_symlink()`
+      containment check in this module's own symlink-escape scanning
+      resolves the tampered method the moment it runs, letting a
+      symlinked `.git/refs/heads` escape detection during a fully
+      authorized `create_branch`.
+
+      Fixed in two parts. First, `_module_attribute_roots` (renamed
+      `_leaf_attribute_roots`, since it now covers more than modules)
+      widened from `inspect.ismodule(candidate)` to
+      `inspect.ismodule(candidate) or isinstance(candidate, type)` --
+      a class's own `__dict__` is written to directly by ordinary
+      class-attribute assignment the SAME way a module's is, so no
+      other change to the mechanism was needed. Second -- and this is
+      the part that actually closes the reviewer's own reproduction --
+      a genuinely NEW gap was found by self-audit: `Path`/`is_symlink`
+      only ever co-occur in THIS module's own two containment-scanning
+      functions (`_find_unsafe_git_storage_entry`/
+      `_neutralize_hooks_for_every_registered_repository`), neither of
+      which was previously a root in ANY of the three existing
+      transitive-closure mechanisms (all three cover Gen1's
+      `RepositoryFacility`/`LocalGitRepositoryTransport` or
+      caller-retained collaborators -- none cover this module's OWN
+      containment-scan helpers). Fixed via a new
+      `_TRUSTED_CONTAINMENT_SCAN_MODULE_GLOBALS`, seeded from these
+      two Gen2-owned functions' own module-level references (their
+      names are genuine globals in this module's own namespace, the
+      same as any other root elsewhere in this file), reusing
+      `_capture_transitive_authority_globals` directly -- which, since
+      both seed functions are themselves `_tenfold_owned_function`-
+      owned, also pins their own identity/code/defaults, the same
+      protection every other root in this file's trust dicts already
+      receives. Verified at both admission and every per-mutation
+      revalidation, mirroring every other mechanism in this file.
+
+      Self-audit also confirmed three OTHER functions
+      (`_hooks_neutralization_still_intact`,
+      `_reject_alternate_git_config_sources`,
+      `_reject_symlinked_git_storage_for_every_registered_repository`)
+      call the SAME containment-check methods on `Path` instances but
+      never reference the `Path` CLASS directly themselves -- pinning
+      `Path`'s own attributes via the two functions that DO is
+      sufficient to protect all five, since `Path.is_symlink` is a
+      single, shared, class-level attribute regardless of which call
+      site resolves it; no separate root was needed for those three.
+
+      No new adjudicated residual-Gen1-dependency exceptions needed --
+      the two newly-pinned functions are Gen2-owned, not Gen1
+      dependencies, and every existing mechanism name is unchanged;
+      confirmed via a clean residual-dependency scan after the fix.
+
+    Fixed with a real mechanism, widening one existing helper and
+    adding one new, narrowly-scoped root set. 1 new permanent
+    regression test reproduces the reviewer's exact `Path.is_symlink`
+    class-attribute mutation via a real, fully-authorized
+    `create_branch` dispatch (restored in a `finally` block, since
+    `pathlib.Path` is a real, shared, process-global class), followed
+    by a sanity dispatch confirming the mechanism doesn't
+    over-reject genuine, untampered use. Fixed in commit `7fc0ef9`.
+    Full local re-verification: full test file (114/114), full
+    mutation suite (37/37), `test_g2_27_self_construction.py`
+    (33/33), and full repository sweep (1410 passed, 2 skipped, only
+    the 9 known pre-existing Windows-only failures, zero
+    regressions).
+
+PROCESS NOTE: while polling CI for round 52's commit (`7fc0ef9`/`b65f0f4`),
+the real `verify` job failed -- not a reviewer finding, a genuine,
+pre-existing test flake in
+`test_sc23_wrapper_rejects_a_nested_symlink_under_git_objects_fanout`
+(present since PR #84, round 11, untouched by round 52). The test
+hardcoded a 2-hex-digit git object fan-out prefix (`"ab"`) to
+symlink, but that name is EXACTLY the shape `git commit` itself
+generates for real loose-object directories; CI's own real commit
+happened to produce an object whose SHA genuinely started `ab`, so
+`.git/objects/ab` already existed as a real directory before the
+test's own `symlink_to` call ran, and `symlink_to` cannot replace an
+existing entry -- `FileExistsError`, roughly a 1-in-256 chance on any
+given run, confirmed by re-running the local suite repeatedly without
+reproducing it before finding the root cause via the CI log itself.
+Fixed by using `"zz"` instead -- not a valid hex digit pair, so git
+itself can never produce a real fan-out directory with that name,
+permanently eliminating the collision while exercising the exact same
+"any entry beneath `.git/objects`" containment-scan code path. A
+self-audit of every other hardcoded symlink target name in this test
+file found no other instance of this same class (every other target
+is a fixed, well-known git path -- `objects`, `refs/heads`,
+`logs/refs/heads`, `config` -- never a variable, hash-shaped one).
+Fixed in commit `c29f130`. Full local re-verification: full test
+file (114/114), full mutation suite (37/37),
+`test_g2_27_self_construction.py` (33/33), and full repository
+sweep (1410 passed, 2 skipped, only the 9 known pre-existing
+Windows-only failures, zero regressions).
+
+53. A fresh Codex pass against the CI-flake-fix commit (`c29f130`/`95dfdd4`)
+    found 1 further genuine P1 finding -- round 52's own class-leaf
+    fix, widened past a stdlib class's own unusual factory pattern:
+    - **P1 ("Pin concrete pathlib classes before containment scans"),
+      Codex**: the round-52 fix only ever captured `Path`'s OWN
+      `__dict__` entry for a name -- but `Path(...)` never actually
+      returns a `Path` instance; `Path.__new__` dispatches to a
+      PLATFORM-SPECIFIC concrete subclass (`PosixPath`/`WindowsPath`),
+      which can carry its own, independently overridable attribute
+      for any name otherwise inherited from `Path`. Worse than a
+      simple reassignment: the reviewer reproduced
+      `type(Path()).is_symlink = lambda self: False` -- assigning
+      directly onto the concrete subclass, which had NO `is_symlink`
+      entry of its own beforehand, so even a subclass-`__dict__`-
+      aware version of the round-52 fix would have found nothing to
+      compare against at capture time (the entry simply didn't exist
+      yet). `Path` itself remained byte-for-byte untouched throughout,
+      so both the round-52 check and the round-51 module-identity
+      check it's modeled on kept passing, while every instance's own
+      `.is_symlink()` call resolved the new override via ordinary MRO
+      lookup, letting a symlinked `.git/refs/heads` escape detection
+      during a fully authorized `create_branch`.
+
+      Fixed by a genuine shift in WHAT gets captured, not merely
+      WHERE: instead of a class's own `__dict__` entry (which only
+      ever sees attributes ALREADY overridden at capture time), the
+      fix captures the MRO-RESOLVED value (`getattr(concrete_cls,
+      attr_name)`) for the referenced class AND every class reachable
+      via `.__subclasses__()`, transitively (side-effect-free --
+      never constructs an instance, just introspects already-loaded
+      subclasses) -- the actual, effective implementation any
+      instance of that concrete class will really call, regardless of
+      WHERE in its own MRO the override lands. This required a small,
+      general extension to the shared lookup
+      `_capture_transitive_authority_globals`/
+      `_transitive_global_entry_matches` already use everywhere: a
+      captured namespace is now either a dict-like object (module/
+      class `__dict__`, read via plain key lookup, unchanged) or a
+      CLASS OBJECT ITSELF (read via `getattr`, the new case) -- one
+      lookup helper (`_leaf_attribute_namespace_get`) and one label
+      helper (`_leaf_attribute_namespace_label`), shared by every
+      consumer of this mechanism (module-globals, collaborator-
+      instance, transport, and this module's own containment-scan
+      globals), rather than a parallel, separately-maintained check.
+      This naturally SUBSUMES round 52's own fix rather than merely
+      adding to it -- `Path` itself is the first node the new subclass
+      walk visits, so its own attribute is covered exactly as before,
+      now alongside every concrete runtime subclass.
+
+      No new adjudicated residual-Gen1-dependency exceptions needed --
+      every mechanism name reached is unchanged; confirmed via a clean
+      residual-dependency scan after the fix.
+
+    Fixed with a real mechanism, generalizing the existing one rather
+    than adding a parallel check. 1 new permanent regression test
+    reproduces the reviewer's exact `type(Path()).is_symlink`
+    concrete-subclass override via a real, fully-authorized
+    `create_branch` dispatch, restored to the EXACT prior state in a
+    `finally` block (distinguishing "was inherited" from "had its own
+    entry," since `pathlib.Path`/`PosixPath`/`WindowsPath` are real,
+    shared, process-global classes), followed by a sanity dispatch
+    confirming the mechanism doesn't over-reject genuine, untampered
+    use. Fixed in commit `b3af388`. Full local re-verification: full
+    test file (115/115), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (1411 passed, 2 skipped, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
+
+54. A fresh Codex pass against the round-53 commit (`b3af388`/`d1e2c6b`)
+    found 1 further genuine P1 finding -- a category-different finding
+    from every prior round: not a new thing left unpinned, but the
+    trust STORE itself left mutable:
+    - **P1 ("Make class-integrity snapshots immutable"), Codex**:
+      every trust dict this file builds at import time
+      (`_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES`,
+      `_TRUSTED_FACILITY_CLASS_ATTRIBUTES`,
+      `_TRUSTED_AUTHORITY_VALIDATION_GLOBALS`, and every sibling built
+      the same way) was, until this round, an ORDINARY, MUTABLE dict
+      -- reachable by any same-process caller that imports this
+      module, the same way every other module-private name in this
+      file already is. The reviewer reproduced tampering
+      `RepositoryFacility.create_branch` AND updating
+      `_TRUSTED_FACILITY_CLASS_ATTRIBUTES`/
+      `_TRUSTED_FACILITY_CLASS_CODE_OBJECTS` to MATCH, in the SAME
+      attack: `_reject_altered_class_implementation`'s own comparison
+      (`current[name] is not trusted_snapshot[name]`) found both
+      sides equal, since both were set to the identical malicious
+      value -- `wrapper.create_branch(None)` then ran the injected
+      method with NO containment, authority, lease, or
+      request-binding validation at all. This is the trust-STORE
+      analogue of every prior round's trust-SUBJECT finding: pinning
+      what a function/class/module REFERENCES protects nothing if the
+      PINS THEMSELVES remain attacker-writable.
+
+      Fixed by wrapping every trust dict in this file in
+      `types.MappingProxyType` -- a read-only VIEW whose
+      `__setitem__` unconditionally raises `TypeError`, closing the
+      reviewer's exact ENTRY-level mutation. Applied uniformly: the
+      six class-implementation dicts
+      (`_TRUSTED_TRANSPORT_CLASS_ATTRIBUTES`/`_CODE_OBJECTS`/
+      `_DEFAULTS` and their `_TRUSTED_FACILITY_CLASS_*` siblings)
+      individually, and `_capture_transitive_authority_globals` ITSELF
+      now returns a `MappingProxyType` (covering
+      `_TRUSTED_AUTHORITY_VALIDATION_GLOBALS`,
+      `_TRUSTED_AUTHORITY_VALIDATION_FACILITY_MODULE_GLOBALS`,
+      `_TRUSTED_TRANSPORT_CLASS_MODULE_GLOBALS`, and
+      `_TRUSTED_CONTAINMENT_SCAN_MODULE_GLOBALS` automatically, at the
+      SOURCE, rather than remembering to wrap each call site). Self-
+      audit extended this to the collaborator-instance mechanism too:
+      `_capture_collaborator_relied_upon_attributes`'s own
+      `relied_upon_methods` dict and `_SealedCollaboratorProxy`'s own
+      `data_snapshot` are now ALSO wrapped, since both are trust
+      baselines `__getattr__` compares live state against on every
+      access -- but deliberately NOT `captured`/`captured_code` on
+      that same proxy, since
+      `_inject_fault_for_qualification_harness`'s own sanctioned
+      escape hatch legitimately WRITES to exactly those two, and
+      wrapping them would have broken that harness outright (verified
+      by running the full test file after the change, confirming the
+      harness's own crash/recovery scenarios still pass unmodified).
+
+      DISCLOSED, not fixed: `MappingProxyType` protects a trust
+      dict's own CONTENTS, not the MODULE-LEVEL NAME binding itself --
+      `m._TRUSTED_FACILITY_CLASS_ATTRIBUTES = new_mappingproxy` (a
+      WHOLESALE rebind, not a mutation) remains reachable, the exact
+      same already-disclosed round-27/34 reachability fact ("any code
+      holding a reference this module produces can reach anything
+      reachable from it," and importing the module IS such a
+      reference) applied one level further out to the trust store
+      itself -- not a new category of gap, and no more fixable here
+      than anywhere else in this file. Verified empirically, both
+      ways, before writing anything: the entry-mutation attack now
+      raises `TypeError` at the assignment itself; the wholesale-
+      rebind variant of the SAME attack still genuinely succeeds,
+      confirming the fix closes exactly what's closable and no more.
+
+      No new adjudicated residual-Gen1-dependency exceptions needed --
+      every mechanism name reached is unchanged; confirmed via a clean
+      residual-dependency scan after the fix.
+
+    Fixed with a real mechanism where genuinely fixable; disclosed,
+    with a permanent executable record, where it is not -- matching
+    this campaign's own established practice (rounds 27/34/37/39) for
+    a finding that turns out to be a fundamental same-process
+    reachability fact rather than a code-level oversight. 2 new
+    permanent regression tests: one proves the reviewer's exact
+    entry-mutation attack now raises `TypeError` immediately; the
+    other documents the wholesale-rebind bypass succeeding (never
+    asserting protection this file cannot actually provide), both
+    trust dicts restored to their original objects in a `finally`
+    block since they are real, shared, process-global module
+    attributes. Fixed in commit `28e3a75`. Full local
+    re-verification: full test file (117/117), full mutation suite
+    (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1413 passed, 2 skipped, only the 9 known
+    pre-existing Windows-only failures, zero regressions).
+
+55. A fresh Codex pass against the round-54 commit (`28e3a75`/`772b95a`)
+    found 2 further genuine P1 findings -- both attacking round 54's
+    own fix from round 54's own commit, the deepest "fix a fix" this
+    campaign has needed yet:
+    - **P1 ("Pin the Path factory's runtime concrete class"), Codex**:
+      the round-53 fix enumerates CURRENTLY-loaded subclasses via
+      `Path.__subclasses__()` at capture time -- but `Path.__new__`
+      does not discover its concrete class that way at all: its own
+      body reads `cls = WindowsPath if os.name == 'nt' else
+      PosixPath`, an ordinary global lookup resolved fresh, via
+      `Path.__new__.__globals__` (`pathlib`'s own namespace), on
+      EVERY call. Round 53's own snapshot pins whatever concrete
+      class OBJECT was reachable via `__subclasses__()` at import
+      time -- it says nothing about whether the NAME
+      `pathlib.PosixPath`/`pathlib.WindowsPath` itself was later
+      REBOUND to an entirely different class. The reviewer reproduced
+      exactly that: rebind `pathlib.PosixPath` to a brand-new
+      subclass overriding `is_symlink`, so every future `Path(...)`
+      construction returns an instance of the NEW class -- round 53's
+      own pin, still faithfully verifying the OLD class object's own
+      `is_symlink`, has nothing to say about it. Fixed by tracing this
+      module's own containment-scan functions one level further: for
+      every class visited in `_leaf_attribute_roots`'s own subclass
+      walk, every function directly defined on that class
+      (`Path.__new__`, in particular) is ALSO walked for its own
+      `__code__.co_names`, discovering `pathlib.PosixPath`/
+      `pathlib.WindowsPath` as additional roots automatically -- the
+      exact same transitive-closure technique this file already uses
+      for ordinary functions, applied to a class's OWN methods rather
+      than stopping at its attribute VALUES. (Implementation note,
+      caught before this was ever committed: `__new__` is stored as a
+      `staticmethod` WRAPPER in a class's own `__dict__`, not a plain
+      function -- the first version of this fix silently walked zero
+      methods on `Path` at all until static/classmethod descriptors
+      were explicitly unwrapped first.)
+    - **P1 ("Replace mapping proxies with intrinsically immutable
+      snapshots"), Codex**: round 54's own `types.MappingProxyType`
+      fix is only a VIEW over a real, separately-referenced backing
+      dict -- blocking `proxy[name] = x` says nothing about the
+      backing dict ITSELF, which remains an ordinary, live Python
+      object the proxy holds a strong reference to, discoverable via
+      `gc.get_referents(proxy)[0]` regardless of how carefully the
+      wrapping is authored (an INHERENT property of the type, not an
+      implementation oversight round 54 could have avoided by
+      wrapping more carefully). The reviewer reproduced the EXACT
+      round-54 attack one layer deeper: tamper
+      `RepositoryFacility.create_branch`, then use
+      `gc.get_referents` to reach and mutate
+      `_TRUSTED_FACILITY_CLASS_ATTRIBUTES`/
+      `_TRUSTED_FACILITY_CLASS_CODE_OBJECTS`'s own backing dicts
+      directly, bypassing `MappingProxyType`'s own guard entirely,
+      since nothing about that guard applies to the dict UNDERNEATH
+      it. Fixed by never persistently storing a dict (proxied or
+      otherwise) as a trust snapshot at all: a new
+      `_immutable_snapshot`/`_snapshot_as_dict` pair converts every
+      trust structure in this file (the six class-implementation
+      dicts, `_capture_transitive_authority_globals`'s own return
+      value, `_capture_collaborator_relied_upon_attributes`'s own
+      `relied_upon_methods`, `_SealedCollaboratorProxy`'s own
+      `data_snapshot`) to a `tuple` of `(key, value)` pairs -- which
+      has NO separate backing structure for `gc.get_referents` (or
+      any other introspection) to hand back, since a tuple IS its own
+      elements and supports no in-place mutation whatsoever --
+      restoring dict-style lookup only as a FRESH, LOCAL,
+      single-call-scoped value at each of the (roughly a dozen) call
+      sites that genuinely need it, never itself stored anywhere
+      persistent.
+
+      Both findings share the same shape as round 51's own genuine
+      lesson: a mechanism built to close one axis of tampering can
+      still leave a DIFFERENT axis open on the exact same subject --
+      round 53 pinned a class's own attribute values but not the
+      NAME that selects which concrete class gets used; round 54
+      pinned a dict's own entries but not the dict's own backing
+      reachability. Both required verifying the reviewer's EXACT
+      reproduction empirically before writing anything, and both
+      genuinely close what they claim to (confirmed via
+      `gc.get_referents` returning no mutable dict for any trust
+      snapshot, and via a real `pathlib.PosixPath`/`WindowsPath`
+      rebind now being caught) without over-claiming protection
+      against the SAME already-disclosed round-27/34 module-attribute
+      wholesale-rebinding limitation, which remains genuinely
+      unfixable and is re-verified, not merely re-asserted, by this
+      round's own updated disclosed-limitation test.
+
+      No new adjudicated residual-Gen1-dependency exceptions needed --
+      `_immutable_snapshot`/`_snapshot_as_dict` are pure utility
+      functions with no Gen1 dependency of their own, and every
+      existing mechanism name reached is unchanged; confirmed via a
+      clean residual-dependency scan after the fix.
+
+    Fixed with real mechanisms, both verified empirically before and
+    after. 3 changes to the test suite: one NEW test proves
+    `gc.get_referents` no longer yields a mutable backing dict for any
+    trust snapshot and that genuine class tampering is still caught;
+    one NEW test reproduces the reviewer's exact
+    `pathlib.PosixPath`/`WindowsPath` factory-selector rebind via a
+    real, fully-authorized `create_branch` dispatch (restored in a
+    `finally` block, followed by a sanity dispatch confirming no
+    over-rejection); the existing wholesale-rebind disclosed-
+    limitation test is updated to reflect the new tuple-based
+    mechanism rather than testing a `MappingProxyType` construction
+    this file no longer uses. Fixed in commit `123f116`. Full local
+    re-verification: full test file (119/119), full mutation suite
+    (37/37), `test_g2_27_self_construction.py` (33/33), and full
+    repository sweep (1415 passed, 2 skipped, only the 9 known
+    pre-existing Windows-only failures, zero regressions).
+
+56. A fresh Codex pass against the round-55 commit (`123f116`/`ac4606b`)
+    found 1 further genuine P1 finding -- a THIRD consecutive round
+    attacking a mechanism this closure itself introduced in round 53,
+    and the first finding this campaign has faced that exploits
+    Python's descriptor protocol directly:
+    - **P1 ("Avoid descriptor dispatch while validating class
+      leaves"), Codex**: the round-53/55 class-leaf verification read
+      the concrete class via plain `getattr`, which -- for ANY
+      attribute that is a DESCRIPTOR (an object implementing
+      `__get__`, which every plain function already is) -- INVOKES
+      that descriptor's `__get__` rather than returning the raw
+      binding stored in the class's own MRO. The reviewer reproduced
+      installing a CUSTOM descriptor on the concrete `Path` subclass
+      whose `__get__` inspects its `obj` argument and answers
+      DIFFERENTLY depending on the caller: `descriptor.__get__(None,
+      cls)` (CLASS-level access, exactly what `getattr(cls, name)`
+      performs, and exactly what this file's own verification used)
+      returned the ORIGINALLY-ADMITTED `is_symlink` function, so every
+      identity comparison kept passing -- while
+      `descriptor.__get__(instance, cls)` (INSTANCE-level access, what
+      REAL code performs via `git_dir.is_symlink()`) returned a
+      function that always reports `False`, letting a symlinked
+      `.git/refs/heads` escape detection during a fully authorized
+      `create_branch`.
+
+      Fixed by switching `_leaf_attribute_namespace_get`'s class
+      branch from plain `getattr` to `inspect.getattr_static` -- the
+      SAME descriptor-free, MRO-walking read this file already used
+      elsewhere for exactly this reason (`_capture_collaborator_relied_upon_attributes`'s
+      own class-attribute reads have used `getattr_static` since
+      round 48, confirmed via self-audit to have NEVER shared this
+      exposure) -- which returns the RAW object actually stored at
+      that point in the MRO, invoking no `__get__` at all: a
+      malicious descriptor becomes the value being compared, correctly
+      differing by identity from the originally-captured plain
+      function, with no separate "reject descriptors" step needed
+      beyond the SAME identity check every other leaf already
+      receives. Self-audit (before considering this round closed)
+      found the IDENTICAL exposure one step earlier, in
+      `_leaf_attribute_roots`'s own DISCOVERY-phase existence check:
+      `hasattr(cls, attr_name)` invokes `__get__` the same way
+      `getattr` does, meaning even deciding WHETHER to pin a name
+      could trigger a malicious descriptor's side effect (not merely
+      accept a lying comparison result) -- fixed the same way, via a
+      `getattr_static`-plus-sentinel presence check instead of
+      `hasattr`.
+
+      This is the third consecutive round (53, 55, 56) finding a
+      genuine gap in the SAME round-53 class-leaf mechanism -- each a
+      DIFFERENT axis (concrete subclass identity, backing-container
+      reachability, now descriptor dispatch) rather than a repeat of
+      any prior one, confirming this mechanism was worth the
+      sustained scrutiny rather than indicating the earlier fixes
+      were themselves careless.
+
+      No new adjudicated residual-Gen1-dependency exceptions needed --
+      every mechanism name reached is unchanged; confirmed via a clean
+      residual-dependency scan after the fix.
+
+    Fixed with a real mechanism, reusing an existing, already-proven
+    pattern from elsewhere in this file rather than inventing a new
+    one. 1 new permanent regression test reproduces the reviewer's
+    exact schizophrenic-descriptor attack via a real, fully-authorized
+    `create_branch` dispatch, asserting the instance-level lie never
+    actually ran, restored to the EXACT prior state in a `finally`
+    block, followed by a sanity dispatch confirming no over-rejection.
+    Fixed in commit `2f7321b`. Full local re-verification: full
+    test file (120/120), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (1416 passed, 2 skipped, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
+
+57. A fresh Codex pass against the round-56 commit (`2f7321b`/`6cf6c4b`)
+    found 1 further genuine P1 finding -- a genuinely NEW class of
+    finding, distinct from every trust-store/transitive-closure
+    finding since round 47: not a gap in WHAT this module pins, but
+    in what it never checked about the CALLER's own arguments:
+    - **P1 ("Recheck containment after argument callbacks"), Codex**:
+      every check so far (rounds 14-56) re-verifies TRUST STATE this
+      module itself owns -- class implementations, module globals,
+      collaborator state -- immediately before delegating. NONE of
+      them re-verify the CALLER-SUPPLIED ARGUMENTS a dispatch call is
+      about to pass through, and Gen1's own real code
+      (`LocalGitRepositoryTransport._repo`) performs an ordinary DICT
+      LOOKUP keyed by the caller's own `repository` argument
+      (`self._repositories.get(repository)`), which invokes
+      `hash(repository)` on whatever object the caller actually
+      supplied. The reviewer reproduced passing a `str` SUBCLASS as
+      `repository` whose own `__hash__` has a SIDE EFFECT: moving the
+      real `.git/refs/heads` outside the repository and replacing it
+      with a symlink, the moment Gen1's own dict lookup evaluates it
+      -- AFTER this module's own containment scan already passed
+      (the repository was still genuinely intact at scan time), but
+      BEFORE the actual git mutation. Unlike round 14's own original
+      TOCTOU finding, this is fully DETERMINISTIC, not merely racy:
+      the malicious side effect is guaranteed to fire, triggered by
+      the dispatch call's own, otherwise-ordinary argument processing,
+      not by a race against a concurrent thread or process.
+
+      Fixed the same way round 28 already established for this
+      module's own internal data (`kwdefaults` keys/values): a
+      caller-controlled value's dunder methods must never be invoked
+      before its EXACT type is confirmed via `type(x) is str` (never
+      `isinstance`, which admits a malicious subclass exactly like the
+      one reproduced here). A new `_reject_non_exact_str_repository_argument`
+      is called FIRST, in all five of the wrapper's own dispatch
+      methods (`create_branch`/`commit`/`read`/`open_pr`/`merge_pr`),
+      before revalidation or delegation even runs -- the earliest
+      possible point, since the malicious side effect fires the
+      moment `repository` is ever used as a dict key anywhere
+      downstream, including inside Gen1's own real code this module
+      does not otherwise control. Confirmed by self-audit (via `grep`
+      against both `local_git_transport.py` and `repository_facility.py`)
+      that `repository` is the ONLY caller-supplied argument any of
+      the five dispatch methods accepts that Gen1's own real code ever
+      uses as a dict key anywhere -- `branch`/`owner`/`base_ref`/
+      `path`/etc. are only ever passed to `subprocess` as plain
+      command-line arguments or used in string formatting, neither of
+      which invokes `__hash__`/`__eq__` on the value at all.
+
+      Deliberately does nothing when `repository` is simply ABSENT
+      from the call's own keyword arguments -- a caller who forgot a
+      required keyword-only argument gets Python's own natural, more
+      informative `TypeError` from the real delegated call instead,
+      matching this file's own "detect presence, don't interpret"
+      discipline rather than judging a value that was never supplied
+      at all.
+
+      No new adjudicated residual-Gen1-dependency exceptions needed --
+      the new function is Gen2-owned and reached via the same
+      already-adjudicated `_ContainmentReCheckedRepositoryFacility`
+      dispatch methods; confirmed via a clean residual-dependency scan
+      after the fix.
+
+    Fixed with a real mechanism, reusing round 28's own established
+    exact-type discipline for a genuinely new attack surface (caller
+    arguments, not this module's own internal or trust-store data). 1
+    new permanent regression test reproduces the reviewer's exact
+    side-effecting-`__hash__` `repository` argument via a real,
+    fully-authorized `create_branch` dispatch, asserting the malicious
+    `__hash__` never actually runs at all -- not merely that some
+    error was eventually raised. Fixed in commit `6aadb8a`. Full
+    local re-verification: full test file (121/121), full mutation
+    suite (37/37), `test_g2_27_self_construction.py` (33/33), and
+    full repository sweep (1417 passed, 2 skipped, only the 9 known
+    pre-existing Windows-only failures, zero regressions).
+
+58. A fresh Codex pass against the round-57 commit (`6aadb8a`/`6828736`)
+    found 1 further genuine P1 finding -- round 57's own self-audit
+    proven wrong one argument later, and a direct instance of the
+    "generalize, don't wait for the next round" lesson this campaign
+    has repeatedly learned and, this once, failed to apply pre-emptively:
+    - **P1 ("Validate the branch argument before containment
+      scanning"), Codex**: round 57's own self-audit claimed
+      `repository` was the ONLY argument any dispatch method's Gen1
+      delegate uses in a dunder-invoking way, reasoning that other
+      arguments are "only ever passed to `subprocess`... or used in
+      string formatting, NEITHER OF WHICH invokes `__hash__`/`__eq__`"
+      -- an overclaim: string formatting invokes a COMPLETELY
+      DIFFERENT dunder method, `__format__`, which a subclass can
+      equally override with a malicious side effect. The reviewer
+      reproduced exactly this: `repository_ref_resource(repository,
+      branch)`'s own `f"repository:{repository}:ref:{ref}"` formats
+      `branch` the moment `RepositoryFacility.create_branch` computes
+      its own resource string, deep inside Gen1's real code, well
+      AFTER `_revalidate_transport_integrity` already ran -- letting a
+      malicious `branch.__format__` plant the SAME symlink round 57's
+      `repository` finding did, with a fully authorized
+      `create_branch` STILL SUCCEEDING and returning a genuine
+      receipt.
+
+      Given round 57's own narrow, per-argument scoping is EXACTLY
+      what let this recur one argument later, the fix this round is a
+      change in KIND, not another name added to an allowlist:
+      `_reject_non_exact_str_dispatch_arguments` (renamed from
+      `_reject_non_exact_str_repository_argument`) now validates EVERY
+      top-level keyword argument any of the five dispatch methods
+      receives that is ALREADY `isinstance(v, str)` (a plain `str` or
+      ANY subclass) for exact `type(v) is str`, regardless of its
+      NAME -- closing `repository` (round 57), `branch` (this round),
+      and any FUTURE string-typed parameter Gen1's own code might
+      someday format, hash, or compare, without needing its own round
+      to discover it.
+
+      Self-audit (before considering this round closed) found the
+      IDENTICAL exposure one level deeper still: `commit`'s own
+      `files: dict[str, bytes]` argument has caller-controlled STRING
+      KEYS that Gen1's own `_file_digests` SORTS
+      (`sorted(files.items())`, invoking `__lt__` -- the exact
+      round-45 sort-before-type-check pattern, now on a
+      caller-supplied dict's own keys rather than this module's
+      internal `__kwdefaults__`) and
+      `LocalGitRepositoryTransport.commit_files` uses as dict keys
+      (invoking `__hash__`/`__eq__` again). `files`' own keys are now
+      ALSO validated the same way, one level into that ONE specific
+      nested structure -- deliberately not a general recursive walk of
+      arbitrary nested caller data, which has no natural stopping
+      point, matching this file's own established DISCLOSED SCOPE
+      line applied here too.
+
+      No new adjudicated residual-Gen1-dependency exceptions needed --
+      the renamed function is Gen2-owned and reached via the same
+      already-adjudicated dispatch methods; confirmed via a clean
+      residual-dependency scan after the fix.
+
+    Fixed with a real mechanism, generalizing past round 57's own
+    narrow scoping rather than patching one more name. 2 new permanent
+    regression tests: one reproduces the reviewer's exact
+    side-effecting-`__format__` `branch` argument via a real,
+    fully-authorized `create_branch` dispatch, asserting the malicious
+    `__format__` never actually runs at all, followed by a sanity
+    dispatch confirming no over-rejection; the other, a self-audited
+    sibling, reproduces a side-effecting-`__lt__` `files` dict key via
+    a real, fully-authorized `commit` dispatch, asserting the
+    malicious `__lt__` never actually runs at all. Fixed in commit
+    `27f0703`. Full local re-verification: full test file
+    (123/123), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (1419 passed, 2 skipped, only the 9 known pre-existing
+    Windows-only subprocess failures).
+
+59. A fresh Codex pass against the round-58 commit (`27f0703`/`9cebe97`)
+    found 1 further genuine P1 finding -- a genuinely new axis, not
+    another string-argument sibling: the FIRST POSITIONAL argument
+    every dispatch method receives, `task`, was never validated at
+    all.
+    - **P1 ("Validate task objects before the containment scan"),
+      Codex**: rounds 57/58 validated every STRING-typed caller
+      argument for exact type, but `task` -- always the first
+      positional argument on every real call site -- was never
+      checked. Gen1's own real `validate_task`
+      (`tenfold.facility.validate_task`) calls
+      `dataclasses.asdict(task)`, which accesses every declared field
+      via ordinary `getattr`, invoking a `TaskPacket` SUBCLASS's own
+      overridden `__getattribute__` the moment `asdict` runs. The
+      reviewer reproduced a malicious `TaskPacket` subclass whose
+      `__getattribute__` moves the real `.git/refs/heads` outside the
+      repository and replaces it with a symlink -- firing deep inside
+      Gen1's own `create_branch`, AFTER
+      `_revalidate_transport_integrity`'s containment scan already
+      passed (the repository was still genuinely intact at scan
+      time), but BEFORE the actual git mutation
+      (`self.transport.create_branch(...)`, reached via Gen1's own
+      `_idempotent`). An otherwise fully-authorized `create_branch`
+      returned success and Git wrote the ref outside the repository --
+      the same TOCTOU shape as rounds 57/58, one argument earlier.
+
+      Fixed by a new function, `_reject_non_exact_task_packet_argument`,
+      requiring `type(task) is TaskPacket` exactly (never `isinstance`,
+      which admits the malicious subclass reproduced here), reusing
+      round 28's own established exact-type discipline. Deliberately
+      placed AFTER `_revalidate_transport_integrity`, not before like
+      the string-argument check: this file's own extensive
+      tampering-detection test suite (rounds 14-56) deliberately
+      dispatches with a placeholder `task=None`, documenting
+      explicitly that `_revalidate_transport_integrity` itself must
+      catch tampering "before any task/authority argument is even
+      inspected." Checking task type before revalidation would make
+      every one of those tests raise for the wrong reason (a
+      task-type rejection, not the tampering-detection revalidation
+      is supposed to prove), silently degrading their fidelity as
+      regression tests without changing their pass/fail outcome.
+      Confirmed safe against the full existing test suite: every
+      `task=None`/`SimpleNamespace` call site in the test file (32
+      occurrences) is either inside a `pytest.raises` block backed by
+      genuine tampering `_revalidate_transport_integrity` already
+      catches upstream, or inside one of the two disclosed-limitation
+      tests that bypass the wrapper's own dispatch method entirely
+      (class-swap / code-object-swap), where the new check never
+      executes either way.
+
+      No new adjudicated residual-Gen1-dependency exceptions needed --
+      `_reject_non_exact_task_packet_argument` is Gen2-owned, using
+      `TaskPacket` only as a type reference for the exact-type check,
+      never calling any Gen1 authority logic of its own; confirmed via
+      a clean residual-dependency scan after the fix.
+
+    Fixed with a real mechanism, reusing round 28's own established
+    exact-type discipline for the one caller argument rounds 57/58's
+    string-only scope structurally could not reach. 1 new permanent
+    regression test reproduces the reviewer's exact
+    side-effecting-`__getattribute__` `TaskPacket` subclass via a
+    real, fully-authorized `create_branch` dispatch, asserting the
+    malicious `__getattribute__` never actually runs at all, followed
+    by a sanity dispatch confirming no over-rejection. Fixed in commit
+    `2143d60`. Full local re-verification: full test file
+    (124/124), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (1420 passed, 2 skipped, only the 9 known pre-existing
+    Windows-only subprocess failures).
+
+60. A fresh Codex pass against the round-59 commit (`2143d60`/`4ee7831`)
+    found 2 further genuine P1 findings -- both one structural layer
+    deeper than rounds 57-59's own checks: validating the OUTER
+    shape/type of a caller argument does not validate what is INSIDE
+    it.
+    - **P1 ("Reject subclassed byte payloads before revalidation"),
+      Codex**: round 58's own `files` fix validated only the dict's
+      KEYS, never its VALUES. Gen1's own `_file_digests` (called at
+      the very START of `RepositoryFacility.commit`, before
+      `_live_mutable`/`claim_writer`/the actual mutation) calls
+      `data.hex()` on every file's content -- invoking a `bytes`
+      SUBCLASS's own overridden `hex()` the moment it runs. The
+      reviewer reproduced a malicious `bytes` subclass whose `hex()`
+      moves the real `.git/objects` outside the repository and
+      replaces it with a symlink;
+      `LocalGitRepositoryTransport.commit_files` only checks
+      `isinstance(content, bytes)` (admitting the subclass), so the
+      authorized commit still succeeded and Git wrote objects
+      externally.
+    - **P1 ("Validate the fields inside exact TaskPackets"), Codex**:
+      requiring the outer `task` object to be an exact `TaskPacket`
+      (round 59) says nothing about its FIELDS -- dataclass
+      annotations are unenforced at runtime. The reviewer reproduced
+      placing a `str` SUBCLASS in an otherwise-valid, genuinely-sealed
+      packet's `assignment_id`; `RepositoryFacility._live_mutable`'s
+      own owner comparison (`owner != task.assignment_id`) invokes the
+      subclass's overridden `__eq__`/`__ne__` (Python prefers a
+      subclass's reflected method over the base type's, so the
+      malicious value's dunder runs even as the RIGHT operand) --
+      after both `_revalidate_transport_integrity` and the round-59
+      task-type check already passed. The seal itself stays genuinely
+      valid throughout: `canonical_digest` serializes via
+      `json.dumps`, which encodes a `str` subclass's VALUE identically
+      to a plain `str`, so the digest comparison in `validate_task`
+      never notices the subclass at all.
+
+      Both fixed with a real mechanism, one level deeper than the
+      checks they extend, matching this campaign's own "generalize,
+      don't wait for the next round" discipline: `files`' own VALUES
+      are now ALSO validated for exact `type(v) is bytes`, in the same
+      function (renamed `_reject_non_exact_dispatch_arguments`, from
+      `_reject_non_exact_str_dispatch_arguments`, since it no longer
+      validates strings exclusively) that already validates `files`'
+      keys; `task`'s own field values are now ALSO validated for exact
+      `type(v) is str` (checked with a plain `getattr`, safe because
+      `type(task) is TaskPacket` is already confirmed by that point --
+      no subclass `__getattribute__` left to invoke), extending
+      `_reject_non_exact_task_packet_argument`. Self-audit (before
+      considering this round closed) found the identical exposure one
+      level deeper still on the task-fields side: every STRING element
+      inside a `tuple`-typed field (`scope`, `capabilities`,
+      `permissions`, `evidence_obligations`, `stop_conditions` --
+      each iterated and string-compared by Gen1's own code:
+      `_path_in_scope`, `capability not in task.capabilities`,
+      `permission not in task.permissions`) is now ALSO validated the
+      same way, one level deep, matching the `files`-keys precedent
+      exactly.
+
+      No new adjudicated residual-Gen1-dependency exceptions needed --
+      both extended functions are Gen2-owned, reached via the same
+      already-adjudicated dispatch methods; confirmed via a clean
+      residual-dependency scan after the fix.
+
+    2 new permanent regression tests: one reproduces the reviewer's
+    exact side-effecting-`hex()` `bytes` subclass file content via a
+    real, fully-authorized `commit` dispatch, asserting the malicious
+    `hex()` never actually runs at all; the other reproduces the
+    reviewer's exact side-effecting-`__eq__`/`__ne__` `str` subclass
+    `assignment_id` inside a genuinely, correctly sealed `TaskPacket`
+    via a real, fully-authorized `create_branch` dispatch, asserting
+    the malicious `__eq__`/`__ne__` never actually runs at all, both
+    followed by a sanity dispatch confirming no over-rejection. Fixed
+    in commit `85b805a`. Full local re-verification: full test file
+    (126/126), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (1422 passed, 2 skipped, only the 9 known pre-existing
+    Windows-only subprocess failures).
+
+61. A fresh Codex pass against the round-60 commit (`85b805a`/`226c0a0`)
+    found 2 further genuine P1 findings -- both the same "checked via
+    `isinstance`, never exact `type(...) is ...`" gap applied to
+    shapes rounds 57-60 had not yet reached.
+    - **P1 ("Require an exact files dictionary"), Codex**:
+      `isinstance(files, dict)` admits a `dict` SUBCLASS. This
+      module's own `files.items()` call happens to return clean
+      entries even for such a subclass (so round 58/60's own checks
+      were not fooled), but Gen1's own `RepositoryFacility.commit`
+      later does plain container iteration (`for path in files`),
+      which uses `__iter__`, NOT `.items()` -- a different method the
+      reviewer's subclass overrides instead. The reviewer reproduced
+      this moving `.git/objects` outside the repository and installing
+      a symlink, with the authorized commit still returning a genuine
+      receipt.
+    - **P1 ("Reject subclassed numeric dispatch arguments"), Codex**:
+      every check so far (rounds 57-60) validated only STRING/BYTES
+      -shaped values. `foreman_epoch` (present on all five dispatch
+      methods) is compared (`task.foreman_epoch != foreman_epoch`)
+      inside Gen1's own `validate_task`, after revalidation, invoking
+      an `int` SUBCLASS's overridden `__ne__`/`__eq__` (Python prefers
+      a subclass's reflected method, so the malicious value's dunder
+      runs even as the RIGHT operand -- the same reflected-method
+      mechanism round 60's `assignment_id` finding used). The reviewer
+      reproduced this planting a symlink over `.git/refs/heads`.
+
+      Both fixed the same way as every prior widening: `files` must
+      now be exact `type(files) is dict`, checked before this
+      function's own `.items()` call even runs; every kwarg that is
+      already `isinstance(v, int)` must now be exact `type(v) is int`
+      too, in `_reject_non_exact_dispatch_arguments` (still checked
+      before any delegation, revalidation, or containment scanning).
+
+      Self-audit (before considering this round closed) found two
+      direct siblings, both the identical class of exposure one
+      argument/field over:
+      - `merge_pr`'s own `pr_number` reaches `repository_pr_resource
+        (repository, pr_number)`'s `f"repository:{repository}:pr:
+        {pr_number}"`, an f-string invoking `__format__` -- the exact
+        round-58 `branch` pattern, now on an `int`-shaped argument
+        instead of a `str`-shaped one. Covered by the same generalized
+        `isinstance(v, int)` check (no separate name needed).
+      - `task`'s OWN int-typed fields (`campaign_generation`,
+        `attempt`, `foreman_epoch`, `lease_epoch`, `lease_generation`)
+        are compared the same way round 60's `assignment_id` finding
+        demonstrated for `str` fields (`task.campaign_generation !=
+        snapshot.campaign_generation` in `validate_live_task`; lease
+        fencing similarly) -- reachable after revalidation, deep
+        inside Gen1's own code. `_reject_non_exact_task_packet_argument`
+        now also requires every `int`-shaped field to be exact
+        `type(v) is int`, in the same loop as the round-60 string-field
+        check.
+
+      No new adjudicated residual-Gen1-dependency exceptions needed --
+      both extended functions are Gen2-owned, reached via the same
+      already-adjudicated dispatch methods; confirmed via a clean
+      residual-dependency scan after the fix.
+
+    4 new permanent regression tests: one reproduces the reviewer's
+    exact side-effecting-`__iter__` `dict` subclass `files` argument
+    via a real, fully-authorized `commit` dispatch; one reproduces the
+    reviewer's exact side-effecting-`__eq__`/`__ne__` `int` subclass
+    `foreman_epoch` argument via a real, fully-authorized
+    `create_branch` dispatch; the self-audited `pr_number` sibling
+    reproduces a side-effecting-`__format__` `int` subclass via a
+    real, fully-authorized `merge_pr` dispatch (no sanity dispatch
+    follows -- `merge_pr` has no successful path in this
+    local-commit-only harness); the self-audited task-int-field
+    sibling reproduces a side-effecting-`__eq__`/`__ne__` `int`
+    subclass `campaign_generation` inside a genuinely, correctly
+    sealed `TaskPacket` via a real, fully-authorized `create_branch`
+    dispatch. Every test asserts the malicious dunder never actually
+    runs at all, and the three with a successful path follow with a
+    sanity dispatch confirming no over-rejection. Fixed in commit
+    `342c6fe`. Full local re-verification: full test file
+    (130/130), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (1426 passed, 2 skipped, only the 9 known pre-existing
+    Windows-only subprocess failures).
+
+62. A fresh Codex pass against the round-61 commit (`342c6fe`/`0091df4`)
+    found 2 further genuine P1 findings -- and this round is a
+    STRUCTURAL fix, not one more argument-by-argument widening. 15
+    consecutive rounds (47-61) had each found one more caller-reachable
+    value that reached a dunder-dispatch-sensitive Gen1 code path
+    before this module's own type validation; round 62's own two
+    findings are proof that rounds 57-61's whole approach --
+    `isinstance(v, SHAPE) and type(v) is not SHAPE`, REACTIVE, only
+    catches a SUBCLASS of the expected shape -- has a hole no amount of
+    further per-argument widening closes: it never even LOOKS at a
+    value that was never `isinstance`-shaped in the first place, even
+    though Gen1's own code duck-types every one of these values (plain
+    `for`/`in`/`.items()`, no `isinstance` check anywhere in Gen1
+    itself).
+    - **P1 ("Require files to be an exact dict"), Codex**: round 61's
+      own fix was `isinstance(files, dict) and type(files) is not
+      dict` -- this never even inspects an object that isn't
+      `isinstance` `dict` at all. The reviewer reproduced a custom
+      mapping (implementing `.items()`/`__iter__`, NOT a `dict`
+      subclass) whose `__iter__` moved `.git/objects` externally and
+      installed a symlink; the authorized commit still returned a
+      genuine receipt.
+    - **P1 ("Require exact tuple types for TaskPacket containers"),
+      Codex**: round 60's own tuple-element check (`if isinstance(value,
+      tuple): for item in value: ...`) ITERATED the field before
+      confirming its container type at all -- so a `tuple` SUBCLASS's
+      own malicious `__iter__` fired INSIDE that check itself, not
+      merely downstream in Gen1. The reviewer reproduced an otherwise
+      valid sealed task whose `scope` iterator moved `.git/refs/heads`
+      externally and installed a symlink; `create_branch` then
+      succeeded.
+
+      Given the same structural gap recurring a second consecutive
+      round despite two separate widenings in between (round 61's own
+      `files`/int fixes), this round's fix is a change in MECHANISM,
+      not another name or type added to a reactive check -- exactly
+      the "generalize, don't wait for the next round" discipline this
+      campaign has repeatedly cited, applied to the checking mechanism
+      itself rather than to one more argument. `_reject_non_exact_dispatch_arguments`
+      and `_reject_non_exact_task_packet_argument` are both rewritten
+      around a POSITIVE ALLOWLIST (`_DISPATCH_ARGUMENT_EXACT_TYPES`,
+      keyed by Gen1's own dispatch-method kwarg names;
+      `_TASK_PACKET_FIELD_EXACT_TYPES`, keyed by `TaskPacket`'s own
+      field names) mapping each recognized name to the ONE type it is
+      ever legitimately allowed to carry, checked UNCONDITIONALLY --
+      no `isinstance` gate anywhere. `files`' own keys/values and
+      tuple-typed task fields' own elements are still validated one
+      level deep (matching the established DISCLOSED SCOPE boundary),
+      but the CONTAINER's own exact type is now always confirmed
+      first, so no malicious container-level dunder (`__iter__`,
+      `.items()`) can ever fire during validation itself, in this
+      module's own checks or in Gen1's.
+
+      This closes the WHOLE family in one mechanism: subclass spoofing
+      (rounds 57/58/60/61's own findings) AND unrelated-duck-typed
+      -object spoofing (this round's two findings) both fail the SAME
+      unconditional `type(v) is expected` test. It also needs no
+      future round to widen it argument-by-argument again: any brand
+      new kwarg or field Gen1 might someday add is safe BY DEFAULT
+      (absent from the allowlist, silently unchecked -- the same
+      "detect presence, don't interpret" boundary this file has always
+      drawn, now applied to names instead of shapes) until explicitly
+      added, rather than needing a new `isinstance` branch to even
+      notice it exists.
+
+      No new adjudicated residual-Gen1-dependency exceptions needed --
+      both rewritten functions are Gen2-owned, reached via the same
+      already-adjudicated dispatch methods; confirmed via a clean
+      residual-dependency scan after the fix.
+
+    2 new permanent regression tests: one reproduces the reviewer's
+    exact side-effecting-`__iter__` custom (non-`dict`-subclass)
+    mapping `files` argument via a real, fully-authorized `commit`
+    dispatch; the other reproduces the reviewer's exact
+    side-effecting-`__iter__` `tuple` subclass `scope` field inside a
+    genuinely, correctly sealed `TaskPacket` (digest reused from the
+    original, content-identical plain tuple rather than recomputed
+    over the malicious one, so `json.dumps` never touches the
+    malicious tuple during the test's own setup) via a real,
+    fully-authorized `create_branch` dispatch, followed by a sanity
+    dispatch confirming no over-rejection. Both assert the malicious
+    `__iter__` never actually runs at all. Fixed in commit `65b12d5`.
+    Full local re-verification: full test file (132/132), full
+    mutation suite (37/37), `test_g2_27_self_construction.py`
+    (33/33), and full repository sweep (1428 passed, 2 skipped, only
+    the 9 known pre-existing Windows-only subprocess failures).
+
+63. A fresh Codex pass against the round-62 commit (`65b12d5`/`2d313c2`)
+    found 1 further genuine P1 finding -- a genuinely NEW axis, not
+    another instance of round 62's own isinstance-vs-duck-typing gap:
+    round 62's structural fix closed every way a caller-supplied VALUE
+    could spoof a shape; round 63's finding is about the READ
+    MECHANISM itself being spoofable, independent of the value.
+    - **P1 ("Avoid descriptor dispatch when validating task fields"),
+      Codex**: round 62's own field-type allowlist read every field via
+      `getattr(task, field.name)`, reasoning this was safe because
+      `type(task) is TaskPacket` was already confirmed exactly (round
+      59) -- ruling out a SUBCLASS `__getattribute__` override, but
+      missing a third axis entirely: a same-process caller can assign
+      a DATA descriptor directly onto the `TaskPacket` CLASS itself
+      (`TaskPacket.assignment_id = malicious_descriptor`). Python's own
+      attribute-lookup protocol gives a data descriptor found on the
+      TYPE priority over ANY instance's own `__dict__` entry, for
+      EVERY instance of that class, process-wide, regardless of how
+      genuinely that instance was constructed. The reviewer reproduced
+      a descriptor whose `__get__` moves `.git/refs/heads` to an
+      external directory, installs a symlink, and returns the ORIGINAL
+      PLAIN STRING (so every exact-type and authority check downstream
+      still passes) -- an otherwise perfectly legitimate,
+      genuinely-sealed task, with every field a plain exact `str`,
+      still triggered the descriptor's side effect the moment
+      `getattr` ran, and an authorized `create_branch` wrote the ref
+      externally.
+
+      This is the SAME "same-process caller can rebind a class's own
+      attributes to intercept normal operations" pattern rounds 21/23
+      already established for `LocalGitRepositoryTransport`/
+      `RepositoryFacility` -- `TaskPacket` was simply never added to
+      that same pinning mechanism, since rounds 59-62 were reasoning
+      about the TASK INSTANCE's own trustworthiness, never about
+      `TaskPacket` the CLASS being just as mutable, same-process, as
+      every other class this file already pins.
+
+      Fixed with the reviewer's own two-part recommendation, both
+      reusing established mechanisms rather than inventing new ones:
+      (1) `TaskPacket` is now pinned via the SAME generic
+      `_reject_altered_class_implementation` every other trusted class
+      in this file already uses (`_reject_altered_task_packet_class_implementation`,
+      called from `_reject_non_exact_task_packet_argument` immediately
+      after the exact-type check, before any field is read) -- a data
+      descriptor assignment adds a NEW name to `vars(TaskPacket)`
+      (dataclass fields without a default, like `assignment_id`, have
+      no class-level attribute at all until tampered with), caught by
+      the existing set-difference check with no changes to that
+      function itself; (2) field reads switch from `getattr(task,
+      field.name)` to `inspect.getattr_static(task, field.name)` --
+      the same tool round 56 already established for exactly this
+      purpose, which never invokes `__get__` on anything it finds.
+      Empirically verified (not merely assumed) before relying on it:
+      for the ordinary, untampered case, `getattr_static` returns the
+      genuine value straight from the instance's own `__dict__`,
+      identical to a legitimate `getattr`; if a data descriptor HAS
+      been installed on the class, `getattr_static` instead returns
+      the raw descriptor object itself, unresolved -- `__get__` is
+      never called at all -- which then fails the exact-type check on
+      its own (a descriptor instance is never `str`/`int`/`tuple`).
+      Mechanism (1) happens to fire first for this exact attack (a
+      brand new class attribute is exactly what its set-difference
+      check catches), making mechanism (2) genuine defense-in-depth
+      rather than independently load-bearing for this specific
+      reproduction -- kept anyway, matching the reviewer's own
+      two-part ask and this file's established "belt and suspenders
+      when both are cheap and independently correct" precedent.
+
+      No new adjudicated residual-Gen1-dependency exceptions needed --
+      `TaskPacket` (from `tenfold.contracts`) was already a tracked
+      Gen1 dependency via the existing residual-dependency scan (the
+      same class every field-type check since round 59 has referenced);
+      pinning its class implementation adds no NEW Gen1 module
+      dependency of its own; confirmed via a clean residual-dependency
+      scan after the fix.
+
+    1 new permanent regression test reproduces the reviewer's exact
+    side-effecting-descriptor `assignment_id` class-level tampering
+    via a real, fully-authorized `create_branch` dispatch (using a
+    genuinely, previously-constructed task, with the descriptor
+    installed on the real, shared `TaskPacket` class only afterward,
+    matching the reviewer's own "after admission" framing, and
+    restored in a `finally` block exactly matching this file's
+    established had-no-own-entry-before restoration precedent),
+    asserting the malicious `__get__` never actually runs at all,
+    followed by a sanity dispatch confirming no over-rejection. Fixed
+    in commit `c9f2337`. Full local re-verification: full test file
+    (133/133), full mutation suite (37/37),
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (1429 passed, 2 skipped, only the 9 known pre-existing
+    Windows-only subprocess failures).
 
 ## Real, honest end-to-end result
 

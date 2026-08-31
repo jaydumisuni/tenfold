@@ -659,6 +659,29 @@ _ADJUDICATED_EXCEPTIONS: dict[tuple[str, str], str] = {
         "Facility-driven create_branch call proving hooks are neutralized) -- SC-23 closure, round-4 review "
         "finding, docs/gen2/G2-27-SC23-closure-review-record.md"
     ),
+    ("tenfold.gen2.repository_construction_facility", "_reject_altered_facility_class_implementation"): (
+        "defensive integrity check comparing RepositoryFacility's own class __dict__ against a snapshot taken "
+        "at this module's own import time, sealing it against class-level tampering the same way "
+        "_reject_altered_transport_class_implementation already seals LocalGitRepositoryTransport -- never "
+        "re-deriving, bypassing, or weakening any of RepositoryFacility's own real authority/lease/"
+        "request-binding logic -- SC-23 closure, round 23, docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
+    ("tenfold.gen2.repository_construction_facility", "_reject_altered_authority_validation_globals"): (
+        "defensive integrity check reading RepositoryFacility.create_branch.__globals__ to locate and pin the "
+        "real validate_live_task/validate_task bindings against post-import rebinding -- reaches "
+        "RepositoryFacility only to find the module namespace its OWN real methods already execute within, "
+        "never re-deriving, bypassing, or weakening any of Gen1's real authority/lease/epoch validation logic "
+        "itself, which this check exists solely to keep genuinely callable and untampered -- SC-23 closure, "
+        "round 45, docs/gen2/G2-27-SC23-closure-review-record.md"
+    ),
+    # Round 24's own "_current_transport" entry (an exact-type check
+    # `type(self._facility) is not RepositoryFacility`) is removed here,
+    # round 25: that check no longer exists -- `_current_transport` was
+    # rewritten to read `admitted.facility.transport` (the registry-
+    # sourced reference) instead of `self._facility.transport`, which
+    # needed no such check at all, closing the underlying finding more
+    # thoroughly than the type-check alone did (see
+    # docs/gen2/G2-27-SC23-closure-review-record.md, round 25).
 }
 
 
