@@ -3793,10 +3793,11 @@ Windows-only failures, zero regressions).
     `create_branch` dispatch, asserting the instance-level lie never
     actually ran, restored to the EXACT prior state in a `finally`
     block, followed by a sanity dispatch confirming no over-rejection.
-    Fixed in commit `<pending>`. Full local re-verification: full
+    Fixed in commit `2f7321b`. Full local re-verification: full
     test file (120/120), full mutation suite (37/37),
-    `test_g2_27_self_construction.py` (pending), and full repository
-    sweep (pending).
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (1416 passed, 2 skipped, only the 9 known pre-existing
+    Windows-only failures, zero regressions).
 
 ## Real, honest end-to-end result
 
