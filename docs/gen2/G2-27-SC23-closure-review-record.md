@@ -3942,10 +3942,11 @@ Windows-only failures, zero regressions).
     sibling, reproduces a side-effecting-`__lt__` `files` dict key via
     a real, fully-authorized `commit` dispatch, asserting the
     malicious `__lt__` never actually runs at all. Fixed in commit
-    `<pending>`. Full local re-verification: full test file
+    `27f0703`. Full local re-verification: full test file
     (123/123), full mutation suite (37/37),
-    `test_g2_27_self_construction.py` (pending), and full repository
-    sweep (pending).
+    `test_g2_27_self_construction.py` (33/33), and full repository
+    sweep (1419 passed, 2 skipped, only the 9 known pre-existing
+    Windows-only subprocess failures).
 
 ## Real, honest end-to-end result
 
