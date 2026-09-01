@@ -453,10 +453,61 @@ def test_g2_28_stabilization_evidence_slice_binds_evidence_to_the_real_transfer_
 
     assert result.updated_record.transfer_id == sc28.G2_28_TRANSFER_ID
     assert set(result.updated_record.stabilization_evidence.keys()) == {
-        "chronicle_events", "external_checkpoints", "induced_failure_scenarios", "recovery_results", "abort_reinstatement_conditions",
+        "chronicle_events", "external_checkpoint", "induced_failure", "recovery_result", "abort_reinstatement_conditions",
     }
     for category, evidence in result.updated_record.stabilization_evidence.items():
         assert evidence, f"{category} evidence must be non-empty"
+
+
+def test_g2_28_stabilization_evidence_slice_updated_record_genuinely_validates(tmp_path: Path) -> None:
+    """Codex review finding on PR #89 (round 2): the plural category
+    names this slice's own policy fields use (external_checkpoints,
+    induced_failure_scenarios, recovery_results) are NOT the canonical
+    constitutional.STABILIZATION_EVIDENCE_CATEGORIES keys -- a record
+    carrying them would be rejected by AuthorityTransferRecord.validate()
+    outright, silently failing the exact evidence-binding this slice
+    claims to provide."""
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+
+    result = sc28.execute_g2_28_stabilization_evidence_slice(work_dir=work_dir)
+
+    result.updated_record.validate()
+
+
+def test_g2_28_external_checkpoint_lives_in_a_genuinely_separate_directory(tmp_path: Path) -> None:
+    """Codex review finding on PR #89 (round 2): the checkpoint file
+    must not be a sibling of the chronicle log it anchors -- a lost or
+    corrupted work_dir would otherwise take both down together, defeating
+    the point of an "external" checkpoint."""
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    policy = sc28.build_g2_28_construction_authority_transfer_policy()
+
+    evidence = sc28.record_g2_28_transfer_stage_chronicle_events(work_dir=work_dir, policy=policy)
+
+    assert evidence.external_checkpoint_file.parent != work_dir
+    assert evidence.external_checkpoint_file.parent != evidence.chronicle_log_path.parent
+
+
+def test_g2_28_chronicle_events_digest_the_real_transfer_record_content(tmp_path: Path) -> None:
+    """Codex review finding on PR #89 (round 2): each Chronicle append's
+    payload_digest must be derived from the transfer record's own real
+    content, not a constant string that any two different or tampered
+    records would produce identically."""
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    policy = sc28.build_g2_28_construction_authority_transfer_policy()
+
+    evidence = sc28.record_g2_28_transfer_stage_chronicle_events(work_dir=work_dir, policy=policy)
+
+    digests = [entry["payload_digest"] for entry in evidence.entries]
+    assert len(set(digests)) == len(digests), "each transition's digest must genuinely differ (distinct stage/event_type)"
+    for entry, event_type in zip(
+        evidence.entries,
+        ("g2-28-construction-transfer-staged", "g2-28-construction-transfer-soft-committed", "g2-28-construction-transfer-stabilizing"),
+    ):
+        assert not entry["payload_digest"].endswith("-payload-digest"), "must be a real digest, not the old canned string"
 
 
 def test_g2_28_construction_authority_transfer_policy_deferred_fields_now_describe_real_evidence() -> None:
