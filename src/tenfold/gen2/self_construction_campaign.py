@@ -75,7 +75,7 @@ from tenfold.sergeant_transport import MappingReviewMaterialResolver, SergeantAp
 
 from .authority_transfer_bridge import rust_check_authority_transfer_transition
 from .campaign_compiler import CompiledCampaign, compile_campaign_program
-from .chronicle_bridge import ChronicleCliError, append_entry, check_checkpoint, open_chronicle
+from .chronicle_bridge import ChronicleCliError, append_entry, check_checkpoint, dump_as_chronicle_events, open_chronicle
 from .constitutional import (
     AmbiguityImpactDomain,
     CandidateLedger,
@@ -98,7 +98,7 @@ from .constitutional import (
 )
 from . import effect_census, proof_graph, runtime_obligation
 from .council_pin import CouncilInvocationResponse, invoke_pinned_council, load_frozen_council_pin
-from .dispatch_lease import gen1_lease_acquire
+from .dispatch_lease import gen1_lease_acquire, gen1_lease_fence, gen1_lease_validate_token
 from .recovery_takeover import ExternalAssuranceProof, SERGEANT_AUTHORITY_VERSION, _sergeant_env
 from .repository_construction_facility import (
     DisposableRepositoryConstructionRig,
@@ -182,19 +182,26 @@ def build_g2_28_construction_authority_transfer_policy(*, policy_generation: int
             "chronicle_cli, mirroring authority_transfer.py's G2-21 pattern (slice 2)",
         ),
         required_induced_failure_scenarios=(
-            "induce_g2_28_transfer_crash_and_recover genuinely crashes/recovers a disposable transfer "
-            "record across a real, separate Python subprocess boundary, mirroring authority_transfer.py's "
-            "G2-21 subprocess-recovery pattern (slice 2)",
+            "induce_g2_28_transfer_crash_and_recover first genuinely proves a torn/partial write is "
+            "rejected by the real recovery subprocess boundary (a truncated serialized record, the actual "
+            "failure mode a mid-persist crash produces), then genuinely crashes/recovers a complete, "
+            "disposable transfer record across that same real, separate Python subprocess boundary, "
+            "mirroring authority_transfer.py's G2-21 subprocess-recovery pattern (slice 2, hardened in "
+            "PR #89 round 1)",
         ),
         required_recovery_results=(
             "the same induce_g2_28_transfer_crash_and_recover call's reloaded AuthorityTransferRecord "
             "genuinely resumes from its persisted stage, read back from the same file the subprocess "
-            "independently reconstructed it from (slice 2)",
+            "independently reconstructed it from, only after the torn-write rejection above proved the "
+            "boundary can tell corrupted persistence apart from a genuine one (slice 2, hardened in PR #89 "
+            "round 1)",
         ),
         required_external_checkpoints=(
             "record_g2_28_transfer_stage_chronicle_events genuinely verifies a real Chronicle "
             "external-head-checkpoint anchored to the SOFT_COMMITTED boundary, via a separately-persisted "
-            "checkpoint file and an independently freshly-reopened chronicle head (slice 2)",
+            "checkpoint file and BOTH an independently freshly-reopened chronicle head sequence AND an "
+            "independently re-dumped entry digest (dump_as_chronicle_events, a second real subprocess call) "
+            "-- never the in-memory checkpoint object for either side (slice 2, hardened in PR #89 round 1)",
         ),
         required_observer_predicates=(
             f"disclosed, Owner-authorized deferred condition genuinely recorded and never hidden: "
@@ -202,11 +209,14 @@ def build_g2_28_construction_authority_transfer_policy(*, policy_generation: int
         ),
         abort_reinstatement_conditions=(
             "execute_g2_28_construction_authority_transfer_rehearsal genuinely reaches ABORTED on a "
-            "separate, disposable rehearsal record, then reinstates by genuinely reopening PREPARED -> "
-            "STAGED under a fresh stabilization_policy_generation, mirroring the SPIRIT of "
-            "execute_identity_generation_transfer_rehearsal's G2-21 pattern (adapted to this slice's own "
-            "already-existing policy_generation field rather than borrowing identity/generation-specific "
-            "machinery) (slice 2)",
+            "separate, disposable rehearsal record, then genuinely fences that rehearsal's own real "
+            "tenfold.ownership.LeaseRegistry lease (gen1_lease_fence) and proves its old (epoch, generation) "
+            "fencing token is now rejected (gen1_lease_validate_token), before acquiring a fresh lease under "
+            "a new epoch whose token genuinely validates -- real authority fencing, not merely a "
+            "stabilization_policy_generation bump, mirroring the SPIRIT of "
+            "execute_identity_generation_transfer_rehearsal's G2-21 pattern using this slice's own "
+            "already-established lease/fencing primitive rather than borrowing identity/generation-specific "
+            "machinery (slice 2, hardened in PR #89 round 1)",
         ),
         irreversible_commit_conditions=(
             "deliberately out of scope for this slice -- STABILIZATION_PROVEN/IRREVERSIBLY_COMMITTED "
@@ -1068,13 +1078,17 @@ class G2_28_ChronicleTransferEvidence:
 
 def _g2_28_verify_external_checkpoint(work_dir: Path, checkpoint_entry: dict, chronicle_log_path: Path) -> tuple[dict, Path, int]:
     """Mirrors authority_transfer.py's own G2-21 external-checkpoint
-    verification exactly: the "checkpoint" and "local head" sides come
-    from two genuinely separate sources, never a same-object tautology.
-    The checkpoint entry's (sequence, digest) is persisted to a SEPARATE
-    file (simulating an independent system) and read back; the local
-    head is independently re-derived by re-opening the SAME chronicle
-    log fresh (a new subprocess invocation of the real chronicle_cli,
-    not the in-memory `entries` list) to obtain `last_sequence`."""
+    verification, then closes a gap that pattern itself had (Codex
+    review finding, PR #89, reproduced): `open_chronicle`'s own return
+    payload carries only `last_sequence`, no digest -- so the "local
+    head" side must independently re-derive the digest too, not just
+    the sequence, or a tampered/stale digest on the checkpoint side
+    would trivially "match" whatever the caller happened to already
+    have in memory. `dump_as_chronicle_events` is a SEPARATE real
+    subprocess invocation that reads the chronicle log fresh from disk
+    and returns each entry's own genuine digest; its last element is
+    used as the independently-recovered local head digest, never the
+    in-memory `checkpoint_entry` object."""
     external_checkpoint_file = work_dir / "g2-28-external-checkpoint.json"
     external_checkpoint_file.write_text(
         json.dumps({"sequence": checkpoint_entry["sequence"], "entry_digest": checkpoint_entry["entry_digest"]}), encoding="utf-8"
@@ -1087,13 +1101,20 @@ def _g2_28_verify_external_checkpoint(work_dir: Path, checkpoint_entry: dict, ch
             f"external checkpoint anchoring failure: durably re-read last_sequence={reopened_last_sequence} does not "
             f"match the externally persisted checkpoint sequence={persisted_checkpoint['sequence']}"
         )
+    dumped_events = dump_as_chronicle_events(chronicle_log_path, "g2-28-transfer", "g2-28-transfer-checkpoint-probe")
+    if len(dumped_events) != reopened_last_sequence:
+        raise ChronicleCliError(
+            f"external checkpoint anchoring failure: independently dumped {len(dumped_events)} event(s) but the "
+            f"freshly re-opened head reports last_sequence={reopened_last_sequence}"
+        )
+    reopened_last_digest = dumped_events[-1]["payload_digest"]
     check_checkpoint(
         checkpoint_sequence=persisted_checkpoint["sequence"],
         checkpoint_generation=1,
         head_digest=persisted_checkpoint["entry_digest"],
         local_head_generation=1,
         local_head_sequence=reopened_last_sequence,
-        local_head_digest=checkpoint_entry["entry_digest"],
+        local_head_digest=reopened_last_digest,
     )
     return persisted_checkpoint, external_checkpoint_file, reopened_last_sequence
 
@@ -1154,6 +1175,8 @@ class G2_28_RecoveryEvidence:
     record_path: Path
     recovered_stage: str
     reloaded_record: AuthorityTransferRecord
+    torn_write_path: Path
+    torn_write_was_rejected: bool
 
 
 def _recover_g2_28_record_in_subprocess(record_path: Path) -> str:
@@ -1181,20 +1204,50 @@ def _recover_g2_28_record_in_subprocess(record_path: Path) -> str:
 
 
 def induce_g2_28_transfer_crash_and_recover(*, work_dir: Path, record: AuthorityTransferRecord) -> G2_28_RecoveryEvidence:
-    """Durably writes `record` to disk, discards nothing itself (the
-    caller owns discarding its own in-memory reference), spawns the
-    real subprocess boundary above, asserts the recovered stage matches
-    the record handed in, then reloads from the SAME file in THIS
-    process to prove recovery and continuation are genuinely paired,
-    not just independently asserted."""
+    """Genuinely induces a failure before proving recovery (Codex review
+    finding, PR #89, reproduced): a clean write followed by a clean read
+    in another process never actually exercises a crash/interruption --
+    it only proves cross-process deserialization works, which is not
+    what "induced failure" claims. A durable-write failure is first
+    concretely simulated by truncating the record's own serialized JSON
+    mid-write (the real failure mode this evidence must detect: a
+    process dying mid-persist leaves a torn file on disk) and asserting
+    the SAME recovery mechanism genuinely rejects it -- proving the
+    boundary can tell corrupted persistence apart from a genuine one,
+    not just round-trip a happy path. Only then is `record` itself
+    durably, completely written, recovered by a real, separate Python
+    subprocess (the parent's in-memory object is never passed to it),
+    and reloaded by the parent from that same file to prove recovery and
+    continuation are genuinely paired, not independently asserted."""
+    complete_payload = json.dumps(record.to_dict())
+
+    torn_write_path = work_dir / "g2-28-transfer-record-torn.json"
+    torn_write_path.write_text(complete_payload[: len(complete_payload) // 2], encoding="utf-8")
+    torn_write_was_rejected = False
+    try:
+        _recover_g2_28_record_in_subprocess(torn_write_path)
+    except G2_28_CampaignError:
+        torn_write_was_rejected = True
+    if not torn_write_was_rejected:
+        raise G2_28_CampaignError(
+            "induced-failure scenario did not genuinely fail on a torn/partial write -- recovery cannot be "
+            "trusted as evidence if it cannot distinguish corrupted persistence from a genuine durable record"
+        )
+
     record_path = work_dir / "g2-28-transfer-record.json"
-    record_path.write_text(json.dumps(record.to_dict()), encoding="utf-8")
+    record_path.write_text(complete_payload, encoding="utf-8")
     expected_stage = record.stage.value
     recovered_stage = _recover_g2_28_record_in_subprocess(record_path)
     if recovered_stage != expected_stage:
         raise G2_28_CampaignError(f"induced-failure recovery mismatch: expected stage {expected_stage!r}, subprocess recovered {recovered_stage!r}")
     reloaded_record = AuthorityTransferRecord.from_dict(json.loads(record_path.read_text(encoding="utf-8")))
-    return G2_28_RecoveryEvidence(record_path=record_path, recovered_stage=recovered_stage, reloaded_record=reloaded_record)
+    return G2_28_RecoveryEvidence(
+        record_path=record_path,
+        recovered_stage=recovered_stage,
+        reloaded_record=reloaded_record,
+        torn_write_path=torn_write_path,
+        torn_write_was_rejected=torn_write_was_rejected,
+    )
 
 
 @dataclass(frozen=True)
@@ -1202,6 +1255,11 @@ class G2_28_StabilizationRehearsalResult:
     rehearsal_record: AuthorityTransferRecord
     reinstated_policy: AuthorityTransferStabilizationPolicy
     reinstated_record: AuthorityTransferRecord
+    fenced_lease_id: str
+    fenced_token: tuple[int, int]
+    fenced_token_now_rejected: bool
+    reinstated_lease_id: str
+    reinstated_token: tuple[int, int]
 
 
 def execute_g2_28_construction_authority_transfer_rehearsal(*, policy: AuthorityTransferStabilizationPolicy | None = None) -> G2_28_StabilizationRehearsalResult:
@@ -1210,14 +1268,21 @@ def execute_g2_28_construction_authority_transfer_rehearsal(*, policy: Authority
     never merged with the real G2_28_TRANSFER_ID record), proving the
     abort path is genuinely reachable -- mirroring the SPIRIT of
     execute_identity_generation_transfer_rehearsal's G2-21 pattern.
-    Reinstatement is adapted to this slice's own authority: rather than
-    borrowing G2-21's identity/generation-specific
-    `reinstate_under_fresh_generation`, this genuinely reopens
-    PREPARED -> STAGED (via the existing, unmodified
-    open_g2_28_construction_authority_transfer) under a fresh
-    `stabilization_policy_generation` -- a field this record already
-    has for exactly this purpose, and the more natural fit since G2-28's
-    authority is construction-execution, not identity/generation."""
+
+    Reinstatement uses GENUINE fencing (Codex review finding, PR #89,
+    reproduced: merely incrementing `stabilization_policy_generation` is
+    a policy-schema-version bump, not an authority-fencing mechanism --
+    it cannot reject a command issued under the failed generation). This
+    slice already has a real fencing primitive available -- the same
+    `tenfold.ownership.LeaseRegistry`/`WriteLease.fencing_token`
+    machinery `gen1_lease_acquire` already uses for the real construction
+    lease in slice 1 -- so reinstatement is proven by genuinely fencing
+    the rehearsal's own lease (`gen1_lease_fence`) and asserting its old
+    `(epoch, generation)` token is now rejected
+    (`gen1_lease_validate_token` returns False), then acquiring a fresh
+    lease under a new epoch whose token is genuinely valid. The
+    `stabilization_policy_generation` bump is kept as additional,
+    non-load-bearing context, not the fencing proof itself."""
     policy = policy or build_g2_28_construction_authority_transfer_policy()
     rehearsal_record = AuthorityTransferRecord(
         transfer_id=G2_28_REHEARSAL_TRANSFER_ID,
@@ -1228,7 +1293,31 @@ def execute_g2_28_construction_authority_transfer_rehearsal(*, policy: Authority
         stabilization_evidence={},
     )
     rehearsal_record = rehearsal_record.transition(AuthorityTransferStage.STAGED, policy=policy)
+
+    lease_registry = LeaseRegistry()
+    fenced_lease_id = "g2-28-rehearsal-lease"
+    rehearsal_lease = gen1_lease_acquire(
+        lease_registry, lease_id=fenced_lease_id, campaign_id=CAMPAIGN_ID, campaign_generation=1, epoch=1,
+        owner_lane="gen2-g2-28-rehearsal", namespace="gen2-g2-28-rehearsal", surfaces=("gen2-g2-28-rehearsal",),
+    )
+    fenced_token = rehearsal_lease.fencing_token
+
     rehearsal_record = rehearsal_record.transition(AuthorityTransferStage.ABORTED, policy=policy)
+    gen1_lease_fence(lease_registry, fenced_lease_id)
+    fenced_token_now_rejected = not gen1_lease_validate_token(lease_registry, fenced_lease_id, fenced_token)
+    if not fenced_token_now_rejected:
+        raise G2_28_CampaignError("abort-reinstatement evidence is invalid: the fenced lease's old token is still accepted")
+
+    reinstated_lease_id = "g2-28-reinstated-lease"
+    reinstated_lease = gen1_lease_acquire(
+        lease_registry, lease_id=reinstated_lease_id, campaign_id=CAMPAIGN_ID, campaign_generation=1, epoch=fenced_token[0] + 1,
+        owner_lane="gen2-g2-28-rehearsal", namespace="gen2-g2-28-rehearsal", surfaces=("gen2-g2-28-rehearsal",),
+    )
+    reinstated_token = reinstated_lease.fencing_token
+    if not gen1_lease_validate_token(lease_registry, reinstated_lease_id, reinstated_token):
+        raise G2_28_CampaignError("reinstated lease token must genuinely validate")
+    if reinstated_token[0] == fenced_token[0]:
+        raise G2_28_CampaignError("reinstated lease must genuinely use a fresh epoch")
 
     reinstated_policy = build_g2_28_construction_authority_transfer_policy(policy_generation=policy.policy_generation + 1)
     reinstated_record = open_g2_28_construction_authority_transfer(policy=reinstated_policy)
@@ -1238,7 +1327,16 @@ def execute_g2_28_construction_authority_transfer_rehearsal(*, policy: Authority
     if reinstated_record.stabilization_policy_generation == rehearsal_record.stabilization_policy_generation:
         raise G2_28_CampaignError("reinstated record must genuinely use a fresh stabilization_policy_generation")
 
-    return G2_28_StabilizationRehearsalResult(rehearsal_record=rehearsal_record, reinstated_policy=reinstated_policy, reinstated_record=reinstated_record)
+    return G2_28_StabilizationRehearsalResult(
+        rehearsal_record=rehearsal_record,
+        reinstated_policy=reinstated_policy,
+        reinstated_record=reinstated_record,
+        fenced_lease_id=fenced_lease_id,
+        fenced_token=fenced_token,
+        fenced_token_now_rejected=fenced_token_now_rejected,
+        reinstated_lease_id=reinstated_lease_id,
+        reinstated_token=reinstated_token,
+    )
 
 
 @dataclass(frozen=True)
@@ -1246,16 +1344,64 @@ class G2_28_StabilizationEvidenceSliceResult:
     chronicle_evidence: G2_28_ChronicleTransferEvidence
     recovery_evidence: G2_28_RecoveryEvidence
     rehearsal: G2_28_StabilizationRehearsalResult
+    updated_record: AuthorityTransferRecord
 
 
-def execute_g2_28_stabilization_evidence_slice(*, work_dir: Path, policy: AuthorityTransferStabilizationPolicy | None = None) -> G2_28_StabilizationEvidenceSliceResult:
+def execute_g2_28_stabilization_evidence_slice(
+    *, work_dir: Path, record: AuthorityTransferRecord | None = None, policy: AuthorityTransferStabilizationPolicy | None = None,
+) -> G2_28_StabilizationEvidenceSliceResult:
     """G2-28's second slice: the single documented entry point gathering
     real evidence for the 5 categories slice 1 deferred, mirroring
     execute_g2_28_first_construction_slice's role for slice 1. Entirely
     disposable-fixture-only -- no live-repository action, no human-
-    invoked script needed this time."""
+    invoked script needed this time.
+
+    Binds the gathered evidence's concrete facts (chronicle event types
+    and sequence numbers, the independently re-derived checkpoint digest,
+    the torn-write rejection plus real recovery stage, the real lease-
+    fencing token rejection and reinstatement) into `record`'s own
+    `stabilization_evidence` (Codex review finding, PR #89, reproduced:
+    the mechanism demonstrations ran against disposable stand-ins with
+    no traceable connection to the actual transfer they are supposed to
+    stabilize). `record` defaults to a freshly-opened real
+    G2_28_TRANSFER_ID record via `open_g2_28_construction_authority_transfer`
+    when the caller does not already have one in hand; the mechanism
+    itself still genuinely runs against disposable fixtures (matching
+    G2-21's own precedent, which likewise proves its chronicle/checkpoint/
+    recovery machinery before building the real record it ultimately
+    drives), but the resulting evidence strings are no longer orphaned
+    from any real transfer identity."""
     policy = policy or build_g2_28_construction_authority_transfer_policy()
+    record = record or open_g2_28_construction_authority_transfer(policy=policy)
+
     chronicle_evidence = record_g2_28_transfer_stage_chronicle_events(work_dir=work_dir, policy=policy)
     recovery_evidence = induce_g2_28_transfer_crash_and_recover(work_dir=work_dir, record=chronicle_evidence.record)
     rehearsal = execute_g2_28_construction_authority_transfer_rehearsal(policy=policy)
-    return G2_28_StabilizationEvidenceSliceResult(chronicle_evidence=chronicle_evidence, recovery_evidence=recovery_evidence, rehearsal=rehearsal)
+
+    updated_record = replace(
+        record,
+        stabilization_evidence={
+            **record.stabilization_evidence,
+            "chronicle_events": tuple(f"{entry['event_type']}@sequence={entry['sequence']}" for entry in chronicle_evidence.entries),
+            "external_checkpoints": (
+                f"checkpoint_sequence={chronicle_evidence.external_checkpoint_entry['sequence']}",
+                f"checkpoint_digest={chronicle_evidence.external_checkpoint_entry['entry_digest']}",
+                f"reopened_last_sequence={chronicle_evidence.reopened_last_sequence}",
+            ),
+            "induced_failure_scenarios": (f"torn_write_was_rejected={recovery_evidence.torn_write_was_rejected}",),
+            "recovery_results": (
+                f"recovered_stage={recovery_evidence.recovered_stage}",
+                f"reloaded_transfer_id={recovery_evidence.reloaded_record.transfer_id}",
+            ),
+            "abort_reinstatement_conditions": (
+                f"rehearsal_transfer_id={rehearsal.rehearsal_record.transfer_id}",
+                f"fenced_token={rehearsal.fenced_token}",
+                f"fenced_token_now_rejected={rehearsal.fenced_token_now_rejected}",
+                f"reinstated_token={rehearsal.reinstated_token}",
+            ),
+        },
+    )
+
+    return G2_28_StabilizationEvidenceSliceResult(
+        chronicle_evidence=chronicle_evidence, recovery_evidence=recovery_evidence, rehearsal=rehearsal, updated_record=updated_record,
+    )
