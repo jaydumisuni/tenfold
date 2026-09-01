@@ -11,6 +11,7 @@ human-invoked script)."""
 from __future__ import annotations
 
 import ast
+import json
 import subprocess
 from pathlib import Path
 
@@ -321,6 +322,294 @@ def test_g2_28_first_construction_slice_never_touches_main(tmp_path) -> None:
     current_branch = subprocess.run(["git", "-C", str(repo_root), "branch", "--show-current"], capture_output=True, text=True, check=True).stdout.strip()
     assert main_sha_after == main_sha_before, "main must be genuinely untouched -- the live action lands on its own new branch only"
     assert current_branch == "main", "the working tree's checked-out branch must not itself be switched"
+
+
+# ============================================================================
+# G2-28 second slice: real stabilization evidence (chronicle events,
+# induced failure/recovery, external checkpoint, abort/reinstatement).
+# Entirely disposable-fixture-only -- no live-repository action.
+# ============================================================================
+
+
+def test_g2_28_chronicle_transfer_events_reach_stabilizing_with_real_checkpoint(tmp_path: Path) -> None:
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    checkpoint_dir = tmp_path / "checkpoint-store"
+    checkpoint_dir.mkdir()
+    policy = sc28.build_g2_28_construction_authority_transfer_policy()
+
+    evidence = sc28.record_g2_28_transfer_stage_chronicle_events(work_dir=work_dir, checkpoint_dir=checkpoint_dir, policy=policy)
+
+    assert evidence.record.stage == AuthorityTransferStage.STABILIZING
+    assert len(evidence.entries) == 3
+    assert [entry["sequence"] for entry in evidence.entries] == [1, 2, 3]
+    assert evidence.external_checkpoint_file.exists()
+    assert evidence.reopened_last_sequence == 2, "checkpoint must anchor BEFORE the stabilizing entry is appended"
+
+
+def test_g2_28_external_checkpoint_mismatch_is_rejected(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "checkpoint-store"
+    checkpoint_dir.mkdir()
+    log_path = tmp_path / "tamper.chronicle"
+    from tenfold.gen2.chronicle_bridge import ChronicleCliError, append_entry, open_chronicle
+
+    open_chronicle(log_path, "g2-28-transfer-writer", 1)
+    entry = append_entry(log_path, "g2-28-transfer-writer", 1, "g2-28-transfer-writer", 1, "probe", "probe-digest")
+    tampered_entry = {**entry, "sequence": entry["sequence"] + 1}
+
+    with pytest.raises(ChronicleCliError):
+        sc28._g2_28_verify_external_checkpoint(checkpoint_dir, tampered_entry, log_path, 1)
+
+
+def test_g2_28_external_checkpoint_digest_tamper_is_rejected(tmp_path: Path) -> None:
+    """Codex review finding on PR #89 (round 1): the local-head digest
+    must be independently re-derived from the reopened chronicle (via
+    dump_as_chronicle_events), not merely re-echo the in-memory
+    checkpoint object -- so a checkpoint with the correct sequence but a
+    WRONG digest must still be rejected, not silently accepted."""
+    checkpoint_dir = tmp_path / "checkpoint-store"
+    checkpoint_dir.mkdir()
+    log_path = tmp_path / "tamper-digest.chronicle"
+    from tenfold.gen2.chronicle_bridge import ChronicleCliError, append_entry, open_chronicle
+
+    open_chronicle(log_path, "g2-28-transfer-writer", 1)
+    entry = append_entry(log_path, "g2-28-transfer-writer", 1, "g2-28-transfer-writer", 1, "probe", "probe-digest")
+    tampered_entry = {**entry, "entry_digest": "0" * 64}
+
+    with pytest.raises(ChronicleCliError):
+        sc28._g2_28_verify_external_checkpoint(checkpoint_dir, tampered_entry, log_path, 1)
+
+
+def test_g2_28_external_checkpoint_generation_tamper_is_rejected(tmp_path: Path) -> None:
+    """Codex review finding on PR #89 (round 4): checkpoint_generation
+    was previously a hardcoded constant on both sides of check_checkpoint,
+    so it could never actually catch a genuine generation mismatch. It is
+    now genuinely persisted (see _g2_28_verify_external_checkpoint) and
+    independently re-read -- and the underlying chronicle_cli mechanism
+    genuinely rejects a checkpoint whose generation disagrees with the
+    local head's, proven here directly against that mechanism (calling
+    the higher-level function a second time would just re-persist a
+    fresh, untampered checkpoint before verifying, since it always writes
+    before it reads)."""
+    from tenfold.gen2.chronicle_bridge import ChronicleCliError, check_checkpoint
+
+    with pytest.raises(ChronicleCliError):
+        check_checkpoint(
+            checkpoint_sequence=1,
+            checkpoint_generation=2,  # tampered: disagrees with local_head_generation below
+            head_digest="a" * 64,
+            local_head_generation=1,
+            local_head_sequence=1,
+            local_head_digest="a" * 64,
+        )
+
+
+def test_g2_28_induced_failure_recovers_across_a_real_subprocess_boundary(tmp_path: Path) -> None:
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    checkpoint_dir = tmp_path / "checkpoint-store"
+    checkpoint_dir.mkdir()
+    policy = sc28.build_g2_28_construction_authority_transfer_policy()
+    chronicle_evidence = sc28.record_g2_28_transfer_stage_chronicle_events(work_dir=work_dir, checkpoint_dir=checkpoint_dir, policy=policy)
+
+    recovery = sc28.induce_g2_28_transfer_crash_and_recover(work_dir=work_dir, record=chronicle_evidence.record)
+
+    assert recovery.torn_write_was_rejected is True, "a genuinely torn/partial write must be rejected, not merely round-tripped"
+    assert recovery.torn_write_path.exists()
+    assert recovery.recovered_stage == AuthorityTransferStage.STABILIZING.value
+    assert recovery.reloaded_record.stage == AuthorityTransferStage.STABILIZING
+    assert recovery.reloaded_record.transfer_id == chronicle_evidence.record.transfer_id
+    assert recovery.record_path.exists()
+
+
+def test_g2_28_torn_write_is_genuinely_rejected_by_the_recovery_subprocess(tmp_path: Path) -> None:
+    """Codex review finding on PR #89 (round 1): a clean write followed
+    by a clean read across processes never exercises a genuine
+    interruption. Directly proves the recovery subprocess itself fails
+    on a truncated file, not merely that the higher-level orchestrator
+    happens to catch something."""
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    torn_path = work_dir / "torn.json"
+    torn_path.write_text('{"transfer_id": "incomplete', encoding="utf-8")
+
+    with pytest.raises(sc28.G2_28_CampaignError):
+        sc28._recover_g2_28_record_in_subprocess(torn_path)
+
+
+def test_g2_28_stabilization_rehearsal_reaches_aborted_fences_the_lease_and_reinstates_under_a_fresh_epoch() -> None:
+    policy = sc28.build_g2_28_construction_authority_transfer_policy(policy_generation=1)
+
+    result = sc28.execute_g2_28_construction_authority_transfer_rehearsal(policy=policy)
+
+    assert result.rehearsal_record.stage == AuthorityTransferStage.ABORTED
+    assert result.rehearsal_record.transfer_id == sc28.G2_28_REHEARSAL_TRANSFER_ID
+    assert result.fenced_token_now_rejected is True, "the fenced lease's old token must genuinely be rejected"
+    assert result.reinstated_token[0] != result.fenced_token[0], "reinstatement must genuinely use a fresh epoch"
+    assert result.reinstated_record.stage == AuthorityTransferStage.STAGED
+    assert result.reinstated_record.transfer_id == sc28.G2_28_TRANSFER_ID
+    assert result.reinstated_record.transfer_id != result.rehearsal_record.transfer_id
+    assert result.reinstated_policy.policy_generation == 2
+    assert result.reinstated_record.stabilization_policy_generation != result.rehearsal_record.stabilization_policy_generation
+
+
+def test_g2_28_rehearsal_transitions_are_legal_in_python_and_rust() -> None:
+    rust_check_authority_transfer_transition(AuthorityTransferStage.PREPARED.value, AuthorityTransferStage.STAGED.value)
+    rust_check_authority_transfer_transition(AuthorityTransferStage.STAGED.value, AuthorityTransferStage.ABORTED.value)
+
+
+def test_g2_28_stabilization_evidence_slice_runs_end_to_end(tmp_path: Path) -> None:
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    checkpoint_dir = tmp_path / "checkpoint-store"
+    checkpoint_dir.mkdir()
+
+    result = sc28.execute_g2_28_stabilization_evidence_slice(work_dir=work_dir, checkpoint_dir=checkpoint_dir)
+
+    assert result.chronicle_evidence.record.stage == AuthorityTransferStage.STABILIZING
+    assert result.recovery_evidence.recovered_stage == AuthorityTransferStage.STABILIZING.value
+    assert result.rehearsal.rehearsal_record.stage == AuthorityTransferStage.ABORTED
+    assert result.rehearsal.reinstated_record.stage == AuthorityTransferStage.STAGED
+
+
+def test_g2_28_chronicle_events_genuinely_bind_the_real_transfer_id(tmp_path: Path) -> None:
+    """Codex review finding on PR #89 (round 3): a chronicle entry's
+    digest must authenticate WHICH real transfer this evidence was
+    gathered for, not merely the disposable demonstration record's own
+    identity -- two calls differing only in real_transfer_id must
+    produce genuinely different digests for the same lifecycle point."""
+    work_dir_a = tmp_path / "work-a"
+    work_dir_a.mkdir()
+    work_dir_b = tmp_path / "work-b"
+    work_dir_b.mkdir()
+    checkpoint_dir_a = tmp_path / "checkpoint-store-a"
+    checkpoint_dir_a.mkdir()
+    checkpoint_dir_b = tmp_path / "checkpoint-store-b"
+    checkpoint_dir_b.mkdir()
+    policy = sc28.build_g2_28_construction_authority_transfer_policy()
+
+    evidence_a = sc28.record_g2_28_transfer_stage_chronicle_events(work_dir=work_dir_a, checkpoint_dir=checkpoint_dir_a, policy=policy, real_transfer_id="transfer-a")
+    evidence_b = sc28.record_g2_28_transfer_stage_chronicle_events(work_dir=work_dir_b, checkpoint_dir=checkpoint_dir_b, policy=policy, real_transfer_id="transfer-b")
+
+    digests_a = [entry["payload_digest"] for entry in evidence_a.entries]
+    digests_b = [entry["payload_digest"] for entry in evidence_b.entries]
+    assert digests_a != digests_b, "different real_transfer_id must produce genuinely different digests"
+
+
+def test_g2_28_stabilization_evidence_slice_binds_evidence_to_the_real_transfer_record(tmp_path: Path) -> None:
+    """Codex review finding on PR #89 (round 1): the gathered evidence
+    must be traceably bound to the real G2_28_TRANSFER_ID record, not
+    orphaned on disposable stand-ins with no connection to the transfer
+    it is supposed to stabilize."""
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    checkpoint_dir = tmp_path / "checkpoint-store"
+    checkpoint_dir.mkdir()
+
+    result = sc28.execute_g2_28_stabilization_evidence_slice(work_dir=work_dir, checkpoint_dir=checkpoint_dir)
+
+    assert result.updated_record.transfer_id == sc28.G2_28_TRANSFER_ID
+    assert set(result.updated_record.stabilization_evidence.keys()) == {
+        "chronicle_events", "external_checkpoint", "induced_failure", "recovery_result", "abort_reinstatement_conditions",
+    }
+    for category, evidence in result.updated_record.stabilization_evidence.items():
+        assert evidence, f"{category} evidence must be non-empty"
+
+
+def test_g2_28_stabilization_evidence_slice_recovers_the_real_transfer_record(tmp_path: Path) -> None:
+    """Codex review finding on PR #89 (round 4): recovery must be
+    performed on the caller-supplied REAL transfer record itself, not
+    only the disposable demonstration record -- otherwise the
+    recovery_result category is satisfiable without ever persisting or
+    reconstructing the real transfer's own state."""
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    checkpoint_dir = tmp_path / "checkpoint-store"
+    checkpoint_dir.mkdir()
+
+    result = sc28.execute_g2_28_stabilization_evidence_slice(work_dir=work_dir, checkpoint_dir=checkpoint_dir)
+
+    assert result.recovery_evidence.reloaded_record.transfer_id == sc28.G2_28_TRANSFER_ID
+    assert result.recovery_evidence.reloaded_record.stage == AuthorityTransferStage.STABILIZING
+
+
+def test_g2_28_stabilization_evidence_slice_updated_record_genuinely_validates(tmp_path: Path) -> None:
+    """Codex review finding on PR #89 (round 2): the plural category
+    names this slice's own policy fields use (external_checkpoints,
+    induced_failure_scenarios, recovery_results) are NOT the canonical
+    constitutional.STABILIZATION_EVIDENCE_CATEGORIES keys -- a record
+    carrying them would be rejected by AuthorityTransferRecord.validate()
+    outright, silently failing the exact evidence-binding this slice
+    claims to provide."""
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    checkpoint_dir = tmp_path / "checkpoint-store"
+    checkpoint_dir.mkdir()
+
+    result = sc28.execute_g2_28_stabilization_evidence_slice(work_dir=work_dir, checkpoint_dir=checkpoint_dir)
+
+    result.updated_record.validate()
+
+
+def test_g2_28_external_checkpoint_lives_in_a_caller_supplied_directory(tmp_path: Path) -> None:
+    """Codex review finding on PR #89 (rounds 2 and 4): the checkpoint
+    file must not be a sibling of the chronicle log it anchors, and the
+    function must not infer "independence" on its own (e.g. via
+    tempfile.mkdtemp()) -- checkpoint_dir is a required caller-supplied
+    parameter, pushing the genuine failure-domain decision to whoever
+    actually knows what that means for a given deployment."""
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    checkpoint_dir = tmp_path / "checkpoint-store"
+    checkpoint_dir.mkdir()
+    policy = sc28.build_g2_28_construction_authority_transfer_policy()
+
+    evidence = sc28.record_g2_28_transfer_stage_chronicle_events(work_dir=work_dir, checkpoint_dir=checkpoint_dir, policy=policy)
+
+    assert evidence.external_checkpoint_file.parent == checkpoint_dir
+    assert evidence.external_checkpoint_file.parent != work_dir
+    assert evidence.external_checkpoint_file.parent != evidence.chronicle_log_path.parent
+
+
+def test_g2_28_chronicle_events_digest_the_real_transfer_record_content(tmp_path: Path) -> None:
+    """Codex review finding on PR #89 (round 2): each Chronicle append's
+    payload_digest must be derived from the transfer record's own real
+    content, not a constant string that any two different or tampered
+    records would produce identically."""
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    checkpoint_dir = tmp_path / "checkpoint-store"
+    checkpoint_dir.mkdir()
+    policy = sc28.build_g2_28_construction_authority_transfer_policy()
+
+    evidence = sc28.record_g2_28_transfer_stage_chronicle_events(work_dir=work_dir, checkpoint_dir=checkpoint_dir, policy=policy)
+
+    digests = [entry["payload_digest"] for entry in evidence.entries]
+    assert len(set(digests)) == len(digests), "each transition's digest must genuinely differ (distinct stage/event_type)"
+    for entry, event_type in zip(
+        evidence.entries,
+        ("g2-28-construction-transfer-staged", "g2-28-construction-transfer-soft-committed", "g2-28-construction-transfer-stabilizing"),
+    ):
+        assert not entry["payload_digest"].endswith("-payload-digest"), "must be a real digest, not the old canned string"
+
+
+def test_g2_28_construction_authority_transfer_policy_deferred_fields_now_describe_real_evidence() -> None:
+    policy = sc28.build_g2_28_construction_authority_transfer_policy()
+
+    previously_deferred = (
+        policy.required_chronicle_events
+        + policy.required_induced_failure_scenarios
+        + policy.required_recovery_results
+        + policy.required_external_checkpoints
+        + policy.abort_reinstatement_conditions
+    )
+    for text in previously_deferred:
+        assert not text.startswith("deferred to a later slice"), text
+
+    # required_real_operations / required_observer_predicates were already
+    # genuine before this slice; irreversible_commit_conditions stays
+    # deliberately out of scope.
+    assert policy.irreversible_commit_conditions[0].startswith("deliberately out of scope")
 
 
 # ============================================================================
