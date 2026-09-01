@@ -1113,10 +1113,10 @@ def _g2_28_transfer_event_payload_digest(record: AuthorityTransferRecord, event_
     )
 
 
-def _g2_28_verify_external_checkpoint(checkpoint_dir: Path, checkpoint_entry: dict, chronicle_log_path: Path) -> tuple[dict, Path, int]:
+def _g2_28_verify_external_checkpoint(checkpoint_dir: Path, checkpoint_entry: dict, chronicle_log_path: Path, writer_generation: int) -> tuple[dict, Path, int]:
     """Mirrors authority_transfer.py's own G2-21 external-checkpoint
-    verification, then closes two gaps that pattern itself had (Codex
-    review findings, PR #89, reproduced):
+    verification, then closes gaps that pattern itself had (Codex review
+    findings, PR #89, reproduced):
 
     1. `open_chronicle`'s own return payload carries only `last_sequence`,
        no digest -- so the "local head" side must independently re-derive
@@ -1127,17 +1127,31 @@ def _g2_28_verify_external_checkpoint(checkpoint_dir: Path, checkpoint_entry: di
        fresh from disk and returns each entry's own genuine digest; its
        last element is used as the independently-recovered local head
        digest, never the in-memory `checkpoint_entry` object.
-    2. The checkpoint file must live in a genuinely SEPARATE location
-       from the chronicle log it anchors, not a sibling file in the same
-       directory -- a lost/corrupted `work_dir` would otherwise take
-       both down together, defeating the point of an "external"
-       checkpoint. `checkpoint_dir` is therefore a caller-supplied
-       directory distinct from the chronicle log's own `work_dir` (see
-       `record_g2_28_transfer_stage_chronicle_events`, which allocates
-       one via a fresh, separate `tempfile.mkdtemp()` root rather than
-       nesting it under the same work_dir)."""
+    2. The checkpoint file must live in a location the CALLER genuinely
+       controls as an independent failure domain, not one this function
+       infers on its own -- `checkpoint_dir` is therefore a REQUIRED
+       caller-supplied directory (see
+       `record_g2_28_transfer_stage_chronicle_events`'s own
+       `checkpoint_dir` parameter). A directory this function allocated
+       itself (e.g. via `tempfile.mkdtemp()`) cannot prove genuine
+       failure-domain independence -- it is typically still on the same
+       default temporary volume as `work_dir` -- so that responsibility
+       is pushed to the caller, who is the only party that can actually
+       know what "a different volume/host/storage backend" means for a
+       given deployment; disposable-fixture tests pass a second, distinct
+       `tmp_path`-derived directory to at least keep the two locations
+       structurally separate.
+    3. `checkpoint_generation` was a hardcoded constant on BOTH the
+       checkpoint and local-head sides of `check_checkpoint`, so it could
+       never actually catch a genuine generation mismatch -- it only ever
+       confirmed the hardcoded value equalled itself. The writer
+       generation is now genuinely persisted into the checkpoint file and
+       read back from it, rather than assumed independently on both
+       sides."""
     external_checkpoint_file = checkpoint_dir / "g2-28-external-checkpoint.json"
-    checkpoint_payload = json.dumps({"sequence": checkpoint_entry["sequence"], "entry_digest": checkpoint_entry["entry_digest"]})
+    checkpoint_payload = json.dumps(
+        {"sequence": checkpoint_entry["sequence"], "entry_digest": checkpoint_entry["entry_digest"], "generation": writer_generation}
+    )
     # Codex review finding, PR #89, reproduced: Path.write_text() gives no
     # fsync/durability barrier -- a crash right after the write and before
     # the OS flushes it would leave the "external" checkpoint not actually
@@ -1149,7 +1163,7 @@ def _g2_28_verify_external_checkpoint(checkpoint_dir: Path, checkpoint_entry: di
         checkpoint_handle.flush()
         os.fsync(checkpoint_handle.fileno())
     persisted_checkpoint = json.loads(external_checkpoint_file.read_text(encoding="utf-8"))
-    reopened = open_chronicle(chronicle_log_path, "g2-28-transfer-writer", 1)
+    reopened = open_chronicle(chronicle_log_path, "g2-28-transfer-writer", writer_generation)
     reopened_last_sequence = reopened["last_sequence"]
     if reopened_last_sequence != persisted_checkpoint["sequence"]:
         raise ChronicleCliError(
@@ -1165,9 +1179,9 @@ def _g2_28_verify_external_checkpoint(checkpoint_dir: Path, checkpoint_entry: di
     reopened_last_digest = dumped_events[-1]["payload_digest"]
     check_checkpoint(
         checkpoint_sequence=persisted_checkpoint["sequence"],
-        checkpoint_generation=1,
+        checkpoint_generation=persisted_checkpoint["generation"],
         head_digest=persisted_checkpoint["entry_digest"],
-        local_head_generation=1,
+        local_head_generation=writer_generation,
         local_head_sequence=reopened_last_sequence,
         local_head_digest=reopened_last_digest,
     )
@@ -1175,7 +1189,7 @@ def _g2_28_verify_external_checkpoint(checkpoint_dir: Path, checkpoint_entry: di
 
 
 def record_g2_28_transfer_stage_chronicle_events(
-    *, work_dir: Path, policy: AuthorityTransferStabilizationPolicy, real_transfer_id: str = G2_28_TRANSFER_ID,
+    *, work_dir: Path, checkpoint_dir: Path, policy: AuthorityTransferStabilizationPolicy, real_transfer_id: str = G2_28_TRANSFER_ID,
 ) -> G2_28_ChronicleTransferEvidence:
     """Real Chronicle events for the TRANSFER-STAGE lifecycle itself --
     distinct from execute_g2_28_first_construction_slice's own
@@ -1189,12 +1203,17 @@ def record_g2_28_transfer_stage_chronicle_events(
     `real_transfer_id` -- the actual transfer this evidence is gathered
     on behalf of (Codex review finding, PR #89 round 3, reproduced: an
     evidence trail that only authenticates a disposable stand-in's own
-    identity cannot prove which real transfer it belongs to). The
-    external checkpoint -- persisted to a genuinely separate directory,
-    not a sibling of the chronicle log -- is verified immediately after
-    SOFT_COMMITTED and before STABILIZING is appended, so the freshly
-    re-opened head genuinely predates the STABILIZING entry, matching
-    G2-21's own ordering."""
+    identity cannot prove which real transfer it belongs to).
+
+    `checkpoint_dir` is REQUIRED and must be a location the CALLER knows
+    to be a genuinely independent failure domain from `work_dir` (Codex
+    review finding, PR #89 round 4, reproduced: a directory this function
+    allocated itself, e.g. via `tempfile.mkdtemp()`, cannot prove genuine
+    failure-domain independence -- it is typically still on the same
+    default temporary volume). The external checkpoint there is verified
+    immediately after SOFT_COMMITTED and before STABILIZING is appended,
+    so the freshly re-opened head genuinely predates the STABILIZING
+    entry, matching G2-21's own ordering."""
     record = AuthorityTransferRecord(
         transfer_id=G2_28_EVIDENCE_SLICE_TRANSFER_ID,
         from_authority_ref=GEN1_CONSTRUCTION_AUTHORITY_REF,
@@ -1204,27 +1223,27 @@ def record_g2_28_transfer_stage_chronicle_events(
         stabilization_evidence={},
     )
 
+    writer_generation = 1
     log_path = work_dir / "g2-28-transfer.chronicle"
-    open_chronicle(log_path, "g2-28-transfer-writer", 1)
+    open_chronicle(log_path, "g2-28-transfer-writer", writer_generation)
     entries: list[dict] = []
 
     record = record.transition(AuthorityTransferStage.STAGED, policy=policy)
     event_type = "g2-28-construction-transfer-staged"
-    entries.append(append_entry(log_path, "g2-28-transfer-writer", 1, "g2-28-transfer-writer", 1, event_type, _g2_28_transfer_event_payload_digest(record, event_type, real_transfer_id)))
+    entries.append(append_entry(log_path, "g2-28-transfer-writer", writer_generation, "g2-28-transfer-writer", writer_generation, event_type, _g2_28_transfer_event_payload_digest(record, event_type, real_transfer_id)))
 
     record = record.transition(AuthorityTransferStage.SOFT_COMMITTED, policy=policy)
     event_type = "g2-28-construction-transfer-soft-committed"
-    entries.append(append_entry(log_path, "g2-28-transfer-writer", 1, "g2-28-transfer-writer", 1, event_type, _g2_28_transfer_event_payload_digest(record, event_type, real_transfer_id)))
+    entries.append(append_entry(log_path, "g2-28-transfer-writer", writer_generation, "g2-28-transfer-writer", writer_generation, event_type, _g2_28_transfer_event_payload_digest(record, event_type, real_transfer_id)))
 
     checkpoint_entry = entries[1]  # the SOFT_COMMITTED entry
-    checkpoint_dir = Path(tempfile.mkdtemp(prefix="g2-28-external-checkpoint-store-"))
-    persisted_checkpoint, external_checkpoint_file, reopened_last_sequence = _g2_28_verify_external_checkpoint(checkpoint_dir, checkpoint_entry, log_path)
+    persisted_checkpoint, external_checkpoint_file, reopened_last_sequence = _g2_28_verify_external_checkpoint(checkpoint_dir, checkpoint_entry, log_path, writer_generation)
 
     record = record.transition(AuthorityTransferStage.STABILIZING, policy=policy)
     event_type = "g2-28-construction-transfer-stabilizing"
     entries.append(
         append_entry(
-            log_path, "g2-28-transfer-writer", 1, "g2-28-transfer-writer", 1,
+            log_path, "g2-28-transfer-writer", writer_generation, "g2-28-transfer-writer", writer_generation,
             event_type, _g2_28_transfer_event_payload_digest(record, event_type, real_transfer_id),
         )
     )
@@ -1284,10 +1303,13 @@ def induce_g2_28_transfer_crash_and_recover(*, work_dir: Path, record: Authority
     the SAME recovery mechanism genuinely rejects it -- proving the
     boundary can tell corrupted persistence apart from a genuine one,
     not just round-trip a happy path. Only then is `record` itself
-    durably, completely written, recovered by a real, separate Python
-    subprocess (the parent's in-memory object is never passed to it),
-    and reloaded by the parent from that same file to prove recovery and
-    continuation are genuinely paired, not independently asserted."""
+    durably (an explicit `os.fsync` barrier, not merely `write_text()` --
+    Codex review finding, PR #89 round 4, reproduced: a page-cache-only
+    write cannot demonstrate the record survives a real crash), completely
+    written, recovered by a real, separate Python subprocess (the
+    parent's in-memory object is never passed to it), and reloaded by
+    the parent from that same file to prove recovery and continuation
+    are genuinely paired, not independently asserted."""
     complete_payload = json.dumps(record.to_dict())
 
     torn_write_path = work_dir / "g2-28-transfer-record-torn.json"
@@ -1304,7 +1326,10 @@ def induce_g2_28_transfer_crash_and_recover(*, work_dir: Path, record: Authority
         )
 
     record_path = work_dir / "g2-28-transfer-record.json"
-    record_path.write_text(complete_payload, encoding="utf-8")
+    with open(record_path, "w", encoding="utf-8") as record_handle:
+        record_handle.write(complete_payload)
+        record_handle.flush()
+        os.fsync(record_handle.fileno())
     expected_stage = record.stage.value
     recovered_stage = _recover_g2_28_record_in_subprocess(record_path)
     if recovered_stage != expected_stage:
@@ -1417,40 +1442,57 @@ class G2_28_StabilizationEvidenceSliceResult:
 
 
 def execute_g2_28_stabilization_evidence_slice(
-    *, work_dir: Path, record: AuthorityTransferRecord | None = None, policy: AuthorityTransferStabilizationPolicy | None = None,
+    *, work_dir: Path, checkpoint_dir: Path, record: AuthorityTransferRecord | None = None, policy: AuthorityTransferStabilizationPolicy | None = None,
 ) -> G2_28_StabilizationEvidenceSliceResult:
     """G2-28's second slice: the single documented entry point gathering
     real evidence for the 5 categories slice 1 deferred, mirroring
     execute_g2_28_first_construction_slice's role for slice 1. Entirely
     disposable-fixture-only -- no live-repository action, no human-
-    invoked script needed this time.
+    invoked script needed this time. `checkpoint_dir` must be a location
+    the CALLER knows to be a genuinely independent failure domain from
+    `work_dir` (see `record_g2_28_transfer_stage_chronicle_events`).
 
-    Binds the gathered evidence's concrete facts (chronicle event types
-    and sequence numbers, the independently re-derived checkpoint digest,
-    the torn-write rejection plus real recovery stage, the real lease-
-    fencing token rejection and reinstatement) into `record`'s own
-    `stabilization_evidence` (Codex review finding, PR #89, reproduced:
-    the mechanism demonstrations ran against disposable stand-ins with
-    no traceable connection to the actual transfer they are supposed to
-    stabilize). `record` defaults to a freshly-opened real
-    G2_28_TRANSFER_ID record via `open_g2_28_construction_authority_transfer`
-    when the caller does not already have one in hand; the mechanism
-    itself still genuinely runs against disposable fixtures (matching
-    G2-21's own precedent, which likewise proves its chronicle/checkpoint/
-    recovery machinery before building the real record it ultimately
-    drives), but the resulting evidence strings are no longer orphaned
-    from any real transfer identity."""
+    Binds the gathered evidence's concrete facts (chronicle event types,
+    sequences, and digests -- each already binding `record`'s own real
+    transfer_id, not only a disposable stand-in's -- the independently
+    re-derived checkpoint digest and generation, the torn-write rejection
+    plus real recovery stage, the real lease-fencing token rejection and
+    reinstatement) into `record`'s own `stabilization_evidence`.
+
+    `record` defaults to a freshly-opened real G2_28_TRANSFER_ID record
+    via `open_g2_28_construction_authority_transfer` when the caller does
+    not already have one in hand. After the disposable chronicle
+    demonstration proves the mechanism (matching G2-21's own precedent,
+    which likewise proves its chronicle/checkpoint machinery before
+    building the real record it ultimately drives), `record` ITSELF is
+    driven through the same remaining transitions
+    (`SOFT_COMMITTED -> STABILIZING`, mirroring G2-21's own step 5) and
+    is what gets recovered across the real subprocess boundary below --
+    Codex review finding, PR #89 round 4, reproduced: recovering only the
+    disposable demonstration record left the `recovery_result` category
+    satisfiable without ever persisting or reconstructing the real
+    transfer's own state."""
     policy = policy or build_g2_28_construction_authority_transfer_policy()
     record = record or open_g2_28_construction_authority_transfer(policy=policy)
 
-    chronicle_evidence = record_g2_28_transfer_stage_chronicle_events(work_dir=work_dir, policy=policy, real_transfer_id=record.transfer_id)
-    recovery_evidence = induce_g2_28_transfer_crash_and_recover(work_dir=work_dir, record=chronicle_evidence.record)
+    chronicle_evidence = record_g2_28_transfer_stage_chronicle_events(
+        work_dir=work_dir, checkpoint_dir=checkpoint_dir, policy=policy, real_transfer_id=record.transfer_id,
+    )
+
+    record = record.transition(AuthorityTransferStage.SOFT_COMMITTED, policy=policy)
+    record = record.transition(AuthorityTransferStage.STABILIZING, policy=policy)
+
+    recovery_evidence = induce_g2_28_transfer_crash_and_recover(work_dir=work_dir, record=record)
     rehearsal = execute_g2_28_construction_authority_transfer_rehearsal(policy=policy)
 
+    # The reloaded record is the most rigorously-verified copy available
+    # (real transitions + real chronicle binding + real subprocess
+    # recovery), so it -- not the pre-recovery `record` -- carries the
+    # evidence forward.
     updated_record = replace(
-        record,
+        recovery_evidence.reloaded_record,
         stabilization_evidence={
-            **record.stabilization_evidence,
+            **recovery_evidence.reloaded_record.stabilization_evidence,
             # Category keys must be the canonical names in
             # constitutional.STABILIZATION_EVIDENCE_CATEGORIES (singular
             # "induced_failure"/"recovery_result"/"external_checkpoint")
