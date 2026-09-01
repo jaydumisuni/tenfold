@@ -324,6 +324,105 @@ def test_g2_28_first_construction_slice_never_touches_main(tmp_path) -> None:
 
 
 # ============================================================================
+# G2-28 second slice: real stabilization evidence (chronicle events,
+# induced failure/recovery, external checkpoint, abort/reinstatement).
+# Entirely disposable-fixture-only -- no live-repository action.
+# ============================================================================
+
+
+def test_g2_28_chronicle_transfer_events_reach_stabilizing_with_real_checkpoint(tmp_path: Path) -> None:
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    policy = sc28.build_g2_28_construction_authority_transfer_policy()
+
+    evidence = sc28.record_g2_28_transfer_stage_chronicle_events(work_dir=work_dir, policy=policy)
+
+    assert evidence.record.stage == AuthorityTransferStage.STABILIZING
+    assert len(evidence.entries) == 3
+    assert [entry["sequence"] for entry in evidence.entries] == [1, 2, 3]
+    assert evidence.external_checkpoint_file.exists()
+    assert evidence.reopened_last_sequence == 2, "checkpoint must anchor BEFORE the stabilizing entry is appended"
+
+
+def test_g2_28_external_checkpoint_mismatch_is_rejected(tmp_path: Path) -> None:
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    log_path = work_dir / "tamper.chronicle"
+    from tenfold.gen2.chronicle_bridge import ChronicleCliError, append_entry, open_chronicle
+
+    open_chronicle(log_path, "g2-28-transfer-writer", 1)
+    entry = append_entry(log_path, "g2-28-transfer-writer", 1, "g2-28-transfer-writer", 1, "probe", "probe-digest")
+    tampered_entry = {**entry, "sequence": entry["sequence"] + 1}
+
+    with pytest.raises(ChronicleCliError):
+        sc28._g2_28_verify_external_checkpoint(work_dir, tampered_entry, log_path)
+
+
+def test_g2_28_induced_failure_recovers_across_a_real_subprocess_boundary(tmp_path: Path) -> None:
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    policy = sc28.build_g2_28_construction_authority_transfer_policy()
+    chronicle_evidence = sc28.record_g2_28_transfer_stage_chronicle_events(work_dir=work_dir, policy=policy)
+
+    recovery = sc28.induce_g2_28_transfer_crash_and_recover(work_dir=work_dir, record=chronicle_evidence.record)
+
+    assert recovery.recovered_stage == AuthorityTransferStage.STABILIZING.value
+    assert recovery.reloaded_record.stage == AuthorityTransferStage.STABILIZING
+    assert recovery.reloaded_record.transfer_id == chronicle_evidence.record.transfer_id
+    assert recovery.record_path.exists()
+
+
+def test_g2_28_stabilization_rehearsal_reaches_aborted_and_reinstates_under_a_fresh_policy_generation() -> None:
+    policy = sc28.build_g2_28_construction_authority_transfer_policy(policy_generation=1)
+
+    result = sc28.execute_g2_28_construction_authority_transfer_rehearsal(policy=policy)
+
+    assert result.rehearsal_record.stage == AuthorityTransferStage.ABORTED
+    assert result.rehearsal_record.transfer_id == sc28.G2_28_REHEARSAL_TRANSFER_ID
+    assert result.reinstated_record.stage == AuthorityTransferStage.STAGED
+    assert result.reinstated_record.transfer_id == sc28.G2_28_TRANSFER_ID
+    assert result.reinstated_record.transfer_id != result.rehearsal_record.transfer_id
+    assert result.reinstated_policy.policy_generation == 2
+    assert result.reinstated_record.stabilization_policy_generation != result.rehearsal_record.stabilization_policy_generation
+
+
+def test_g2_28_rehearsal_transitions_are_legal_in_python_and_rust() -> None:
+    rust_check_authority_transfer_transition(AuthorityTransferStage.PREPARED.value, AuthorityTransferStage.STAGED.value)
+    rust_check_authority_transfer_transition(AuthorityTransferStage.STAGED.value, AuthorityTransferStage.ABORTED.value)
+
+
+def test_g2_28_stabilization_evidence_slice_runs_end_to_end(tmp_path: Path) -> None:
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+
+    result = sc28.execute_g2_28_stabilization_evidence_slice(work_dir=work_dir)
+
+    assert result.chronicle_evidence.record.stage == AuthorityTransferStage.STABILIZING
+    assert result.recovery_evidence.recovered_stage == AuthorityTransferStage.STABILIZING.value
+    assert result.rehearsal.rehearsal_record.stage == AuthorityTransferStage.ABORTED
+    assert result.rehearsal.reinstated_record.stage == AuthorityTransferStage.STAGED
+
+
+def test_g2_28_construction_authority_transfer_policy_deferred_fields_now_describe_real_evidence() -> None:
+    policy = sc28.build_g2_28_construction_authority_transfer_policy()
+
+    previously_deferred = (
+        policy.required_chronicle_events
+        + policy.required_induced_failure_scenarios
+        + policy.required_recovery_results
+        + policy.required_external_checkpoints
+        + policy.abort_reinstatement_conditions
+    )
+    for text in previously_deferred:
+        assert not text.startswith("deferred to a later slice"), text
+
+    # required_real_operations / required_observer_predicates were already
+    # genuine before this slice; irreversible_commit_conditions stays
+    # deliberately out of scope.
+    assert policy.irreversible_commit_conditions[0].startswith("deliberately out of scope")
+
+
+# ============================================================================
 # Model blackout self-check, mirroring
 # test_g2_27_self_construction_module_itself_respects_model_blackout.
 # ============================================================================
