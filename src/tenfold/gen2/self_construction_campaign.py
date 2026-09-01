@@ -59,6 +59,7 @@ one real construction action through all of the above.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -1081,18 +1082,29 @@ class G2_28_ChronicleTransferEvidence:
     reopened_last_sequence: int
 
 
-def _g2_28_transfer_event_payload_digest(record: AuthorityTransferRecord, event_type: str) -> str:
+def _g2_28_transfer_event_payload_digest(record: AuthorityTransferRecord, event_type: str, real_transfer_id: str) -> str:
     """Digests the transfer record's own real, current-at-this-point
-    content (Codex review finding, PR #89, reproduced: a constant string
-    derived only from `event_type` cannot distinguish two different or
-    tampered transfer records, since both would produce identical
-    Chronicle entries). Called AFTER the record has already transitioned
-    to the stage this event names, so the digest genuinely reflects that
-    exact lifecycle point, not a canned placeholder."""
+    content (Codex review finding, PR #89 round 2, reproduced: a constant
+    string derived only from `event_type` cannot distinguish two
+    different or tampered transfer records). Called AFTER the record has
+    already transitioned to the stage this event names, so the digest
+    genuinely reflects that exact lifecycle point.
+
+    Also binds `real_transfer_id` -- the actual G2_28_TRANSFER_ID this
+    evidence is gathered on behalf of -- into the digest (Codex review
+    finding, PR #89 round 3, reproduced: without this, the digest only
+    authenticated the DISPOSABLE demonstration record's own identity, so
+    even after the resulting evidence strings were copied into the real
+    record's stabilization_evidence, nothing about the chronicle entries
+    themselves could verify which real transfer they were gathered for).
+    The disposable record's own `transfer_id` is kept in the digest too,
+    under a distinct key, so a reader can still tell demonstration
+    identity apart from the real transfer identity it is bound to."""
     return canonical_digest(
         {
             "event_type": event_type,
-            "transfer_id": record.transfer_id,
+            "real_transfer_id": real_transfer_id,
+            "demonstration_transfer_id": record.transfer_id,
             "from_authority_ref": record.from_authority_ref,
             "to_authority_ref": record.to_authority_ref,
             "stage": record.stage.value,
@@ -1125,9 +1137,17 @@ def _g2_28_verify_external_checkpoint(checkpoint_dir: Path, checkpoint_entry: di
        one via a fresh, separate `tempfile.mkdtemp()` root rather than
        nesting it under the same work_dir)."""
     external_checkpoint_file = checkpoint_dir / "g2-28-external-checkpoint.json"
-    external_checkpoint_file.write_text(
-        json.dumps({"sequence": checkpoint_entry["sequence"], "entry_digest": checkpoint_entry["entry_digest"]}), encoding="utf-8"
-    )
+    checkpoint_payload = json.dumps({"sequence": checkpoint_entry["sequence"], "entry_digest": checkpoint_entry["entry_digest"]})
+    # Codex review finding, PR #89, reproduced: Path.write_text() gives no
+    # fsync/durability barrier -- a crash right after the write and before
+    # the OS flushes it would leave the "external" checkpoint not actually
+    # durable, undermining the whole point of an anchor meant to survive
+    # a crash. Writes through a real file handle and forces the durability
+    # barrier explicitly before the checkpoint is trusted.
+    with open(external_checkpoint_file, "w", encoding="utf-8") as checkpoint_handle:
+        checkpoint_handle.write(checkpoint_payload)
+        checkpoint_handle.flush()
+        os.fsync(checkpoint_handle.fileno())
     persisted_checkpoint = json.loads(external_checkpoint_file.read_text(encoding="utf-8"))
     reopened = open_chronicle(chronicle_log_path, "g2-28-transfer-writer", 1)
     reopened_last_sequence = reopened["last_sequence"]
@@ -1154,20 +1174,27 @@ def _g2_28_verify_external_checkpoint(checkpoint_dir: Path, checkpoint_entry: di
     return persisted_checkpoint, external_checkpoint_file, reopened_last_sequence
 
 
-def record_g2_28_transfer_stage_chronicle_events(*, work_dir: Path, policy: AuthorityTransferStabilizationPolicy) -> G2_28_ChronicleTransferEvidence:
+def record_g2_28_transfer_stage_chronicle_events(
+    *, work_dir: Path, policy: AuthorityTransferStabilizationPolicy, real_transfer_id: str = G2_28_TRANSFER_ID,
+) -> G2_28_ChronicleTransferEvidence:
     """Real Chronicle events for the TRANSFER-STAGE lifecycle itself --
     distinct from execute_g2_28_first_construction_slice's own
     "g2-28-construction-intent"/"-completed" entries, which cover the
     one real construction COMMIT, not the transfer record's own stage
     transitions. Drives a fresh, disposable record (never the real
-    G2_28_TRANSFER_ID) through PREPARED -> STAGED -> SOFT_COMMITTED ->
-    STABILIZING, appending a real chronicle_cli entry (genuinely digesting
-    the record's own content at each point, not a canned string) at each
-    edge, with the external checkpoint -- persisted to a genuinely
-    separate directory, not a sibling of the chronicle log -- verified
-    immediately after SOFT_COMMITTED and before STABILIZING is appended,
-    so the freshly re-opened head genuinely predates the STABILIZING
-    entry, matching G2-21's own ordering."""
+    G2_28_TRANSFER_ID record object itself) through PREPARED -> STAGED ->
+    SOFT_COMMITTED -> STABILIZING, appending a real chronicle_cli entry
+    at each edge whose digest genuinely binds BOTH the disposable
+    demonstration record's own content at that exact lifecycle point AND
+    `real_transfer_id` -- the actual transfer this evidence is gathered
+    on behalf of (Codex review finding, PR #89 round 3, reproduced: an
+    evidence trail that only authenticates a disposable stand-in's own
+    identity cannot prove which real transfer it belongs to). The
+    external checkpoint -- persisted to a genuinely separate directory,
+    not a sibling of the chronicle log -- is verified immediately after
+    SOFT_COMMITTED and before STABILIZING is appended, so the freshly
+    re-opened head genuinely predates the STABILIZING entry, matching
+    G2-21's own ordering."""
     record = AuthorityTransferRecord(
         transfer_id=G2_28_EVIDENCE_SLICE_TRANSFER_ID,
         from_authority_ref=GEN1_CONSTRUCTION_AUTHORITY_REF,
@@ -1183,11 +1210,11 @@ def record_g2_28_transfer_stage_chronicle_events(*, work_dir: Path, policy: Auth
 
     record = record.transition(AuthorityTransferStage.STAGED, policy=policy)
     event_type = "g2-28-construction-transfer-staged"
-    entries.append(append_entry(log_path, "g2-28-transfer-writer", 1, "g2-28-transfer-writer", 1, event_type, _g2_28_transfer_event_payload_digest(record, event_type)))
+    entries.append(append_entry(log_path, "g2-28-transfer-writer", 1, "g2-28-transfer-writer", 1, event_type, _g2_28_transfer_event_payload_digest(record, event_type, real_transfer_id)))
 
     record = record.transition(AuthorityTransferStage.SOFT_COMMITTED, policy=policy)
     event_type = "g2-28-construction-transfer-soft-committed"
-    entries.append(append_entry(log_path, "g2-28-transfer-writer", 1, "g2-28-transfer-writer", 1, event_type, _g2_28_transfer_event_payload_digest(record, event_type)))
+    entries.append(append_entry(log_path, "g2-28-transfer-writer", 1, "g2-28-transfer-writer", 1, event_type, _g2_28_transfer_event_payload_digest(record, event_type, real_transfer_id)))
 
     checkpoint_entry = entries[1]  # the SOFT_COMMITTED entry
     checkpoint_dir = Path(tempfile.mkdtemp(prefix="g2-28-external-checkpoint-store-"))
@@ -1198,7 +1225,7 @@ def record_g2_28_transfer_stage_chronicle_events(*, work_dir: Path, policy: Auth
     entries.append(
         append_entry(
             log_path, "g2-28-transfer-writer", 1, "g2-28-transfer-writer", 1,
-            event_type, _g2_28_transfer_event_payload_digest(record, event_type),
+            event_type, _g2_28_transfer_event_payload_digest(record, event_type, real_transfer_id),
         )
     )
 
@@ -1416,7 +1443,7 @@ def execute_g2_28_stabilization_evidence_slice(
     policy = policy or build_g2_28_construction_authority_transfer_policy()
     record = record or open_g2_28_construction_authority_transfer(policy=policy)
 
-    chronicle_evidence = record_g2_28_transfer_stage_chronicle_events(work_dir=work_dir, policy=policy)
+    chronicle_evidence = record_g2_28_transfer_stage_chronicle_events(work_dir=work_dir, policy=policy, real_transfer_id=record.transfer_id)
     recovery_evidence = induce_g2_28_transfer_crash_and_recover(work_dir=work_dir, record=chronicle_evidence.record)
     rehearsal = execute_g2_28_construction_authority_transfer_rehearsal(policy=policy)
 
@@ -1431,7 +1458,14 @@ def execute_g2_28_stabilization_evidence_slice(
             # names this slice's own policy fields happen to use are NOT
             # valid stabilization_evidence keys, and AuthorityTransferRecord
             # .validate() rejects unknown categories outright.
-            "chronicle_events": tuple(f"{entry['event_type']}@sequence={entry['sequence']}" for entry in chronicle_evidence.entries),
+            # Each entry's own payload_digest already binds real_transfer_id
+            # (see _g2_28_transfer_event_payload_digest) -- included here
+            # too so this evidence string is independently re-verifiable
+            # without needing to re-open the chronicle log.
+            "chronicle_events": tuple(
+                f"{entry['event_type']}@sequence={entry['sequence']}, payload_digest={entry['payload_digest']}, real_transfer_id={record.transfer_id}"
+                for entry in chronicle_evidence.entries
+            ),
             "external_checkpoint": (
                 f"checkpoint_sequence={chronicle_evidence.external_checkpoint_entry['sequence']}",
                 f"checkpoint_digest={chronicle_evidence.external_checkpoint_entry['entry_digest']}",

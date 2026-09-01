@@ -441,6 +441,26 @@ def test_g2_28_stabilization_evidence_slice_runs_end_to_end(tmp_path: Path) -> N
     assert result.rehearsal.reinstated_record.stage == AuthorityTransferStage.STAGED
 
 
+def test_g2_28_chronicle_events_genuinely_bind_the_real_transfer_id(tmp_path: Path) -> None:
+    """Codex review finding on PR #89 (round 3): a chronicle entry's
+    digest must authenticate WHICH real transfer this evidence was
+    gathered for, not merely the disposable demonstration record's own
+    identity -- two calls differing only in real_transfer_id must
+    produce genuinely different digests for the same lifecycle point."""
+    work_dir_a = tmp_path / "work-a"
+    work_dir_a.mkdir()
+    work_dir_b = tmp_path / "work-b"
+    work_dir_b.mkdir()
+    policy = sc28.build_g2_28_construction_authority_transfer_policy()
+
+    evidence_a = sc28.record_g2_28_transfer_stage_chronicle_events(work_dir=work_dir_a, policy=policy, real_transfer_id="transfer-a")
+    evidence_b = sc28.record_g2_28_transfer_stage_chronicle_events(work_dir=work_dir_b, policy=policy, real_transfer_id="transfer-b")
+
+    digests_a = [entry["payload_digest"] for entry in evidence_a.entries]
+    digests_b = [entry["payload_digest"] for entry in evidence_b.entries]
+    assert digests_a != digests_b, "different real_transfer_id must produce genuinely different digests"
+
+
 def test_g2_28_stabilization_evidence_slice_binds_evidence_to_the_real_transfer_record(tmp_path: Path) -> None:
     """Codex review finding on PR #89 (round 1): the gathered evidence
     must be traceably bound to the real G2_28_TRANSFER_ID record, not
