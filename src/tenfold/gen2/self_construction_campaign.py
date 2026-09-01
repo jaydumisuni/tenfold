@@ -58,14 +58,14 @@ one real construction action through all of the above.
 
 from __future__ import annotations
 
-import json
 import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from tenfold.assurance_adapters import AssuranceVerdict, FrozenAssuranceRequest, SergeantMilestoneAdapter, VerifiedAssurance
-from tenfold.contracts import NodeState, TaskPacket, canonical_digest
+from tenfold.contracts import EvidencePacket, NodeState, TaskPacket, canonical_digest
 from tenfold.local_git_transport import LocalGitRepositoryTransport
+from tenfold.officers import OfficerReport
 from tenfold.ownership import LeaseRegistry, WriteLease
 from tenfold.persistence import AssignmentRef, CampaignSnapshot
 from tenfold.repository_facility import RepositoryFacility, RepositoryStateStore, repository_ref_resource, repository_request_binding
@@ -73,6 +73,7 @@ from tenfold.sergeant_transport import MappingReviewMaterialResolver, SergeantAp
 
 from .authority_transfer_bridge import rust_check_authority_transfer_transition
 from .campaign_compiler import CompiledCampaign, compile_campaign_program
+from .chronicle_bridge import append_entry, open_chronicle
 from .constitutional import (
     AmbiguityImpactDomain,
     CandidateLedger,
@@ -94,11 +95,13 @@ from .constitutional import (
     AuthorityTransferStage,
 )
 from . import effect_census, proof_graph, runtime_obligation
+from .council_pin import CouncilInvocationResponse, invoke_pinned_council, load_frozen_council_pin
 from .dispatch_lease import gen1_lease_acquire
 from .recovery_takeover import ExternalAssuranceProof, SERGEANT_AUTHORITY_VERSION, _sergeant_env
 from .repository_construction_facility import (
     DisposableRepositoryConstructionRig,
     gen1_wrap_repository_construction_facility,
+    list_branches,
     real_commit_parent,
 )
 from .verifier import independent_reconcile_external_assurance
@@ -234,10 +237,39 @@ def _g2_28_classification_closure() -> ClassificationClosure:
 
 
 def _g2_28_policy() -> ConstitutionalPolicySet:
+    # Review finding (PR #87, Codex, reproduced): the real, frozen
+    # Assurance Matrix (docs/02-assurance-matrix.md, Generation 1) is
+    # explicit: "Change to Tenfold authority, rank, evidence admission,
+    # coupling policy, Assurance Matrix, or founding invariant -- Tenfold
+    # Council + independent authority review; Owner approval where
+    # authority policy changes." A construction-execution AUTHORITY
+    # TRANSFER is exactly that -- routing solely to "sergeant" (this
+    # module's own earlier choice, copied from an isolated unit-test
+    # fixture pattern never meant to represent a real authority change)
+    # under-specified the required assurance, letting
+    # derive_mandatory_assurance() omit Council entirely. Routes to BOTH
+    # now, matching the Matrix's own "requirements compose" rule --
+    # "sergeant" for G2-28's own external-assurance submission (the same
+    # established pattern G2-27's own gate uses), "tenfold_council" for a
+    # real Council invocation (see run_g2_28_council_review below, which
+    # genuinely calls the real, already-built `council_pin
+    # .invoke_pinned_council`/`council.reconcile` -- no other real,
+    # non-test call site of that machinery exists anywhere in Gen2 yet;
+    # this is the first). The Matrix's own text names "Council" and
+    # "independent authority review" as two distinct things; this slice
+    # treats Council's own invocation as satisfying both together
+    # (Council IS the independent review body Gen2's own established
+    # convention already uses elsewhere in this project for exactly this
+    # role) -- disclosed here explicitly as a genuinely open scope
+    # question rather than silently assumed, since no other real Gen2
+    # code has needed to resolve it yet either. Owner approval (the
+    # Matrix's third clause) is separately, genuinely satisfied by
+    # `G2_28_OWNER_AUTHORIZATION`, carried in this record's own
+    # `observer_predicates` evidence.
     req_to_obl = {rc: (ObligationClass(rc.value),) for rc in RequirementClass}
     obl_to_predicates = {oc: (f"predicate-{oc.value}",) for oc in ObligationClass}
     obl_to_fals = {oc: FalsificationClass.STANDARD for oc in ObligationClass}
-    obl_to_routing = {oc: ("sergeant",) for oc in ObligationClass}
+    obl_to_routing = {oc: ("sergeant", "tenfold_council") for oc in ObligationClass}
     req_to_impact = {rc: (AmbiguityImpactDomain.MUTATION,) for rc in RequirementClass}
     return ConstitutionalPolicySet(
         policy_generation=1,
@@ -246,6 +278,14 @@ def _g2_28_policy() -> ConstitutionalPolicySet:
         obligation_class_to_falsification_class=obl_to_fals,
         obligation_class_to_assurance_routing=obl_to_routing,
         requirement_classification_to_ambiguity_impact_domains=req_to_impact,
+        # DISCLOSED: no real Gen2 code anywhere binds assurance_matrix_digest
+        # to a genuine hash of docs/02-assurance-matrix.md's own live content
+        # yet (proof_transfer.py, the only other real -- non-test -- module
+        # constructing a ConstitutionalPolicySet, uses the identical "m" * 64
+        # placeholder) -- this slice does not attempt to close that
+        # pre-existing, project-wide gap on its own; the ROUTING fix above
+        # (reading the Matrix's own text and routing accordingly) is what
+        # this round's finding asked for and is what's fixed here.
         assurance_matrix_generation=1,
         assurance_matrix_digest="m" * 64,
         non_weakenable_exemptions=(),
@@ -452,6 +492,36 @@ def build_observed_effect_for_construction_commit(
     )
 
 
+def build_unexpected_branch_effects(
+    rig: DisposableRepositoryConstructionRig, *, repository_name: str, target_branch: str, branches_before: dict[str, str],
+) -> tuple[effect_census.ObservedEffect, ...]:
+    """Review finding (PR #87, Codex, P1, reproduced): the Effect Census
+    only ever built an `ExpectedEffect`/`ObservedEffect` pair for the ONE
+    target branch -- a concurrent or induced mutation to any OTHER
+    branch would never enter `observed` at all, so it could never be
+    caught as residue. Enumerates every branch that currently exists
+    (`list_branches`) and reports any whose head differs from its
+    `branches_before` snapshot (captured by the caller immediately
+    before the mutation) as a real, unattributed `ObservedEffect` --
+    deliberately with NO matching `ExpectedEffect`, so
+    `classify_effect_census` correctly reports it as residue. The
+    target branch itself is excluded (its own expected change is
+    handled by `build_observed_effect_for_construction_commit`)."""
+    unexpected: list[effect_census.ObservedEffect] = []
+    for b in list_branches(rig):
+        if b == target_branch:
+            continue
+        current = rig.transport.resolve_ref(repository_name, b)
+        if branches_before.get(b) != current:
+            unexpected.append(
+                effect_census.ObservedEffect(
+                    effect_id=f"g2-28-unexpected-branch-change-{b}", target_resource_id=repository_ref_resource(repository_name, b),
+                    has_evidence=True, chronicle_journaled=False,
+                )
+            )
+    return tuple(unexpected)
+
+
 # ============================================================================
 # G2-28's own real, separate Sergeant assurance request -- its own
 # milestone, its own files, a genuinely different Sergeant call from
@@ -537,6 +607,72 @@ def run_g2_28_external_assurance(result_summary: dict) -> ExternalAssuranceProof
 
 
 # ============================================================================
+# G2-28's own real Council invocation. Review finding (PR #87, Codex,
+# reproduced): the real Assurance Matrix routes an authority change to
+# Council too, not Sergeant alone -- see `_g2_28_policy`'s own comment.
+# Genuinely calls the real, already-built `council_pin.invoke_pinned_council`
+# (which itself admits `"council_pin"` through the real Trust Table,
+# verifies the pin against live state, and calls the real
+# `council.reconcile()`) -- TWICE, independently (the same "never trust a
+# single invocation" discipline every other external-assurance call site
+# in this campaign applies, even though Council's own reconciliation is
+# local/deterministic rather than genuinely external like Sergeant -- the
+# risk being guarded against is process-level tampering between the two
+# calls, not the reviewer's own non-determinism), reconciled via the same
+# `independent_reconcile_external_assurance` every other assurance type
+# in this project already uses. No other real (non-test) call site of
+# `invoke_pinned_council` exists anywhere in Gen2 yet -- this is the
+# first.
+# ============================================================================
+
+
+@dataclass(frozen=True)
+class CouncilReviewProof:
+    supplied: CouncilInvocationResponse
+    retained: CouncilInvocationResponse
+    reconciled: bool
+    mismatch_reason: str | None
+    accepted_for_rebrief: bool
+
+
+def run_g2_28_council_review(*, officer_report: OfficerReport, satisfied_assurance: tuple[str, ...]) -> CouncilReviewProof:
+    pin = load_frozen_council_pin()
+
+    def _invoke():
+        return invoke_pinned_council(
+            pin, "g2-28", [officer_report], required_assurance=("sergeant",), satisfied_assurance=satisfied_assurance, authority_generation=pin.pin_generation,
+        )
+
+    supplied = _invoke()
+    retained = _invoke()
+
+    result = independent_reconcile_external_assurance(
+        assurance_type="tenfold_council",
+        expected_campaign_generation=1,
+        expected_milestone_id="g2-28",
+        expected_obligation_ids=("OB-G2-28-1",),
+        supplied_request_digest=supplied.request.request_digest,
+        supplied_response_digest=supplied.response_digest,
+        supplied_authority_identity="tenfold_council",
+        supplied_authority_generation=pin.pin_generation,
+        supplied_campaign_generation=1,
+        supplied_milestone_id=supplied.request.milestone_id,
+        supplied_obligation_ids=("OB-G2-28-1",),
+        retained_request_digest=retained.request.request_digest,
+        retained_response_digest=retained.response_digest,
+        retained_authority_identity="tenfold_council",
+        retained_authority_generation=pin.pin_generation,
+    )
+    if not result.reconciled:
+        raise G2_28_CampaignError(f"Council review reconciliation failed: {result.mismatch_reason}")
+
+    return CouncilReviewProof(
+        supplied=supplied, retained=retained, reconciled=result.reconciled, mismatch_reason=result.mismatch_reason,
+        accepted_for_rebrief=supplied.ground_picture.accepted_for_rebrief and retained.ground_picture.accepted_for_rebrief,
+    )
+
+
+# ============================================================================
 # Orchestrator.
 # ============================================================================
 
@@ -548,6 +684,7 @@ class G2_28_SliceResult:
     landed_sha: str
     proof_state: ProofState
     external_assurance: ExternalAssuranceProof
+    council_review: CouncilReviewProof
 
 
 def execute_g2_28_first_construction_slice(*, work_dir: Path, repo_root: Path = REPO_ROOT, repository_name: str = "tenfold") -> G2_28_SliceResult:
@@ -584,6 +721,35 @@ def execute_g2_28_first_construction_slice(*, work_dir: Path, repo_root: Path = 
         repo_root=repo_root, repository_name=repository_name, state_db_path=state_db_path, campaign_generation=1, foreman_epoch=1,
     )
 
+    # Review finding (PR #87, Codex, P1, reproduced): the branch creation
+    # and commit below happened with no verified durable write-ahead
+    # record -- if the process died mid-mutation, there would be no
+    # authoritative record from which to reconstruct occurrence vs
+    # non-occurrence afterward. A real Chronicle log (the same real
+    # compiled Rust engine authority_transfer.py's own G2-21 pattern
+    # uses, via chronicle_bridge) is now opened BEFORE either mutation,
+    # with a genuine "intent" entry appended before create_branch/commit
+    # and a "completed" entry appended only after both genuinely
+    # succeeded -- so a crash between intent and completion leaves an
+    # honest, distinguishable, recoverable trace.
+    chronicle_log_path = Path(work_dir) / "g2-28-construction.chronicle"
+    open_chronicle(chronicle_log_path, "g2-28-construction-writer", 1)
+
+    # Review finding (PR #87, Codex, P1, reproduced): the Effect Census
+    # below only ever built an ExpectedEffect/ObservedEffect pair for the
+    # ONE target branch it intended to change -- a concurrent or induced
+    # mutation to any OTHER branch would never even enter the census
+    # (both `expected` and `observed` were constructed solely for the
+    # producer-declared target), so it could never be detected as
+    # residue. Enumerating the full observation cover BEFORE the
+    # mutation (every branch's own current head) lets any branch that
+    # changed unexpectedly be added as a genuine, unattributed
+    # `ObservedEffect` below, matching SC-23's own established
+    # ENUMERATION_COMPLETENESS precedent (`list_branches` was built
+    # specifically because Gen1's real Facility exposes no enumeration
+    # of its own).
+    branches_before = {b: rig.transport.resolve_ref(repository_name, b) for b in list_branches(rig)}
+
     log_path = "docs/gen2/G2-28-construction-log.md"
     entry_lines = [
         "# G2-28 Construction Log",
@@ -607,6 +773,9 @@ def execute_g2_28_first_construction_slice(*, work_dir: Path, repo_root: Path = 
     ]
     content = "\n".join(entry_lines).encode("utf-8")
     files = {log_path: content}
+
+    intent_payload_digest = canonical_digest({"branch": branch, "log_path": log_path, "content_digest": canonical_digest(content.hex()), "expected_base_sha": rig.initial_sha})
+    intent_entry = append_entry(chronicle_log_path, "g2-28-construction-writer", 1, "g2-28-construction-writer", 1, "g2-28-construction-intent", intent_payload_digest)
 
     create_branch_request = {
         "operation_id": "op-g2-28-first-live-branch",
@@ -646,12 +815,26 @@ def execute_g2_28_first_construction_slice(*, work_dir: Path, repo_root: Path = 
     )
     landed_sha = receipt.result
 
+    completion_payload_digest = canonical_digest({"branch": branch, "landed_sha": landed_sha, "intent_entry_digest": intent_entry["entry_digest"]})
+    append_entry(chronicle_log_path, "g2-28-construction-writer", 1, "g2-28-construction-writer", 1, "g2-28-construction-completed", completion_payload_digest)
+
     expected = build_expected_effect_for_construction_commit(effect_id="g2-28-construction-log-first-entry", repository_name=repository_name, branch=branch)
     observed = build_observed_effect_for_construction_commit(
         rig, effect_id="g2-28-construction-log-first-entry", repository_name=repository_name, branch=branch,
         landed_sha=landed_sha, expected_head=rig.initial_sha,
     )
-    census = effect_census.classify_effect_census(expected=(expected,), observed=(observed,), authorized_mutation_domain=frozenset({resource}))
+    # Observation-cover completeness: any branch OTHER than the target
+    # whose head genuinely changed (or that appeared new) since
+    # `branches_before` was captured is a real, unattributed effect --
+    # added here with no matching `expected` entry, so
+    # classify_effect_census correctly reports it as residue rather than
+    # silently ignoring it, matching SC-23's own enumeration-completeness
+    # precedent (see the module comment where `branches_before` is
+    # captured).
+    unexpected_observed = build_unexpected_branch_effects(rig, repository_name=repository_name, target_branch=branch, branches_before=branches_before)
+    census = effect_census.classify_effect_census(
+        expected=(expected,), observed=(observed, *unexpected_observed), authorized_mutation_domain=frozenset({resource}),
+    )
     effect_census.check_effect_integrity(census)
 
     unresolved = runtime_obligation.UnresolvedEffectObservation(
@@ -713,24 +896,92 @@ def execute_g2_28_first_construction_slice(*, work_dir: Path, repo_root: Path = 
     }
     assurance = run_g2_28_external_assurance(result_summary)
 
-    assurance_claim = proof_graph.AssuranceBindingClaim(
-        assurance_type="sergeant",
-        expected_campaign_generation=1,
-        expected_milestone_id="g2-28",
-        expected_obligation_ids=(canonical_digest(result_summary),),
-        supplied_request_digest=assurance.supplied.request_digest,
-        supplied_response_digest=assurance.supplied.response_digest,
-        supplied_authority_identity=assurance.supplied.authority_id,
-        supplied_authority_generation=1,
-        supplied_campaign_generation=assurance.supplied.campaign_generation,
-        supplied_milestone_id=assurance.supplied.milestone_id,
-        supplied_obligation_ids=(canonical_digest(result_summary),),
-        retained_request_digest=assurance.retained.request_digest,
-        retained_response_digest=assurance.retained.response_digest,
-        retained_authority_identity=assurance.retained.authority_id,
-        retained_authority_generation=1,
+    # Review finding (PR #87, Codex, P1, reproduced): AssuranceBindingClaim
+    # carries no verdict/eligibility field of its own -- compute_proof_verdict's
+    # own reconciliation only ever checks that the supplied/retained
+    # copies genuinely AGREE with each other, never whether Sergeant's
+    # verdict was actually a PASS. Handing it a claim unconditionally
+    # (as this code originally did) let a genuine NEEDS_WORK verdict
+    # count as "satisfied" toward PROVEN. Fixed by gating construction of
+    # the claim on genuine eligibility (both independent copies must
+    # agree the assurance is eligible) -- when not eligible, "sergeant"
+    # is simply absent from `satisfied_assurance_types` below, so
+    # `required_assurance <= satisfied_assurance` correctly fails and
+    # `compute_proof_verdict` returns NOT_PROVEN, exactly matching
+    # `self_construction.py`'s own established `final_capable = ... and
+    # external_assurance.supplied.eligible_for_satisfaction` discipline
+    # -- applied here at the claim-construction boundary instead of a
+    # second, separate top-level check, so a caller reading
+    # `G2_28_SliceResult.proof_state` alone cannot be misled.
+    assurance_bindings = []
+    if assurance.supplied.eligible_for_satisfaction and assurance.retained.eligible_for_satisfaction:
+        assurance_bindings.append(
+            proof_graph.AssuranceBindingClaim(
+                assurance_type="sergeant",
+                expected_campaign_generation=1,
+                expected_milestone_id="g2-28",
+                expected_obligation_ids=(canonical_digest(result_summary),),
+                supplied_request_digest=assurance.supplied.request_digest,
+                supplied_response_digest=assurance.supplied.response_digest,
+                supplied_authority_identity=assurance.supplied.authority_id,
+                supplied_authority_generation=1,
+                supplied_campaign_generation=assurance.supplied.campaign_generation,
+                supplied_milestone_id=assurance.supplied.milestone_id,
+                supplied_obligation_ids=(canonical_digest(result_summary),),
+                retained_request_digest=assurance.retained.request_digest,
+                retained_response_digest=assurance.retained.response_digest,
+                retained_authority_identity=assurance.retained.authority_id,
+                retained_authority_generation=1,
+            )
+        )
+
+    # Real Council review (see run_g2_28_council_review's own module
+    # comment -- Assurance Matrix routing fix, PR #87 Codex finding).
+    # The OfficerReport genuinely binds to this slice's own real,
+    # already-sealed task_for_commit (task_id/assignment_id/attempt/
+    # dispatch_digest) rather than fabricated placeholder values, and
+    # carries the real Effect Census / hazard evidence as EvidencePacket
+    # observations.
+    officer_report = OfficerReport(officer="assurance")
+    officer_report.ingest(
+        EvidencePacket(
+            packet_id="g2-28-first-slice-evidence",
+            task_id=task_for_commit.task_id,
+            assignment_id=task_for_commit.assignment_id,
+            attempt=task_for_commit.attempt,
+            dispatch_digest=task_for_commit.dispatch_digest,
+            campaign_id=CAMPAIGN_ID,
+            campaign_generation=1,
+            node_id=NODE_ID,
+            worker_identity="gen2-g2-28-construction-campaign",
+            source_binding="gen2-g2-28-live-source",
+            observations=(f"branch={branch}", f"landed_sha={landed_sha}", f"census_digest={census_digest}", f"ledger_digest={ledger_digest}"),
+        )
     )
-    verdict = proof_graph.compute_proof_verdict(graph, required_assurance, assurance_bindings=(assurance_claim,))
+    council_satisfied = ("sergeant",) if assurance.supplied.eligible_for_satisfaction and assurance.retained.eligible_for_satisfaction else ()
+    council_review = run_g2_28_council_review(officer_report=officer_report, satisfied_assurance=council_satisfied)
+    if council_review.accepted_for_rebrief:
+        assurance_bindings.append(
+            proof_graph.AssuranceBindingClaim(
+                assurance_type="tenfold_council",
+                expected_campaign_generation=1,
+                expected_milestone_id="g2-28",
+                expected_obligation_ids=("OB-G2-28-1",),
+                supplied_request_digest=council_review.supplied.request.request_digest,
+                supplied_response_digest=council_review.supplied.response_digest,
+                supplied_authority_identity="tenfold_council",
+                supplied_authority_generation=council_review.supplied.request.authority_generation,
+                supplied_campaign_generation=1,
+                supplied_milestone_id=council_review.supplied.request.milestone_id,
+                supplied_obligation_ids=("OB-G2-28-1",),
+                retained_request_digest=council_review.retained.request.request_digest,
+                retained_response_digest=council_review.retained.response_digest,
+                retained_authority_identity="tenfold_council",
+                retained_authority_generation=council_review.retained.request.authority_generation,
+            )
+        )
+
+    verdict = proof_graph.compute_proof_verdict(graph, required_assurance, assurance_bindings=tuple(assurance_bindings))
 
     # Review finding (PR #87, CodeRabbit, reproduced): the closure doc
     # claimed the Owner-authorization disclosure lives in this record's
@@ -752,4 +1003,4 @@ def execute_g2_28_first_construction_slice(*, work_dir: Path, repo_root: Path = 
         },
     )
 
-    return G2_28_SliceResult(transfer_record=final_record, branch=branch, landed_sha=landed_sha, proof_state=verdict, external_assurance=assurance)
+    return G2_28_SliceResult(transfer_record=final_record, branch=branch, landed_sha=landed_sha, proof_state=verdict, external_assurance=assurance, council_review=council_review)

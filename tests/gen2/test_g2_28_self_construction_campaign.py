@@ -80,16 +80,44 @@ def test_g2_28_owner_authorization_is_disclosed_not_hidden() -> None:
 # ============================================================================
 
 
-def test_g2_28_compiled_program_is_well_formed_and_routes_to_sergeant() -> None:
+def test_g2_28_compiled_program_is_well_formed_and_routes_to_sergeant_and_council() -> None:
+    """Review finding (PR #87, Codex, reproduced): the real, frozen
+    Assurance Matrix routes an authority change to Tenfold Council plus
+    independent authority review, not Sergeant alone -- routing solely
+    to sergeant under-specified the required assurance."""
     compiled = sc28.compile_g2_28_first_construction_program()
     compiled.program.validate()
     compiled.certificate.validate()
     compiled.proof_graph.validate()
     assert compiled.program.task_ids == ("TASK-OB-G2-28-1",)
     assert compiled.mutation_domain_obligation_ids == frozenset({"OB-G2-28-1"})
-    assert compiled.required_assurance == frozenset({"sergeant"})
+    assert compiled.required_assurance == frozenset({"sergeant", "tenfold_council"})
     assert len(compiled.proof_graph.nodes) == 1
     assert compiled.proof_graph.nodes[0].state == ProofState.UNSATISFIED
+
+
+def test_g2_28_council_review_genuinely_invokes_the_real_council_and_honestly_reflects_unresolved_sergeant() -> None:
+    """Real invocation of council_pin.invoke_pinned_council (twice,
+    independently reconciled, matching this project's own established
+    "never trust a single invocation" discipline) -- the first real,
+    non-test call site of that machinery anywhere in Gen2. Confirms:
+    genuine reconciliation between the two independent copies, and that
+    accepted_for_rebrief honestly comes back False when "sergeant" is
+    not in satisfied_assurance (an unresolved required assurance)."""
+    from tenfold.contracts import EvidencePacket
+    from tenfold.officers import OfficerReport
+
+    report = OfficerReport(officer="assurance")
+    report.ingest(
+        EvidencePacket(
+            packet_id="test-evidence", task_id="test-task", assignment_id="test-assign", attempt=1, dispatch_digest="d" * 64,
+            campaign_id=sc28.CAMPAIGN_ID, campaign_generation=1, node_id=sc28.NODE_ID, worker_identity="test", source_binding="test",
+        )
+    )
+    review = sc28.run_g2_28_council_review(officer_report=report, satisfied_assurance=())
+    assert review.reconciled is True
+    assert review.mismatch_reason is None
+    assert review.accepted_for_rebrief is False, "sergeant is unresolved (not in satisfied_assurance) -- Council must not accept for rebrief"
 
 
 # ============================================================================
@@ -152,6 +180,43 @@ def test_g2_28_observed_effect_rejects_a_landed_sha_that_never_reached_the_targe
         ec.check_effect_integrity(census)
 
 
+def test_g2_28_build_unexpected_branch_effects_catches_a_concurrent_change_to_another_branch(tmp_path) -> None:
+    """Review finding (PR #87, Codex, P1, reproduced): the Effect Census
+    only ever checked the ONE target branch it intended to change --
+    a concurrent or induced mutation to any OTHER branch would go
+    completely undetected since it never entered `observed` at all.
+    Reproduces exactly that: a branch unrelated to the target genuinely
+    changes between the `branches_before` snapshot and the check, and
+    confirms it is now reported as a real, unattributed effect."""
+    from tenfold.gen2 import effect_census as ec
+    from tenfold.repository_facility import repository_ref_resource
+
+    repo_root = _disposable_repo_root(tmp_path)
+    rig = sc28.build_live_repository_construction_facility(
+        repo_root=repo_root, repository_name="disposable-repo", state_db_path=tmp_path / "state.db",
+        campaign_generation=1, foreman_epoch=1,
+    )
+    subprocess.run(["git", "-C", str(repo_root), "branch", "other-branch"], check=True, capture_output=True)
+    branches_before = {b: rig.transport.resolve_ref("disposable-repo", b) for b in list_branches(rig)}
+
+    # Simulate a concurrent/induced mutation to the unrelated branch --
+    # nothing to do with this slice's own intended target branch at all.
+    subprocess.run(["git", "-C", str(repo_root), "checkout", "-q", "other-branch"], check=True, capture_output=True)
+    (repo_root / "unexpected.txt").write_text("z\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_root), "add", "unexpected.txt"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "commit", "-qm", "unexpected concurrent change"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "checkout", "-q", "main"], check=True, capture_output=True)
+
+    unexpected = sc28.build_unexpected_branch_effects(rig, repository_name="disposable-repo", target_branch="a-different-target-branch", branches_before=branches_before)
+    assert len(unexpected) == 1
+    assert unexpected[0].target_resource_id == repository_ref_resource("disposable-repo", "other-branch")
+    assert unexpected[0].has_evidence is True
+
+    census = ec.classify_effect_census(expected=(), observed=unexpected, authorized_mutation_domain=frozenset({repository_ref_resource("disposable-repo", "a-different-target-branch")}))
+    with pytest.raises(ec.EffectCensusError):
+        ec.check_effect_integrity(census)
+
+
 def test_g2_28_live_dispatch_builds_a_genuinely_sealed_task_bound_to_the_real_lease(tmp_path) -> None:
     from tenfold.ownership import LeaseRegistry
     from tenfold.repository_facility import repository_ref_resource
@@ -197,9 +262,32 @@ def test_g2_28_first_construction_slice_runs_end_to_end_against_a_disposable_rep
     assert result.transfer_record.stage == AuthorityTransferStage.STAGED
     assert result.branch == "gen2/g2-28-first-live-construction"
     assert result.landed_sha
-    assert result.proof_state in (ProofState.PROVEN, ProofState.NOT_PROVEN)
     assert result.external_assurance.reconciled is True
     assert result.external_assurance.supplied.verdict is not None
+    assert result.council_review.reconciled is True
+
+    # Round-2 review findings (PR #87, Codex), all reproduced and fixed:
+    # given Sergeant's own real, live g2-28 submission genuinely returns
+    # NEEDS_WORK (not eligible for satisfaction -- the standing external
+    # condition documented in docs/gen2/G2-27-SC23-closure-review-record.md),
+    # a correctly-gated proof MUST honestly come back NOT_PROVEN: neither
+    # the Sergeant claim nor the Council claim is admitted into
+    # compute_proof_verdict when not genuinely eligible/accepted, so
+    # required_assurance can never be satisfied. This is the honest,
+    # correct result -- the earlier, ungated version of this code
+    # incorrectly reached PROVEN despite the open NEEDS_WORK verdict.
+    assert result.external_assurance.supplied.eligible_for_satisfaction is False, "Sergeant's real g2-28 verdict is expected NEEDS_WORK; if this now passes, update this test and the closure doc"
+    assert result.proof_state == ProofState.NOT_PROVEN
+    assert result.council_review.accepted_for_rebrief is False, "Council's own ground picture must honestly reflect the unresolved sergeant assurance"
+
+    # Real write-ahead Chronicle journaling (round-2 finding): a genuine
+    # intent entry before the mutation and a completion entry after,
+    # recoverable from the real chronicle log file on disk.
+    chronicle_log_path = work_dir / "g2-28-construction.chronicle"
+    assert chronicle_log_path.exists()
+    from tenfold.gen2.chronicle_bridge import open_chronicle as _open_chronicle
+    reopened = _open_chronicle(chronicle_log_path, "g2-28-construction-writer", 1)
+    assert reopened["last_sequence"] >= 2, "expected at least the intent and completion entries"
 
     # The one real commit genuinely landed: real child-of-initial-sha,
     # on its own new branch -- never checked out, so the working tree
