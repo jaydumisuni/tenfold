@@ -89,6 +89,18 @@ class LocalGitRepositoryTransport:
                 "LANG": "C",
             }
         )
+        # Global/system config is deliberately blanked above, so this process never
+        # inherits the operator's own `safe.directory` trust (some filesystems, e.g.
+        # certain Windows drives, report no owner and trip git's dubious-ownership
+        # check). Re-declare it here, scoped only to the roots this transport has
+        # explicitly registered -- narrower than a blanket allow, and confined to
+        # this subprocess's environment rather than any file on disk.
+        safe_directories = sorted({str(registered.root) for registered in self._repositories.values()})
+        for index, directory in enumerate(safe_directories):
+            env[f"GIT_CONFIG_KEY_{index}"] = "safe.directory"
+            env[f"GIT_CONFIG_VALUE_{index}"] = directory
+        if safe_directories:
+            env["GIT_CONFIG_COUNT"] = str(len(safe_directories))
         if extra:
             env.update(extra)
         return env

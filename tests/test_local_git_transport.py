@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import subprocess
 import pytest
 from tenfold.local_git_transport import LocalGitRepositoryTransport, LocalGitTransportError
@@ -48,6 +49,34 @@ def test_expected_head_is_atomic_and_stale_writes_fail(tmp_path):
     with pytest.raises(LocalGitTransportError, match="expected-head"):
         transport.commit_files("tenfold", "tf30/bounded", main, {"two.txt": b"2"}, "two\n")
     assert transport.resolve_ref("tenfold", "tf30/bounded") == new
+
+
+def test_environment_scopes_safe_directory_to_registered_repos_only(tmp_path):
+    (tmp_path / "a").mkdir()
+    root_a = make_repo(tmp_path / "a")
+    transport = LocalGitRepositoryTransport({"tenfold": root_a})
+    env = transport._environment()
+    assert env["GIT_CONFIG_COUNT"] == "1"
+    assert env["GIT_CONFIG_KEY_0"] == "safe.directory"
+    assert env["GIT_CONFIG_VALUE_0"] == str(root_a.resolve())
+    # Global/system config is deliberately blanked -- confirm the scoped
+    # re-declaration is the only source of safe.directory trust reaching git.
+    assert env["GIT_CONFIG_GLOBAL"] == os.devnull
+    assert env["GIT_CONFIG_NOSYSTEM"] == "1"
+
+
+def test_environment_declares_one_safe_directory_entry_per_registered_repo(tmp_path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    root_a = make_repo(tmp_path / "a")
+    root_b = make_repo(tmp_path / "b")
+    transport = LocalGitRepositoryTransport({"tenfold": root_a, "other": root_b})
+    env = transport._environment()
+    assert env["GIT_CONFIG_COUNT"] == "2"
+    declared = {env["GIT_CONFIG_VALUE_0"], env["GIT_CONFIG_VALUE_1"]}
+    assert declared == {str(root_a.resolve()), str(root_b.resolve())}
+    assert env["GIT_CONFIG_KEY_0"] == "safe.directory"
+    assert env["GIT_CONFIG_KEY_1"] == "safe.directory"
 
 
 def test_transport_rejects_unregistered_escape_symlink_and_release_authority(tmp_path):
