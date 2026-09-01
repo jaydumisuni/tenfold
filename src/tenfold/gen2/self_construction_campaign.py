@@ -646,6 +646,22 @@ def run_g2_28_council_review(*, officer_report: OfficerReport, satisfied_assuran
     supplied = _invoke()
     retained = _invoke()
 
+    # DISCLOSED (review finding, PR #87, CodeRabbit, trivial/nitpick,
+    # correct): unlike Sergeant's real VerifiedAssurance,
+    # CouncilInvocationResponse carries no campaign-generation or
+    # obligation-binding fields of its own, and no independent
+    # authority-identity string distinct from the constant this module
+    # already asserts -- so the campaign_generation, obligation_ids, and
+    # authority_identity arms below necessarily compare a literal
+    # against itself (`1 == 1`, `("OB-G2-28-1",) == ("OB-G2-28-1",)`,
+    # `"tenfold_council" == "tenfold_council"`) and can never themselves
+    # report a mismatch. This is a genuine limitation of the real
+    # Council contract, not a bug to fix -- named here explicitly so a
+    # later reader does not mistake these arms for enforced
+    # reconciliation. The request_digest/response_digest/milestone_id
+    # arms below remain real, genuine checks (bound to
+    # CouncilInvocationResponse's own real digests and the request's
+    # own real milestone_id field).
     result = independent_reconcile_external_assurance(
         assurance_type="tenfold_council",
         expected_campaign_generation=1,
