@@ -1,7 +1,7 @@
 # PM-ECO-PROGRESS-001 — Eco-progress Execution Profile
 
 Status: **PROVISIONAL**  
-Revision: **0.1.0**  
+Revision: **0.1.1**  
 Project: **eco-progress**  
 Applicable global methods: **OM-001**
 
@@ -163,6 +163,7 @@ Evidence recovered during the active EP15 campaign:
 - Task 9 RED correctly produced three intended Project Zero failures before EP14 evidence admission.
 - After EP14 evidence admission, a broader regression exposed one stale Project Zero expectation inside the Hunter reproduction suite; this was classified as a test expectation coupled to the old EP13->EP14 frontier, not a product-model defect.
 - Review caught two material campaign defects before canonical publication: predecessor authority drift and a reverse dependency that would have introduced a cycle.
+- The first actual Tenfold EP15 Council execution reached the Project Method Registry and failed closed because alias `Eco-progress` case-folded to the canonical `eco-progress` project ID. The registry therefore requires alias uniqueness after normalization, not merely byte-level uniqueness.
 - No canonical EP15 promotion has occurred at this profile revision.
 
 ## Known project-specific failure modes
@@ -177,12 +178,14 @@ Evidence recovered during the active EP15 campaign:
 - mutating frozen EP14 registry authority during import;
 - introducing a reverse dependency that creates a cycle;
 - updating the primary Project Zero test while leaving a secondary reproduction suite bound to the old frontier;
+- registering a project alias that normalizes to the same key as the canonical project ID;
 - leaking temporary CI/Tenfold proof machinery into canonical product history;
 - proving one branch head and promoting different bytes.
 
 ## Method discovery targets
 
 - reduce repeated Project Zero frontier expectations duplicated across suites;
+- validate normalized alias uniqueness at profile-registration time before a campaign reaches Council;
 - make exact-candidate proof binding and product-tree exclusion checks more automated;
 - improve automated detection of temporary proof artifacts before candidate synthesis;
 - measure whether dedicated adversarial review grouping lowers later full-regression rework.
@@ -190,9 +193,14 @@ Evidence recovered during the active EP15 campaign:
 ## Candidate lessons for global promotion
 
 - When a project has multiple independent reproductions of the same derived frontier, transition work should enumerate and rebind all reproductions before GREEN is claimed. Keep project-specific until repeated elsewhere.
+- Project method aliases must be unique under the registry's normalization function, not merely textually distinct. Keep this as a Tenfold registry invariant unless broader authority promotes it elsewhere.
 - Product-tree synthesis from an exact predecessor is useful where private branch history intentionally contains disposable proof machinery; cross-project evidence is required before promoting this beyond OM-001 guidance.
 
 ## Revision history
+
+### 0.1.1 — 2026-09-06
+
+Recorded the actual Tenfold runtime binding failure caused by the `Eco-progress` alias normalizing to canonical project ID `eco-progress`; added normalized-alias uniqueness as an explicit campaign failure mode and method-learning target.
 
 ### 0.1.0 — 2026-09-06
 
