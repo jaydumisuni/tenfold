@@ -2,6 +2,15 @@
   "schema_version": "0.1.0",
   "profiles": [
     {
+      "project_id": "eco-progress",
+      "profile_id": "PM-ECO-PROGRESS-001",
+      "revision": "0.1.0",
+      "status": "provisional",
+      "profile_path": "docs/project-methods/PM-ECO-PROGRESS-001.md",
+      "applicable_methods": ["OM-001"],
+      "aliases": ["Eco-progress", "EP15"]
+    },
+    {
       "project_id": "ptah",
       "profile_id": "PM-PTAH-001",
       "revision": "0.1.0",
