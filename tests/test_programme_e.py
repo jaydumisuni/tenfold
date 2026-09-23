@@ -28,9 +28,12 @@ from tenfold.facility import FacilityError, stable_digest
 from tenfold.oracle_facility import (
     OracleFacility,
     OracleLiveContext,
+    OracleObservedContext,
     OracleTerminalSpec,
     oracle_node_resource,
+    oracle_observed_request_binding,
     oracle_request_binding,
+    validate_observed_oracle_execution,
 )
 from tenfold.persistence import CampaignSnapshot
 from tenfold.ptah_facility import (
@@ -731,3 +734,151 @@ def test_prepare_only_assignment_cannot_cross_into_real_mutation_even_with_lease
             expected_context=transport.ctx,
         )
     assert transport.calls == []
+
+
+
+def _observed_terminal_result(
+    *,
+    context: OracleObservedContext,
+    spec: OracleTerminalSpec,
+    stdout: str = "Python 3.11.15\n",
+) -> dict:
+    return {
+        "targetNode": context.node_id,
+        "transport": context.transport,
+        "result": {
+            "args": list(spec.args),
+            "command": spec.command,
+            "cwd": spec.cwd,
+            "durationMs": 7,
+            "exitCode": 0,
+            "signal": None,
+            "stderr": "",
+            "stdout": stdout,
+            "timedOut": False,
+            "timeoutSeconds": spec.timeout_seconds,
+        },
+    }
+
+
+def test_observed_oracle_adapter_uses_live_assignment_lease_and_connection_id(
+    tmp_path,
+):
+    manifest, store = store_with_state(tmp_path)
+    context = OracleObservedContext(
+        "oracle.live.v1",
+        "connection-1",
+        "kratos-HP-290-G4-Microtower-PC",
+        True,
+    )
+    spec = OracleTerminalSpec(
+        "python3",
+        ("-V",),
+        "/home/kratos",
+        30,
+        context.node_id,
+    )
+    request_id = "tenfold-observed-0001"
+    task, _ = issue_task(
+        store,
+        manifest,
+        capability="oracle.terminal",
+        permission="execute",
+        request_binding=oracle_observed_request_binding(
+            spec,
+            request_id,
+            context,
+        ),
+        resource=oracle_node_resource(context.node_id),
+    )
+    evidence = validate_observed_oracle_execution(
+        task,
+        spec,
+        request_id=request_id,
+        foreman_epoch=1,
+        expected_context=context,
+        before_context=context,
+        after_context=context,
+        terminal_result=_observed_terminal_result(
+            context=context,
+            spec=spec,
+        ),
+        authority_store=store,
+    )
+    assert evidence.ok
+    metadata = dict(evidence.metadata)
+    assert metadata["transport"] == "oracle.live.v1"
+    assert metadata["connection_id"] == "connection-1"
+    assert metadata["dispatch_mode"] == "observed-external"
+
+
+def test_observed_oracle_adapter_rejects_connection_drift_and_result_drift(
+    tmp_path,
+):
+    manifest, store = store_with_state(tmp_path)
+    context = OracleObservedContext(
+        "oracle.live.v1",
+        "connection-1",
+        "kratos-HP-290-G4-Microtower-PC",
+        True,
+    )
+    spec = OracleTerminalSpec(
+        "python3",
+        ("-V",),
+        "/home/kratos",
+        30,
+        context.node_id,
+    )
+    request_id = "tenfold-observed-0002"
+    task, _ = issue_task(
+        store,
+        manifest,
+        capability="oracle.terminal",
+        permission="execute",
+        request_binding=oracle_observed_request_binding(
+            spec,
+            request_id,
+            context,
+        ),
+        resource=oracle_node_resource(context.node_id),
+    )
+
+    changed = OracleObservedContext(
+        "oracle.live.v1",
+        "connection-2",
+        context.node_id,
+        True,
+    )
+    with pytest.raises(FacilityError, match="changed during execution"):
+        validate_observed_oracle_execution(
+            task,
+            spec,
+            request_id=request_id,
+            foreman_epoch=1,
+            expected_context=context,
+            before_context=context,
+            after_context=changed,
+            terminal_result=_observed_terminal_result(
+                context=context,
+                spec=spec,
+            ),
+            authority_store=store,
+        )
+
+    result = _observed_terminal_result(
+        context=context,
+        spec=spec,
+    )
+    result["result"]["args"] = ["-c", "print('drift')"]
+    with pytest.raises(FacilityError, match="bound command"):
+        validate_observed_oracle_execution(
+            task,
+            spec,
+            request_id=request_id,
+            foreman_epoch=1,
+            expected_context=context,
+            before_context=context,
+            after_context=context,
+            terminal_result=result,
+            authority_store=store,
+        )

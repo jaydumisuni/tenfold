@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import re
-from typing import Protocol
+from typing import Mapping, Protocol
 
 from .facility import FacilityError, FacilityEvidence, FacilityKind, stable_digest, validate_live_task
 
@@ -65,6 +65,154 @@ def oracle_request_binding(spec: OracleTerminalSpec, request_id: str, expected_c
         "spec": spec.__dict__,
         "context": expected_context.__dict__,
     })
+
+
+@dataclass(frozen=True)
+class OracleObservedContext:
+    transport: str
+    connection_id: str
+    node_id: str
+    reachable: bool = True
+
+    def validate(self):
+        if (
+            self.transport != "oracle.live.v1"
+            or not self.connection_id
+            or not self.node_id
+        ):
+            raise FacilityError("observed Oracle Live context identity missing")
+        if not self.reachable:
+            raise FacilityError("observed Oracle Live context is not reachable")
+
+
+def oracle_observed_request_binding(
+    spec: OracleTerminalSpec,
+    request_id: str,
+    expected_context: OracleObservedContext,
+) -> str:
+    return stable_digest({
+        "facility": "oracle.terminal.observed",
+        "request_id": request_id,
+        "spec": spec.__dict__,
+        "context": expected_context.__dict__,
+    })
+
+
+def validate_observed_oracle_execution(
+    task,
+    spec: OracleTerminalSpec,
+    *,
+    request_id: str,
+    foreman_epoch: int,
+    expected_context: OracleObservedContext,
+    before_context: OracleObservedContext,
+    after_context: OracleObservedContext,
+    terminal_result: Mapping[str, object],
+    authority_store,
+) -> FacilityEvidence:
+    """Validate an externally dispatched Oracle terminal call.
+
+    This path is for orchestrators where Oracle exposes an opaque connectionId
+    but does not expose the synthetic epoch/generation fields required by the
+    in-process OracleLiveRpcTransport.  Tenfold still owns authorization:
+    the sealed task, durable lease and exact request binding must exist before
+    dispatch.  This function only turns matching before/after connector
+    observations plus exact terminal evidence into Tenfold FacilityEvidence.
+    """
+
+    spec.validate()
+    expected_context.validate()
+    before_context.validate()
+    after_context.validate()
+    validate_live_task(
+        task,
+        authority_store,
+        capability="oracle.terminal",
+        permission="execute",
+        foreman_epoch=foreman_epoch,
+        require_lease=True,
+        lease_resource=oracle_node_resource(expected_context.node_id),
+        request_binding=oracle_observed_request_binding(
+            spec,
+            request_id,
+            expected_context,
+        ),
+    )
+    if not _COMMAND_ID.match(request_id):
+        raise FacilityError("Oracle command id does not satisfy control contract")
+    if before_context != expected_context:
+        raise FacilityError("Oracle observed context changed before dispatch")
+    if after_context != expected_context:
+        raise FacilityError("Oracle observed context changed during execution")
+    if (
+        spec.target_node
+        and spec.target_node.lower() != expected_context.node_id.lower()
+    ):
+        raise FacilityError(
+            "Oracle target node does not match bound observed context"
+        )
+    if not isinstance(terminal_result, Mapping):
+        raise FacilityError("Oracle observed result is not an object")
+    if terminal_result.get("transport") != expected_context.transport:
+        raise FacilityError("Oracle observed transport mismatch")
+    target_node = str(terminal_result.get("targetNode") or "")
+    if target_node.lower() != expected_context.node_id.lower():
+        raise FacilityError("Oracle observed result target mismatch")
+
+    terminal = terminal_result.get("result")
+    if not isinstance(terminal, Mapping):
+        raise FacilityError("Oracle observed terminal evidence missing")
+    if (
+        terminal.get("command") != spec.command
+        or tuple(terminal.get("args") or ()) != spec.args
+    ):
+        raise FacilityError(
+            "Oracle observed terminal result does not match bound command"
+        )
+    if spec.cwd and terminal.get("cwd") != spec.cwd:
+        raise FacilityError("Oracle observed terminal cwd mismatch")
+    if terminal.get("timeoutSeconds") != spec.timeout_seconds:
+        raise FacilityError("Oracle observed terminal timeout mismatch")
+
+    exit_code = terminal.get("exitCode")
+    timed_out = bool(terminal.get("timedOut"))
+    ok = exit_code == 0 and not timed_out
+    request_digest = oracle_observed_request_binding(
+        spec,
+        request_id,
+        expected_context,
+    )
+    observations = (
+        f"cwd={terminal.get('cwd','')}",
+        f"exit_code={exit_code}",
+        f"timed_out={str(timed_out).lower()}",
+        f"duration_ms={terminal.get('durationMs','')}",
+        f"stdout_sha256={stable_digest(str(terminal.get('stdout') or ''))}",
+        f"stderr_sha256={stable_digest(str(terminal.get('stderr') or ''))}",
+    )
+    limitations = () if ok else (
+        str(terminal.get("error") or "oracle execution failed"),
+    )
+    return FacilityEvidence(
+        FacilityKind.ORACLE,
+        request_id,
+        task.task_id,
+        task.assignment_id,
+        task.attempt,
+        task.source_binding,
+        request_digest,
+        ok,
+        "completed" if ok else "failed",
+        observations,
+        (),
+        limitations,
+        (
+            ("transport", expected_context.transport),
+            ("connection_id", expected_context.connection_id),
+            ("target_node", expected_context.node_id),
+            ("dispatch_mode", "observed-external"),
+        ),
+    )
 
 
 class OracleFacility:
