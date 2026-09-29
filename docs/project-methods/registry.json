@@ -11,6 +11,15 @@
       "aliases": ["EP15"]
     },
     {
+      "project_id": "oracle",
+      "profile_id": "PM-ORACLE-001",
+      "revision": "0.1.0",
+      "status": "provisional",
+      "profile_path": "docs/project-methods/PM-ORACLE-001.md",
+      "applicable_methods": ["OM-001"],
+      "aliases": []
+    },
+    {
       "project_id": "ptah",
       "profile_id": "PM-PTAH-001",
       "revision": "0.1.0",
