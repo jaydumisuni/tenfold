@@ -77,6 +77,22 @@ def test_repository_registry_binds_ptah_profile_exactly():
     registry.verify_binding(binding)
 
 
+def test_repository_registry_binds_current_eco_profile_and_recovers_c1_lessons():
+    registry = ProjectMethodRegistry(repository_root())
+    binding = registry.bind("eco-progress")
+
+    assert binding.project_id == "eco-progress"
+    assert binding.profile_id == "PM-ECO-PROGRESS-001"
+    assert binding.revision == "0.1.2"
+    assert binding.applicable_methods == ("OM-001",)
+    registry.verify_binding(binding)
+
+    profile = (repository_root() / binding.profile_path).read_text(encoding="utf-8")
+    assert "Fix stale truth at the producer observation boundary" in profile
+    assert "Broad replay/shadow proof uses the qualified Tenfold workforce" in profile
+    assert "22 lanes / 22 evidence packets / 0 workforce failures / Council accepted" in profile
+
+
 def test_changed_profile_invalidates_saved_binding(tmp_path: Path):
     registry = write_registry(tmp_path)
     binding = registry.bind("project-x")
