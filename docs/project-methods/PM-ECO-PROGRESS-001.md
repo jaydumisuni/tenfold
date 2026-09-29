@@ -1,8 +1,8 @@
 # PM-ECO-PROGRESS-001 — Eco-progress Execution Profile
 
-Status: **PROVISIONAL**  
-Revision: **0.1.1**  
-Project: **eco-progress**  
+Status: **PROVISIONAL**
+Revision: **0.1.2**
+Project: **eco-progress**
 Applicable global methods: **OM-001**
 
 ## Purpose
@@ -96,6 +96,20 @@ Temporary CI, campaign drivers, proof transport, and workspace-only Tenfold mach
 - **Evidence:** EP15 Task 9 plan plus OM-001.
 - **Status:** Mandatory for this campaign.
 
+### Rule 7 — Fix stale truth at the producer observation boundary
+
+- **Rule:** When a qualified consumer rejects Eco truth because the projection exceeds its declared freshness budget, restore Eco observation/refresh currentness instead of widening the consumer TTL or bypassing stale-data rejection.
+- **Why:** During C1 Hunter truth consumption, Hunter correctly rejected a 22,731-second-old Eco projection against a 21,600-second limit. The correct recovery was an Eco-owned 15-minute read-only refresh lane plus source-observation timestamps.
+- **Evidence:** docs/status/ECO_HUNTER_TRUTH_REFRESH_STATUS.md; Tenfold C1 replay/shadow campaign a3c8ea4c81cf5ef232929da8aa103bd22042f3c5ce07b3b431f09823c486e683.
+- **Status:** Mandatory for live Eco truth consumers.
+
+### Rule 8 — Broad replay/shadow proof uses the qualified Tenfold workforce
+
+- **Rule:** When acceptance requires broad replay or shadow verification across many project identities, use the actual qualified Tenfold workforce and Project Method binding for independent read-only lanes instead of serial consultant-authored bespoke checking.
+- **Why:** C1 required 87-project historical replay plus live shadow verification. The qualified Tenfold run used 22 distinct lanes, produced 22 evidence packets, zero workforce failures, and a clean Council rebrief result.
+- **Evidence:** method-learning observation eco-c1-tenfold-replay-shadow; private campaign result under Hunter .workspace/tenfold-campaigns/eco-c1-replay-shadow-20260929.
+- **Status:** Mandatory when the verification surface is substantial enough for Tenfold execution under ttg.tenfold.v1.
+
 ## Dependency-frontier strategy
 
 - Derive work from registered project identity and explicit dependency relationships only.
@@ -165,6 +179,9 @@ Evidence recovered during the active EP15 campaign:
 - Review caught two material campaign defects before canonical publication: predecessor authority drift and a reverse dependency that would have introduced a cycle.
 - The first actual Tenfold EP15 Council execution reached the Project Method Registry and failed closed because alias `Eco-progress` case-folded to the canonical `eco-progress` project ID. The registry therefore requires alias uniqueness after normalization, not merely byte-level uniqueness.
 - No canonical EP15 promotion has occurred at this profile revision.
+- C1 Hunter-truth replay/shadow verification used qualified Tenfold 6858d5b66b4c5b229b8712b26662fceee7fb59b8 with predecessor profile PM-ECO-PROGRESS-001@0.1.1 bound exactly (profile digest d73f8a14eb92334f8f31536f72965c5f0bc368ed3dfd54ee5f88587315ed2ba1): **22 lanes / 22 evidence packets / 0 workforce failures / Council accepted**. Revision 0.1.2 is the learned successor produced from that campaign evidence.
+- Historical and live projections each contained **87 projects**; every shard matched Hunter query contracts exactly. The only material source delta was eco-progress, and Hunter followed that delta rather than retaining the historical milestone.
+- Negative controls confirmed stale historical truth is rejected, UNKNOWN remains UNKNOWN, owner-required remains explicit-only, and Hunter's default source resolves to Eco's live runtime projection.
 
 ## Known project-specific failure modes
 
@@ -181,6 +198,8 @@ Evidence recovered during the active EP15 campaign:
 - registering a project alias that normalizes to the same key as the canonical project ID;
 - leaking temporary CI/Tenfold proof machinery into canonical product history;
 - proving one branch head and promoting different bytes.
+- widening a consumer freshness limit to hide an Eco producer-currentness defect;
+- serially hand-checking a broad replay/shadow matrix when qualified Tenfold can execute independent read-only lanes;
 
 ## Method discovery targets
 
@@ -189,6 +208,8 @@ Evidence recovered during the active EP15 campaign:
 - make exact-candidate proof binding and product-tree exclusion checks more automated;
 - improve automated detection of temporary proof artifacts before candidate synthesis;
 - measure whether dedicated adversarial review grouping lowers later full-regression rework.
+- retain a reusable project-truth replay/shadow campaign shape so future Eco/Hunter truth changes can be re-proved without rebuilding verification logic in chat;
+- measure producer-refresh age, consumer rejection rate, and replay/shadow lane count as Eco currentness evolves.
 
 ## Candidate lessons for global promotion
 
@@ -197,6 +218,10 @@ Evidence recovered during the active EP15 campaign:
 - Product-tree synthesis from an exact predecessor is useful where private branch history intentionally contains disposable proof machinery; cross-project evidence is required before promoting this beyond OM-001 guidance.
 
 ## Revision history
+
+### 0.1.2 — 2026-09-29
+
+Recovered C1 Eco→Hunter field evidence into the project method: stale truth must be repaired at the producer observation boundary rather than hidden by a wider consumer TTL, and substantial historical replay/live shadow proof must use qualified Tenfold lanes rather than serial bespoke consultant checking. Evidence: 22 lanes, 22 evidence packets, 0 failures, Council accepted.
 
 ### 0.1.1 — 2026-09-06
 

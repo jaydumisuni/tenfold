@@ -4,11 +4,15 @@
     {
       "project_id": "eco-progress",
       "profile_id": "PM-ECO-PROGRESS-001",
-      "revision": "0.1.1",
+      "revision": "0.1.2",
       "status": "provisional",
       "profile_path": "docs/project-methods/PM-ECO-PROGRESS-001.md",
-      "applicable_methods": ["OM-001"],
-      "aliases": ["EP15"]
+      "applicable_methods": [
+        "OM-001"
+      ],
+      "aliases": [
+        "EP15"
+      ]
     },
     {
       "project_id": "ptah",
@@ -16,8 +20,13 @@
       "revision": "0.1.0",
       "status": "active",
       "profile_path": "docs/project-methods/PM-PTAH-001.md",
-      "applicable_methods": ["OM-001"],
-      "aliases": ["Ptah-space", "ptah-roadmap-"]
+      "applicable_methods": [
+        "OM-001"
+      ],
+      "aliases": [
+        "Ptah-space",
+        "ptah-roadmap-"
+      ]
     }
   ]
 }
