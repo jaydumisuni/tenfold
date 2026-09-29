@@ -10,13 +10,11 @@ permissions:
 
 jobs:
   rust-verify:
-    # G2-00 SS4.1 / G2-03: the Executable Rust Trust Table is the first
-    # Rust code in this repository. Uses the toolchain ubuntu-latest
-    # already provides (GitHub-maintained, same trust tier as the runner
-    # OS itself) rather than pinning a third-party toolchain action; the
-    # exact rustc/cargo version is recorded below for transparency, not
-    # left implicit.
-    runs-on: ubuntu-latest
+    # G2-00 SS4.1 / G2-03: verify on the owned KRATOS runner so execution-
+    # authority probes observe the same qualified machine boundary used by
+    # Tenfold. Record the exact rustc/cargo identity below.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, kratos, tenfold]
     steps:
       - name: Checkout exact candidate
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -42,7 +40,8 @@ jobs:
         run: cargo test --workspace --locked
 
   verify:
-    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, kratos, tenfold]
     steps:
       - name: Checkout exact candidate
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
