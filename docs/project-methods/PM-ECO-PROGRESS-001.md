@@ -179,7 +179,7 @@ Evidence recovered during the active EP15 campaign:
 - Review caught two material campaign defects before canonical publication: predecessor authority drift and a reverse dependency that would have introduced a cycle.
 - The first actual Tenfold EP15 Council execution reached the Project Method Registry and failed closed because alias `Eco-progress` case-folded to the canonical `eco-progress` project ID. The registry therefore requires alias uniqueness after normalization, not merely byte-level uniqueness.
 - No canonical EP15 promotion has occurred at this profile revision.
-- C1 Hunter-truth replay/shadow verification used qualified Tenfold 6858d5b66b4c5b229b8712b26662fceee7fb59b8 with this profile bound exactly: **22 lanes / 22 evidence packets / 0 workforce failures / Council accepted**.
+- C1 Hunter-truth replay/shadow verification used qualified Tenfold 6858d5b66b4c5b229b8712b26662fceee7fb59b8 with predecessor profile PM-ECO-PROGRESS-001@0.1.1 bound exactly (profile digest d73f8a14eb92334f8f31536f72965c5f0bc368ed3dfd54ee5f88587315ed2ba1): **22 lanes / 22 evidence packets / 0 workforce failures / Council accepted**. Revision 0.1.2 is the learned successor produced from that campaign evidence.
 - Historical and live projections each contained **87 projects**; every shard matched Hunter query contracts exactly. The only material source delta was eco-progress, and Hunter followed that delta rather than retaining the historical milestone.
 - Negative controls confirmed stale historical truth is rejected, UNKNOWN remains UNKNOWN, owner-required remains explicit-only, and Hunter's default source resolves to Eco's live runtime projection.
 
