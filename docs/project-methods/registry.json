@@ -7,8 +7,12 @@
       "revision": "0.1.1",
       "status": "provisional",
       "profile_path": "docs/project-methods/PM-ECO-PROGRESS-001.md",
-      "applicable_methods": ["OM-001"],
-      "aliases": ["EP15"]
+      "applicable_methods": [
+        "OM-001"
+      ],
+      "aliases": [
+        "EP15"
+      ]
     },
     {
       "project_id": "oracle",
@@ -16,8 +20,25 @@
       "revision": "0.1.0",
       "status": "provisional",
       "profile_path": "docs/project-methods/PM-ORACLE-001.md",
-      "applicable_methods": ["OM-001"],
+      "applicable_methods": [
+        "OM-001"
+      ],
       "aliases": []
+    },
+    {
+      "project_id": "ps4-jailbreak",
+      "profile_id": "PM-PS4-JAILBREAK-001",
+      "revision": "0.1.0",
+      "status": "provisional",
+      "profile_path": "docs/project-methods/PM-PS4-JAILBREAK-001.md",
+      "applicable_methods": [
+        "OM-001"
+      ],
+      "aliases": [
+        "PS-jailbreak",
+        "Sleeper Agent Code",
+        "ps4"
+      ]
     },
     {
       "project_id": "ptah",
@@ -25,8 +46,13 @@
       "revision": "0.1.0",
       "status": "active",
       "profile_path": "docs/project-methods/PM-PTAH-001.md",
-      "applicable_methods": ["OM-001"],
-      "aliases": ["Ptah-space", "ptah-roadmap-"]
+      "applicable_methods": [
+        "OM-001"
+      ],
+      "aliases": [
+        "Ptah-space",
+        "ptah-roadmap-"
+      ]
     }
   ]
 }
