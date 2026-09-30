@@ -1,8 +1,8 @@
 # PM-PS4-JAILBREAK-001 — PS4 Jailbreak / Sleeper Agent Code Execution Profile
 
-Status: **PROVISIONAL**  
-Revision: **0.1.0**  
-Project: **PS-jailbreak / Sleeper Agent Code**  
+Status: **PROVISIONAL**
+Revision: **0.1.0**
+Project: **PS-jailbreak / Sleeper Agent Code**
 Applicable global methods: **OM-001**
 
 ## Purpose
