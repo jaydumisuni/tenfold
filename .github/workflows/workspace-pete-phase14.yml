@@ -1,0 +1,165 @@
+name: Workspace Pete Phase 14 closeout
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "workspace/pete_phase14_campaign.py"
+      - "workspace/pete_phase14_campaign_v2.py"
+      - "workspace/pete_phase14_campaign_v3.py"
+      - "workspace/pete_phase14_campaign_v4.py"
+      - "workspace/pete_phase14_campaign_v5.py"
+      - "workspace/pete_phase14_campaign_v6.py"
+      - "workspace/pete_phase14_campaign_v7.py"
+      - "workspace/pete_phase14_static_advance.py"
+      - "workspace/pete_phase14_target_packet.json"
+      - "workspace/pete_phase14_target_packet_validate.py"
+      - "workspace/authority/pete_phase14/**"
+      - "workspace/evidence/pete_phase14/**"
+      - ".github/workflows/workspace-pete-phase14.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  pete-phase14-authority:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONPATH: ${{ github.workspace }}/src:${{ github.workspace }}
+    steps:
+      - name: Check out exact Tenfold workspace head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Assert exact Tenfold workspace head
+        shell: bash
+        env:
+          TENFOLD_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: test "$(git rev-parse HEAD)" = "$TENFOLD_HEAD"
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Bind qualified Tenfold runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import tenfold
+          from tenfold.foreman import Foreman
+          from tenfold.workforce import LocalWorkforce
+          from tenfold.assurance import FOUNDING_MATRIX
+          print(tenfold.__file__)
+          print(Foreman.__name__)
+          print(LocalWorkforce.__name__)
+          print(FOUNDING_MATRIX.generation, FOUNDING_MATRIX.digest)
+          PY
+          test -z "$(git status --porcelain)"
+
+      - name: Execute real Tenfold Pete Phase 14 authority campaign
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/pete-phase14-tenfold.json"
+          python workspace/pete_phase14_campaign_v7.py \
+            --authority-root "$GITHUB_WORKSPACE" \
+            --output "$OUT" | tee "$RUNNER_TEMP/pete-phase14-tenfold.log"
+          grep -q 'TENFOLD_PETE_PHASE14_AUTHORITY_PREFLIGHT_OK' "$RUNNER_TEMP/pete-phase14-tenfold.log"
+          python - "$OUT" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert data['tenfold_base'] == '51a220f6554674aa8bfeb1f5f56c9a09fef4de76'
+          assert data['campaign_generation'] == 6
+          assert data['bindings']['pete']['head'] == '9f493772e3c1e8baa6afcc3f230262fdf71a2e2b'
+          assert data['bindings']['hunter']['head'] == '2723466946ae90ec5b6c0c3166ed1cb066e4307c'
+          assert data['bindings']['admin']['head'] == '97acf6ffe60ab5fb42ba81f451f374bf1b43f46c'
+          assert data['derivation_passed'] is True
+          assert data['derivation_findings'] == []
+          assert data['deterministic_worker_evidence'] == 3
+          assert data['deterministic_worker_failures'] == 0
+          assert data['authority_council']['accepted_for_rebrief'] is True
+          assert data['frontier']['ready'] == [
+              'ORACLE_LIVE_CONTEXT',
+              'STATIC_ADMIN_REVIEW',
+              'STATIC_HUNTER_REVIEW',
+              'STATIC_PETE_REVIEW',
+          ]
+          assert data['frontier']['prepare_only'] == []
+          assert set(data['required_campaign_assurance']) == {
+              'tenfold_council',
+              'sec_ops',
+              'independent_authority_review',
+              'integration_assurance',
+              'release_activation_assurance',
+          }
+          assert data['additional_assurance'] == ['independent_model_free_sergeant_review']
+          assert data['private_source_published_to_tenfold'] is False
+          assert data['ship_authorized'] is False
+          PY
+
+      - name: Reconcile and advance exact-head static review evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/pete-phase14-static.json"
+          python workspace/pete_phase14_static_advance.py \
+            --root "$GITHUB_WORKSPACE" \
+            --output "$OUT" | tee "$RUNNER_TEMP/pete-phase14-static.log"
+          grep -q 'TENFOLD_PETE_PHASE14_STATIC_ADVANCE_OK' "$RUNNER_TEMP/pete-phase14-static.log"
+          python - "$OUT" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert data['campaign_generation'] == 6
+          assert data['derivation_passed'] is True
+          assert data['static_council']['accepted_for_rebrief'] is True
+          assert data['static_council']['evidence_packets'] == 3
+          assert set(data['frontier_after']['ready']) == {
+              'EXTERNAL_PR_REVIEW_RECONCILE',
+              'ORACLE_LIVE_CONTEXT',
+          }
+          assert 'TARGET_SOURCE_PROOF' in data['frontier_after']['blocked']
+          assert data['target_source_proof_authorized'] is False
+          assert data['external_pr_review_completed'] is False
+          assert data['oracle_live_context_proven'] is False
+          assert data['ship_authorized'] is False
+          PY
+
+      - name: Validate target source and Playwright packet without claiming proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/pete-phase14-target-packet.json"
+          python workspace/pete_phase14_target_packet_validate.py \
+            --packet workspace/pete_phase14_target_packet.json \
+            --output "$OUT" | tee "$RUNNER_TEMP/pete-phase14-target-packet.log"
+          grep -q 'TENFOLD_PETE_PHASE14_TARGET_PACKET_VALID=TRUE' "$RUNNER_TEMP/pete-phase14-target-packet.log"
+          python - "$OUT" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert data['campaignGeneration'] == 6
+          assert data['packetPrepared'] is True
+          assert data['packetValid'] is True
+          assert data['oracleLiveContextProven'] is False
+          assert data['dispatchAuthorized'] is False
+          assert data['sourceProofClaimed'] is False
+          assert data['playwrightProofClaimed'] is False
+          assert data['shipAuthorized'] is False
+          PY
+
+      - name: Prove Tenfold workspace remained clean
+        shell: bash
+        env:
+          TENFOLD_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TENFOLD_HEAD"
+          status="$(git status --porcelain)"
+          printf '%s\n' "$status"
+          test -z "$status"
