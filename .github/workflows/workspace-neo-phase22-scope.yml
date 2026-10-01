@@ -1,0 +1,107 @@
+name: Workspace Neo Phase 22 scope
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "workspace/neo_phase22_scope_campaign.py"
+      - ".github/workflows/workspace-neo-phase22-scope.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  neo-phase22-scope:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      NEO_MAIN: 5e791fd6509a818b8f6632d57e1c74ffbc258461
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONPATH: ${{ github.workspace }}/src
+    steps:
+      - name: Check out exact Tenfold workspace head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Assert exact Tenfold workspace head
+        shell: bash
+        env:
+          TENFOLD_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: test "$(git rev-parse HEAD)" = "$TENFOLD_HEAD"
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+
+      - name: Bind qualified Tenfold runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import tenfold
+          from tenfold.foreman import Foreman
+          from tenfold.workforce import LocalWorkforce
+          print(tenfold.__file__)
+          print(Foreman.__name__, LocalWorkforce.__name__)
+          PY
+          test -z "$(git status --porcelain)"
+
+      - name: Check out exact Neo authority
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: jaydumisuni/Neo-Driver
+          ref: ${{ env.NEO_MAIN }}
+          path: .workspace-authority/neo
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Assert exact Neo authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C .workspace-authority/neo rev-parse HEAD)" = "$NEO_MAIN"
+          test -z "$(git -C .workspace-authority/neo status --porcelain)"
+
+      - name: Execute real Tenfold Phase 22 scope campaign
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/neo-phase22-scope.json"
+          python workspace/neo_phase22_scope_campaign.py --authority-root "$GITHUB_WORKSPACE/.workspace-authority/neo" --output "$OUT" | tee "$RUNNER_TEMP/neo-phase22-scope.log"
+          grep -q 'TENFOLD_NEO_PHASE22_SCOPE_OK' "$RUNNER_TEMP/neo-phase22-scope.log"
+          python - "$OUT" <<'PY'
+          import json, sys
+          d = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert d['tenfold_base'] == '51a220f6554674aa8bfeb1f5f56c9a09fef4de76'
+          assert d['neo']['main'] == '5e791fd6509a818b8f6632d57e1c74ffbc258461'
+          assert d['derivation_passed'] is True
+          assert d['semantic_failures'] == []
+          assert d['deterministic_worker_evidence'] == 4
+          assert d['deterministic_worker_failures'] == 0
+          assert d['authority_council']['accepted_for_rebrief'] is True
+          assert d['frontier']['ready'] == ['PHASE22_DRIVER_PNP_ASSESSMENT']
+          assert d['scope']['machine_changes'] is False
+          print(json.dumps(d, indent=2, sort_keys=True))
+          PY
+
+      - name: Prove Neo authority remained clean
+        shell: bash
+        run: |
+          test "$(git -C .workspace-authority/neo rev-parse HEAD)" = "$NEO_MAIN"
+          test -z "$(git -C .workspace-authority/neo status --porcelain)"
+
+      - name: Remove external authority materialization
+        shell: bash
+        run: rm -rf "$GITHUB_WORKSPACE/.workspace-authority"
+
+      - name: Prove Tenfold workspace remained clean
+        shell: bash
+        env:
+          TENFOLD_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$TENFOLD_HEAD"
+          test -z "$(git status --porcelain)"
