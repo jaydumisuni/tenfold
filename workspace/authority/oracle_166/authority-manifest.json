@@ -1,0 +1,46 @@
+{
+  "schemaVersion": "tenfold.workspace-authority-receipt.v1",
+  "constructionOnly": true,
+  "repository": "jaydumisuni/Oracle-",
+  "issue": 166,
+  "pullRequest": 169,
+  "head": "0da59cf295cad3b2fcaaae34294969005ee876fb",
+  "base": "32d836e1fdac35755b1bbbaddc55d689cf117112",
+  "changedFiles": [
+    {
+      "path": "ORACLE_TERMINAL_HANDOFF.md",
+      "sourceGitBlob": "8456dd399e449d3869beddf08e84e1d2dcd0c788",
+      "materializedLocally": false
+    },
+    {
+      "path": "scripts/Oracle-RecoveryRelaySupervisor.sh",
+      "sourceGitBlob": "35117e8e6e08d4fdd956756e01d2afa56132c841",
+      "materializedLocally": true,
+      "materializationPurpose": "semantic source review only; source blob ID remains authority"
+    },
+    {
+      "path": "scripts/install-oracle-recovery-relay-systemd-user.sh",
+      "sourceGitBlob": "71500fc523756c79c3bb84e700a1ad3eb10beb08",
+      "materializedLocally": true,
+      "materializationPurpose": "semantic source review only; source blob ID remains authority"
+    },
+    {
+      "path": "tests/oracle-relay-linux-bootstrap.test.ts",
+      "sourceGitBlob": "acbc7dd95822331c82622be9272bcb3ff749c07a",
+      "materializedLocally": false
+    },
+    {
+      "path": "tests/recovery-relay-persistence.test.ts",
+      "sourceGitBlob": "bc2b2a76dac415111d011dd6a9c4a346281d252c",
+      "materializedLocally": false
+    }
+  ],
+  "sourceAuthority": "GitHub connector recovery from exact PR head",
+  "localMaterializationIsAuthority": false,
+  "rules": [
+    "The exact Oracle head and source Git blob IDs are authoritative.",
+    "Local workspace copies must never be used to claim exact source identity unless their Git blob IDs match the source receipts.",
+    "Semantic materialization can support preflight reasoning but cannot satisfy exact-head independent review or physical proof.",
+    "All pre-0da59cf physical proof packets remain superseded."
+  ]
+}
