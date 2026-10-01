@@ -1,0 +1,41 @@
+name: TEMP Ptah workspace Tenfold source export
+
+on:
+  push:
+    branches:
+      - temp/ptah-workspace-tenfold-export-20260820
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+# Disposable transport workflow. DO NOT MERGE.
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout transport branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Export exact canonical Tenfold source
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_SHA=55e43c52f416ab6ba435f609754ef6dc11479fc1
+          test "$(git rev-parse "$BASE_SHA")" = "$BASE_SHA"
+          git archive --format=tar.gz --output=tenfold-main-55e43c52.tar.gz "$BASE_SHA"
+          sha256sum tenfold-main-55e43c52.tar.gz | tee tenfold-main-55e43c52.tar.gz.sha256
+          printf '%s\n' "$BASE_SHA" > tenfold-main-55e43c52.commit
+      - name: Upload exact source transport artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tenfold-main-55e43c52-source
+          path: |
+            tenfold-main-55e43c52.tar.gz
+            tenfold-main-55e43c52.tar.gz.sha256
+            tenfold-main-55e43c52.commit
+          if-no-files-found: error
+          retention-days: 1
