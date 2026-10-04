@@ -71,10 +71,14 @@ def test_repository_registry_binds_ptah_profile_exactly():
 
     assert binding.project_id == "ptah"
     assert binding.profile_id == "PM-PTAH-001"
-    assert binding.revision == "0.1.0"
+    assert binding.revision == "0.1.1"
     assert binding.applicable_methods == ("OM-001",)
     assert len(binding.profile_digest) == 64
     registry.verify_binding(binding)
+    profile = (repository_root() / binding.profile_path).read_text(encoding="utf-8")
+    assert "Dirty candidate proof must bind the exact worktree bytes" in profile
+    assert "tracked worktree diff bytes" in profile
+    assert "relevant untracked candidate files" in profile
 
 
 def test_changed_profile_invalidates_saved_binding(tmp_path: Path):

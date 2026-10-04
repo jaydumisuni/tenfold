@@ -1,7 +1,7 @@
 # PM-PTAH-001 — Ptah Roadmap Construction Profile
 
 Status: **ACTIVE**  
-Revision: **0.1.0**  
+Revision: **0.1.1**  
 Project: **Ptah**  
 Applicable global methods: **OM-001 — Private Workspace / Canonical Milestone Promotion**
 
@@ -191,6 +191,22 @@ During the current Ptah campaign, PC/OS reboot or restart operations are not an 
 
 If a later proof requires reboot/restart and explicit authority is unavailable, hold only that proof boundary and continue the remaining safe frontier.
 
+### 11. Dirty candidate proof must bind the exact worktree bytes
+
+When Ptah qualification runs against an uncommitted/private candidate, a Git HEAD alone is not an exact source identity.
+
+The proof binding must include:
+
+- the committed HEAD;
+- tracked worktree diff bytes;
+- relevant untracked candidate files;
+- explicit exclusion of disposable proof/build/backup outputs;
+- one content digest carried into Tenfold worker source identity/evidence.
+
+A green isolated proof whose source binding names only HEAD must not be promoted as immutable candidate proof when the tested worktree was dirty.
+
+Field lesson: C3 E06 proof correctly exercised the local offline-intent candidate, but the first campaign source binding named only HEAD while CodeOps had added uncommitted test/Clippy repairs. The strengthened C3 close-loop proof therefore content-binds those exact private bytes before C3 acceptance.
+
 ## Reusable Ptah construction assets
 
 The campaign has shown high reuse value from:
@@ -234,7 +250,7 @@ Quantitative measurements should be added as Tenfold gains durable campaign tele
 - counting skipped physical tests as executed proof;
 - losing exact Provider/Revision/Instance identity in test fixtures;
 - conflating backend aliases/process IDs/paths with canonical Ptah identity;
-- allowing temporary private construction helpers to become undeclared final dependencies.
+- allowing temporary private construction helpers to become undeclared final dependencies;\n- proving a dirty private candidate while binding evidence only to Git HEAD.
 
 ## Method discovery targets
 
